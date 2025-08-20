@@ -1,0 +1,737 @@
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import {
+  View,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  StyleSheet,
+  Alert,
+  KeyboardAvoidingView,
+  Platform,
+  ScrollView,
+  ActivityIndicator,
+} from 'react-native';
+import DatePicker from 'react-native-date-picker';
+import { SafeAreaView } from 'react-native-safe-area-context';
+import DropDownPicker from 'react-native-dropdown-picker';
+import {
+  launchImageLibrary,
+  MediaType,
+  ImageLibraryOptions,
+} from 'react-native-image-picker';
+import Icon from 'react-native-vector-icons/MaterialIcons';
+import {
+  useAppDispatch,
+  useAppSelector,
+  selectCurrentUser,
+  selectTasksLoading,
+  selectTasksError,
+} from '../store';
+import {
+  createTask,
+  clearTaskError,
+  fetchInboxNotifications,
+} from '../store/taskSlice';
+import { validateTaskForm } from '../utils/validation';
+import { authService } from '../services/authService';
+import { theme } from '../constants/theme';
+import { DEPARTMENTS } from '../constants/app';
+import { User } from '../types';
+import Header from '../components/Header';
+
+interface CreateTaskScreenProps {
+  navigation: any;
+}
+
+const CreateTaskScreen: React.FC<CreateTaskScreenProps> = ({ navigation }) => {
+  const [title, setTitle] = useState('');
+  const [description, setDescription] = useState('');
+  const [department, setDepartment] = useState<
+    'HR' | 'Admin' | 'Supervisor' | ''
+  >('');
+  const [assignedTo, setAssignedTo] = useState('');
+  const [selectedFile, setSelectedFile] = useState<{
+    name: string;
+    uri: string;
+    type: string;
+  } | null>(null);
+  const [timeline, setTimeline] = useState<Date>(
+    new Date(Date.now() + 24 * 60 * 60 * 1000),
+  ); // Default to tomorrow
+  const [showDatePicker, setShowDatePicker] = useState(false);
+  const [departmentUsers, setDepartmentUsers] = useState<User[]>([]);
+  const [loadingUsers, setLoadingUsers] = useState(false);
+  const [errors, setErrors] = useState<{ [key: string]: string }>({});
+
+  // Dropdown states
+  const [departmentOpen, setDepartmentOpen] = useState(false);
+  const [employeeOpen, setEmployeeOpen] = useState(false);
+  const [departmentItems, setDepartmentItems] = useState([
+    { label: 'HR', value: 'HR' },
+    { label: 'Admin', value: 'Admin' },
+    { label: 'Supervisor', value: 'Supervisor' },
+  ]);
+  const [employeeItems, setEmployeeItems] = useState<
+    { label: string; value: string }[]
+  >([]);
+
+  // Refs for focus management
+  const titleRef = useRef<TextInput>(null);
+  const descriptionRef = useRef<TextInput>(null);
+
+  const dispatch = useAppDispatch();
+  const currentUser = useAppSelector(selectCurrentUser);
+  const isLoading = useAppSelector(selectTasksLoading);
+  const error = useAppSelector(selectTasksError);
+
+  useEffect(() => {
+    // Clear errors when component mounts
+    dispatch(clearTaskError());
+  }, [dispatch]);
+
+  useEffect(() => {
+    // Show error alert if task creation fails
+    if (error) {
+      Alert.alert('Task Creation Failed', error, [
+        { text: 'OK', onPress: () => dispatch(clearTaskError()) },
+      ]);
+    }
+  }, [error, dispatch]);
+
+  // Fetch users when department changes
+  useEffect(() => {
+    const fetchDepartmentUsers = async () => {
+      if (department) {
+        setLoadingUsers(true);
+        try {
+          const users = await authService.getUsersByDepartment(department);
+          setDepartmentUsers(users);
+          setAssignedTo(''); // Reset employee selection
+
+          // Update employee dropdown items
+          const items = users.map(user => ({
+            label: `${user.name} (${user.role})`,
+            value: user.id,
+          }));
+          setEmployeeItems(items);
+        } catch (error) {
+          console.error('Failed to fetch department users:', error);
+          Alert.alert(
+            'Error',
+            'Failed to fetch employees for selected department',
+          );
+        } finally {
+          setLoadingUsers(false);
+        }
+      } else {
+        setDepartmentUsers([]);
+        setEmployeeItems([]);
+        setAssignedTo('');
+      }
+    };
+
+    fetchDepartmentUsers();
+  }, [department]);
+
+  const clearFieldError = useCallback(
+    (field: string) => {
+      if (errors[field]) {
+        setErrors(prev => ({ ...prev, [field]: '' }));
+      }
+    },
+    [errors],
+  );
+
+  const handleTitleChange = (text: string) => {
+    setTitle(text);
+    clearFieldError('title');
+  };
+
+  const handleDescriptionChange = (text: string) => {
+    setDescription(text);
+    clearFieldError('description');
+  };
+
+  const handleDepartmentChange = (
+    value: 'HR' | 'Admin' | 'Supervisor' | '',
+  ) => {
+    setDepartment(value);
+    clearFieldError('department');
+  };
+
+  const handleAssignedToChange = (userId: string) => {
+    setAssignedTo(userId);
+    clearFieldError('assignedTo');
+  };
+
+  const handleTimelineChange = (date: Date) => {
+    setTimeline(date);
+    clearFieldError('timeline');
+  };
+
+  const formatTimelineDisplay = (date: Date): string => {
+    return date.toLocaleString('en-US', {
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  };
+
+  const handleFileUpload = async () => {
+    try {
+      // Use react-native-image-picker for file selection (supports documents via mixed media)
+      const options: ImageLibraryOptions = {
+        mediaType: 'mixed' as MediaType,
+        includeBase64: false,
+        maxHeight: 2000,
+        maxWidth: 2000,
+        quality: 0.8 as any, // Cast to any to handle PhotoQuality type
+        selectionLimit: 1,
+      };
+
+      launchImageLibrary(options, response => {
+        if (response.didCancel) {
+          // User cancelled file picker
+          return;
+        }
+
+        if (response.errorMessage) {
+          console.error('File picker error:', response.errorMessage);
+          Alert.alert(
+            'File Upload Error',
+            'Failed to select file. Please try again or continue without a file attachment.',
+            [{ text: 'OK' }],
+          );
+          return;
+        }
+
+        if (response.assets && response.assets.length > 0) {
+          const file = response.assets[0];
+          setSelectedFile({
+            name: file.fileName || 'Selected file',
+            uri: file.uri || '',
+            type: file.type || 'application/octet-stream',
+          });
+          clearFieldError('file');
+        }
+      });
+    } catch (error) {
+      console.error('File picker error:', error);
+      Alert.alert(
+        'File Upload Error',
+        'Failed to select file. This feature may not be fully supported on this device. You can continue creating the task without a file attachment.',
+        [{ text: 'OK' }],
+      );
+    }
+  };
+
+  const handleRemoveFile = () => {
+    setSelectedFile(null);
+  };
+
+  const handleCreateTask = async () => {
+    // Clear previous errors
+    setErrors({});
+
+    // Validate form
+    const validationErrors = validateTaskForm(
+      title,
+      description,
+      department,
+      assignedTo,
+      timeline,
+    );
+
+    if (validationErrors.length > 0) {
+      const errorMap: { [key: string]: string } = {};
+      validationErrors.forEach(error => {
+        errorMap[error.field] = error.message;
+      });
+      setErrors(errorMap);
+      return;
+    }
+
+    if (!currentUser) {
+      Alert.alert('Error', 'User not authenticated');
+      return;
+    }
+
+    // Prepare task data
+    const taskData = {
+      title: title.trim(),
+      description: description.trim(),
+      department: department as 'HR' | 'Admin' | 'Supervisor',
+      assignedTo,
+      createdBy: currentUser.id,
+      fileUrl: selectedFile
+        ? `https://example.com/files/${Date.now()}_${selectedFile.name}`
+        : undefined,
+      timeline: timeline.toISOString(),
+    };
+
+    try {
+      await dispatch(createTask(taskData)).unwrap();
+
+      // Refresh inbox notifications to show the new notification immediately
+      if (currentUser?.id) {
+        dispatch(fetchInboxNotifications(currentUser.id));
+      }
+
+      // Show success message and navigate back
+      Alert.alert('Success', 'Task created successfully!', [
+        { text: 'OK', onPress: () => navigation.goBack() },
+      ]);
+    } catch (error) {
+      // Error is handled in useEffect above
+      console.error('Task creation error:', error);
+    }
+  };
+
+  const isFormValid =
+    title.trim() && description.trim() && department && assignedTo;
+
+  return (
+    <SafeAreaView style={styles.container}>
+      <Header title="Create Task" showNotificationIcon={false} />
+
+      <KeyboardAvoidingView
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        style={styles.keyboardView}
+      >
+        <ScrollView
+          contentContainerStyle={styles.scrollContent}
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
+        >
+          <View style={styles.form}>
+            {/* Title Field */}
+            <View style={styles.inputContainer}>
+              <Text style={styles.label}>Task Title *</Text>
+              <TextInput
+                ref={titleRef}
+                style={[styles.input, errors.title ? styles.inputError : null]}
+                placeholder="Enter task title"
+                placeholderTextColor={theme.colors.placeholder}
+                value={title}
+                onChangeText={handleTitleChange}
+                autoCapitalize="sentences"
+                autoCorrect={true}
+                maxLength={100}
+                editable={!isLoading}
+                returnKeyType="next"
+                onSubmitEditing={() => descriptionRef.current?.focus()}
+                blurOnSubmit={false}
+              />
+              {errors.title ? (
+                <Text style={styles.errorText}>{errors.title}</Text>
+              ) : null}
+            </View>
+
+            {/* Description Field */}
+            <View style={styles.inputContainer}>
+              <Text style={styles.label}>Description *</Text>
+              <TextInput
+                ref={descriptionRef}
+                style={[
+                  styles.textArea,
+                  errors.description ? styles.inputError : null,
+                ]}
+                placeholder="Enter task description"
+                placeholderTextColor={theme.colors.placeholder}
+                value={description}
+                onChangeText={handleDescriptionChange}
+                autoCapitalize="sentences"
+                autoCorrect={true}
+                maxLength={500}
+                multiline={true}
+                numberOfLines={4}
+                textAlignVertical="top"
+                editable={!isLoading}
+                returnKeyType="next"
+                onSubmitEditing={() => dueDateRef.current?.focus()}
+                blurOnSubmit={false}
+              />
+              {errors.description ? (
+                <Text style={styles.errorText}>{errors.description}</Text>
+              ) : null}
+            </View>
+
+            {/* Department Selection */}
+            <View style={[styles.inputContainer, { zIndex: 3000 }]}>
+              <Text style={styles.label}>Assign to Department *</Text>
+              <DropDownPicker
+                open={departmentOpen}
+                value={department}
+                items={departmentItems}
+                setOpen={setDepartmentOpen}
+                setValue={setDepartment}
+                setItems={setDepartmentItems}
+                onChangeValue={handleDepartmentChange}
+                placeholder="Select department..."
+                disabled={isLoading}
+                style={[
+                  styles.dropdown,
+                  errors.department ? styles.inputError : null,
+                ]}
+                dropDownContainerStyle={styles.dropdownContainer}
+                textStyle={styles.dropdownText}
+                placeholderStyle={styles.dropdownPlaceholder}
+                zIndex={3000}
+                zIndexInverse={1000}
+              />
+              {errors.department ? (
+                <Text style={styles.errorText}>{errors.department}</Text>
+              ) : null}
+            </View>
+
+            {/* Employee Selection */}
+            <View style={[styles.inputContainer, { zIndex: 2000 }]}>
+              <Text style={styles.label}>Assign to Employee *</Text>
+              {loadingUsers ? (
+                <View style={styles.loadingContainer}>
+                  <ActivityIndicator
+                    size="small"
+                    color={theme.colors.primary}
+                  />
+                  <Text style={styles.loadingText}>Loading employees...</Text>
+                </View>
+              ) : (
+                <DropDownPicker
+                  open={employeeOpen}
+                  value={assignedTo}
+                  items={employeeItems}
+                  setOpen={setEmployeeOpen}
+                  setValue={setAssignedTo}
+                  setItems={setEmployeeItems}
+                  onChangeValue={handleAssignedToChange}
+                  placeholder={
+                    !department
+                      ? 'Select department first...'
+                      : employeeItems.length === 0
+                      ? 'No employees found'
+                      : 'Select employee...'
+                  }
+                  disabled={
+                    isLoading || !department || employeeItems.length === 0
+                  }
+                  style={[
+                    styles.dropdown,
+                    errors.assignedTo ? styles.inputError : null,
+                  ]}
+                  dropDownContainerStyle={styles.dropdownContainer}
+                  textStyle={styles.dropdownText}
+                  placeholderStyle={styles.dropdownPlaceholder}
+                  zIndex={2000}
+                  zIndexInverse={2000}
+                />
+              )}
+              {errors.assignedTo ? (
+                <Text style={styles.errorText}>{errors.assignedTo}</Text>
+              ) : null}
+            </View>
+
+            {/* Timeline Field (Required) */}
+            <View style={styles.inputContainer}>
+              <Text style={styles.label}>
+                Timeline <Text style={styles.required}>*</Text>
+              </Text>
+              <TouchableOpacity
+                style={[
+                  styles.input,
+                  styles.datePickerButton,
+                  errors.timeline ? styles.inputError : null,
+                ]}
+                onPress={() => setShowDatePicker(true)}
+                disabled={isLoading}
+              >
+                <Text style={styles.datePickerText}>
+                  {formatTimelineDisplay(timeline)}
+                </Text>
+                <Icon name="event" size={20} color={theme.colors.primary} />
+              </TouchableOpacity>
+              {errors.timeline ? (
+                <Text style={styles.errorText}>{errors.timeline}</Text>
+              ) : null}
+            </View>
+
+            {/* Date Picker Modal */}
+            <DatePicker
+              modal
+              open={showDatePicker}
+              date={timeline}
+              mode="datetime"
+              minimumDate={new Date()}
+              onConfirm={date => {
+                setShowDatePicker(false);
+                handleTimelineChange(date);
+              }}
+              onCancel={() => {
+                setShowDatePicker(false);
+              }}
+              title="Select Timeline"
+            />
+
+            {/* File Upload */}
+            <View style={styles.inputContainer}>
+              <Text style={styles.label}>Attach File (Optional)</Text>
+
+              {selectedFile ? (
+                <View style={styles.fileContainer}>
+                  <View style={styles.fileInfo}>
+                    <Icon
+                      name="insert-drive-file"
+                      size={24}
+                      color={theme.colors.primary}
+                    />
+                    <View style={styles.fileDetails}>
+                      <Text style={styles.fileName} numberOfLines={1}>
+                        {selectedFile.name}
+                      </Text>
+                      <Text style={styles.fileType}>{selectedFile.type}</Text>
+                    </View>
+                  </View>
+                  <TouchableOpacity
+                    style={styles.removeFileButton}
+                    onPress={handleRemoveFile}
+                    disabled={isLoading}
+                  >
+                    <Icon name="close" size={20} color={theme.colors.error} />
+                  </TouchableOpacity>
+                </View>
+              ) : (
+                <TouchableOpacity
+                  style={[
+                    styles.fileUploadButton,
+                    isLoading && styles.fileUploadButtonDisabled,
+                  ]}
+                  onPress={handleFileUpload}
+                  disabled={isLoading}
+                >
+                  <Icon
+                    name="cloud-upload"
+                    size={24}
+                    color={theme.colors.primary}
+                  />
+                  <Text style={styles.fileUploadText}>
+                    Choose File (Images & Documents)
+                  </Text>
+                </TouchableOpacity>
+              )}
+            </View>
+
+            {/* Create Task Button */}
+            <TouchableOpacity
+              style={[
+                styles.createButton,
+                (!isFormValid || isLoading) && styles.createButtonDisabled,
+              ]}
+              onPress={handleCreateTask}
+              disabled={!isFormValid || isLoading}
+            >
+              {isLoading ? (
+                <ActivityIndicator color={theme.colors.surface} size="small" />
+              ) : (
+                <Text style={styles.createButtonText}>Create Task</Text>
+              )}
+            </TouchableOpacity>
+          </View>
+        </ScrollView>
+      </KeyboardAvoidingView>
+    </SafeAreaView>
+  );
+};
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: theme.colors.background,
+  },
+  keyboardView: {
+    flex: 1,
+  },
+  scrollContent: {
+    flexGrow: 1,
+    padding: theme.spacing.lg,
+  },
+  form: {
+    marginBottom: theme.spacing.xl,
+  },
+  inputContainer: {
+    marginBottom: theme.spacing.lg,
+  },
+  label: {
+    fontSize: theme.typography.fontSizes.md,
+    fontWeight: theme.typography.fontWeights.medium,
+    color: theme.colors.text,
+    marginBottom: theme.spacing.sm,
+  },
+  input: {
+    height: 50,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    borderRadius: theme.borderRadius.md,
+    paddingHorizontal: theme.spacing.md,
+    fontSize: theme.typography.fontSizes.md,
+    color: theme.colors.text,
+    backgroundColor: theme.colors.surface,
+  },
+  textArea: {
+    minHeight: 100,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    borderRadius: theme.borderRadius.md,
+    paddingHorizontal: theme.spacing.md,
+    paddingVertical: theme.spacing.md,
+    fontSize: theme.typography.fontSizes.md,
+    color: theme.colors.text,
+    backgroundColor: theme.colors.surface,
+  },
+  inputError: {
+    borderColor: theme.colors.error,
+  },
+  pickerWrapper: {
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    borderRadius: theme.borderRadius.md,
+    backgroundColor: theme.colors.surface,
+    overflow: 'hidden',
+  },
+  pickerDisabled: {
+    backgroundColor: theme.colors.background,
+    opacity: 0.6,
+  },
+  picker: {
+    height: 50,
+    color: theme.colors.text,
+  },
+  loadingContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: theme.spacing.md,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    borderRadius: theme.borderRadius.md,
+    backgroundColor: theme.colors.surface,
+  },
+  loadingText: {
+    marginLeft: theme.spacing.sm,
+    fontSize: theme.typography.fontSizes.sm,
+    color: theme.colors.textSecondary,
+  },
+  fileContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    padding: theme.spacing.md,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    borderRadius: theme.borderRadius.md,
+    backgroundColor: theme.colors.surface,
+  },
+  fileInfo: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  fileDetails: {
+    flex: 1,
+    marginLeft: theme.spacing.sm,
+  },
+  fileName: {
+    fontSize: theme.typography.fontSizes.md,
+    fontWeight: theme.typography.fontWeights.medium,
+    color: theme.colors.text,
+  },
+  fileType: {
+    fontSize: theme.typography.fontSizes.sm,
+    color: theme.colors.textSecondary,
+    marginTop: theme.spacing.xs,
+  },
+  removeFileButton: {
+    padding: theme.spacing.xs,
+  },
+  fileUploadButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: theme.spacing.md,
+    borderWidth: 2,
+    borderColor: theme.colors.primary,
+    borderStyle: 'dashed',
+    borderRadius: theme.borderRadius.md,
+    backgroundColor: theme.colors.surface,
+  },
+  fileUploadButtonDisabled: {
+    opacity: 0.6,
+  },
+  fileUploadText: {
+    marginLeft: theme.spacing.sm,
+    fontSize: theme.typography.fontSizes.md,
+    color: theme.colors.primary,
+    fontWeight: theme.typography.fontWeights.medium,
+  },
+  errorText: {
+    fontSize: theme.typography.fontSizes.sm,
+    color: theme.colors.error,
+    marginTop: theme.spacing.xs,
+  },
+  createButton: {
+    height: 50,
+    backgroundColor: theme.colors.primary,
+    borderRadius: theme.borderRadius.md,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginTop: theme.spacing.lg,
+    ...theme.shadows.sm,
+  },
+  createButtonDisabled: {
+    opacity: 0.6,
+  },
+  createButtonText: {
+    fontSize: theme.typography.fontSizes.lg,
+    fontWeight: theme.typography.fontWeights.semiBold,
+    color: theme.colors.surface,
+  },
+  required: {
+    color: theme.colors.error,
+  },
+  datePickerButton: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  datePickerText: {
+    fontSize: theme.typography.fontSizes.md,
+    color: theme.colors.text,
+    flex: 1,
+  },
+  dropdown: {
+    borderColor: theme.colors.border,
+    borderRadius: theme.borderRadius.md,
+    backgroundColor: theme.colors.surface,
+    minHeight: 50,
+  },
+  dropdownContainer: {
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.surface,
+    borderRadius: theme.borderRadius.md,
+    elevation: 5,
+    shadowColor: theme.colors.shadow,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+  },
+  dropdownText: {
+    fontSize: theme.typography.fontSizes.md,
+    color: theme.colors.text,
+  },
+  dropdownPlaceholder: {
+    fontSize: theme.typography.fontSizes.md,
+    color: theme.colors.placeholder,
+  },
+});
+
+export default CreateTaskScreen;

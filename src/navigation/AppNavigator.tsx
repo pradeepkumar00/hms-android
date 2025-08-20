@@ -1,0 +1,134 @@
+import React, { useEffect, useState } from 'react';
+import { NavigationContainer } from '@react-navigation/native';
+import { createStackNavigator } from '@react-navigation/stack';
+import { ActivityIndicator, View, StyleSheet } from 'react-native';
+import { useAppDispatch, useAppSelector, selectAuth } from '../store';
+import { checkAuthState } from '../store/authSlice';
+import { RootStackParamList } from '../types';
+import { theme } from '../constants/theme';
+import { navigationRef } from '../services/navigationService';
+
+// Screens
+import LoginScreen from '../screens/LoginScreen';
+import MainScreen from '../screens/MainScreen';
+import InboxScreen from '../screens/InboxScreen';
+import TaskDetailsScreen from '../screens/TaskDetailsScreen';
+import AssignedTasksScreen from '../screens/AssignedTasksScreen';
+import CreateTaskScreen from '../screens/CreateTaskScreen';
+import NotificationSettingsScreen from '../screens/NotificationSettingsScreen';
+
+const Stack = createStackNavigator<RootStackParamList>();
+
+const AppNavigator: React.FC = () => {
+  const [isInitializing, setIsInitializing] = useState(true);
+  const dispatch = useAppDispatch();
+  const { isAuthenticated, isLoading } = useAppSelector(selectAuth);
+
+  useEffect(() => {
+    // Check if user is already authenticated on app start
+    const initializeAuth = async () => {
+      try {
+        await dispatch(checkAuthState()).unwrap();
+      } catch (error) {
+        // User is not authenticated, that's fine
+        console.log('No stored auth state found');
+      } finally {
+        setIsInitializing(false);
+      }
+    };
+
+    initializeAuth();
+  }, [dispatch]);
+
+  // Show loading spinner while initializing
+  if (isInitializing || isLoading) {
+    return (
+      <View style={styles.loadingContainer}>
+        <ActivityIndicator size="large" color={theme.colors.primary} />
+      </View>
+    );
+  }
+
+  return (
+    <NavigationContainer ref={navigationRef}>
+      <Stack.Navigator
+        screenOptions={{
+          headerShown: false, // We'll create custom headers in Phase 2
+          cardStyle: { backgroundColor: theme.colors.background },
+          // animationEnabled is not a valid option for Stack.Navigator in React Navigation v6+
+          // If you want to control animation, use 'animationTypeForReplace' or per-screen options
+        }}
+      >
+        {isAuthenticated ? (
+          // User is authenticated - show main app screens
+          <Stack.Group>
+            <Stack.Screen
+              name="Main"
+              component={MainScreen}
+              options={{
+                gestureEnabled: false, // Prevent swipe back to login
+              }}
+            />
+            <Stack.Screen
+              name="Inbox"
+              component={InboxScreen}
+              options={{
+                gestureEnabled: true,
+              }}
+            />
+            <Stack.Screen
+              name="TaskDetails"
+              component={TaskDetailsScreen}
+              options={{
+                gestureEnabled: false, // Disable swipe gesture to prevent bad animation
+              }}
+            />
+            <Stack.Screen
+              name="AssignedTasks"
+              component={AssignedTasksScreen}
+              options={{
+                gestureEnabled: true,
+              }}
+            />
+            <Stack.Screen
+              name="CreateTask"
+              component={CreateTaskScreen}
+              options={{
+                gestureEnabled: true,
+              }}
+            />
+            <Stack.Screen
+              name="NotificationSettings"
+              component={NotificationSettingsScreen}
+              options={{
+                gestureEnabled: true,
+              }}
+            />
+          </Stack.Group>
+        ) : (
+          // User is not authenticated - show auth screens
+          <Stack.Group>
+            <Stack.Screen
+              name="Login"
+              component={LoginScreen}
+              options={{
+                gestureEnabled: false, // Prevent swipe gestures on login
+              }}
+            />
+          </Stack.Group>
+        )}
+      </Stack.Navigator>
+    </NavigationContainer>
+  );
+};
+
+const styles = StyleSheet.create({
+  loadingContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: theme.colors.background,
+  },
+});
+
+export default AppNavigator;

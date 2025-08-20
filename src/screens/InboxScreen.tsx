@@ -1,0 +1,486 @@
+import React, { useEffect, useState, useCallback } from 'react';
+import {
+  View,
+  Text,
+  StyleSheet,
+  FlatList,
+  TouchableOpacity,
+  Alert,
+  RefreshControl,
+  ActivityIndicator,
+} from 'react-native';
+import {
+  useAppDispatch,
+  useAppSelector,
+  selectCurrentUser,
+  selectInboxNotifications,
+  selectTasksLoading,
+  selectTasksError,
+  selectUnreadNotifications,
+} from '../store';
+import {
+  fetchInboxNotifications,
+  markNotificationAsReadOptimistic,
+  markNotificationAsRead,
+  clearTaskError,
+} from '../store/taskSlice';
+import { theme } from '../constants/theme';
+import { Header } from '../components';
+import { APP_CONFIG } from '../constants/app';
+import { Notification } from '../types';
+import Icon from 'react-native-vector-icons/MaterialIcons';
+
+interface InboxScreenProps {
+  navigation: any;
+}
+
+const InboxScreen: React.FC<InboxScreenProps> = ({ navigation }) => {
+  const dispatch = useAppDispatch();
+  const user = useAppSelector(selectCurrentUser);
+  const notifications = useAppSelector(selectInboxNotifications);
+  const unreadNotifications = useAppSelector(selectUnreadNotifications);
+  const isLoading = useAppSelector(selectTasksLoading);
+  const error = useAppSelector(selectTasksError);
+
+  const [refreshing, setRefreshing] = useState(false);
+
+  // Check if user is HR for interaction permissions
+  const isHRUser = user?.department === 'HR';
+
+  // Fetch notifications on screen load
+  useEffect(() => {
+    if (user?.id) {
+      dispatch(fetchInboxNotifications(user.id));
+    }
+  }, [dispatch, user?.id]);
+
+  // Clear error when component unmounts
+  useEffect(() => {
+    return () => {
+      if (error) {
+        dispatch(clearTaskError());
+      }
+    };
+  }, [dispatch, error]);
+
+  // Handle refresh
+  const onRefresh = useCallback(async () => {
+    if (user?.id) {
+      setRefreshing(true);
+      try {
+        await dispatch(fetchInboxNotifications(user.id)).unwrap();
+      } catch (error) {
+        console.error('Refresh error:', error);
+      } finally {
+        setRefreshing(false);
+      }
+    }
+  }, [dispatch, user?.id]);
+
+  // Handle notification press - only for HR users
+  const handleNotificationPress = useCallback(
+    (notification: Notification) => {
+      if (!isHRUser) {
+        Alert.alert(
+          'Access Restricted',
+          'Only HR users can view task details.',
+          [{ text: 'OK' }],
+        );
+        return;
+      }
+
+      // Mark as read optimistically
+      if (!notification.readStatus) {
+        dispatch(markNotificationAsReadOptimistic(notification.id));
+        dispatch(markNotificationAsRead(notification.id));
+      }
+
+      // Navigate to task details (readonly from notifications)
+      navigation.navigate('TaskDetails', {
+        taskId: notification.taskId,
+        readonly: true, // Notifications are view-only
+      });
+    },
+    [dispatch, navigation, isHRUser],
+  );
+
+  // Format notification time
+  const formatNotificationTime = (createdAt: string) => {
+    const now = new Date();
+    const notificationTime = new Date(createdAt);
+    const diffInHours = Math.floor(
+      (now.getTime() - notificationTime.getTime()) / (1000 * 60 * 60),
+    );
+
+    if (diffInHours < 1) {
+      const diffInMinutes = Math.floor(
+        (now.getTime() - notificationTime.getTime()) / (1000 * 60),
+      );
+      return diffInMinutes < 1 ? 'Just now' : `${diffInMinutes}m ago`;
+    } else if (diffInHours < 24) {
+      return `${diffInHours}h ago`;
+    } else {
+      const diffInDays = Math.floor(diffInHours / 24);
+      return `${diffInDays}d ago`;
+    }
+  };
+
+  // Render notification item
+  const renderNotificationItem = useCallback(
+    ({ item }: { item: Notification }) => {
+      const isUnread = !item.readStatus;
+
+      return (
+        <TouchableOpacity
+          style={[
+            styles.notificationItem,
+            isUnread && styles.unreadNotification,
+            !isHRUser && styles.disabledNotification,
+          ]}
+          onPress={() => handleNotificationPress(item)}
+          activeOpacity={isHRUser ? 0.7 : 1}
+          disabled={!isHRUser}
+        >
+          <View style={styles.notificationContent}>
+            <View style={styles.notificationHeader}>
+              <View style={styles.notificationIndicator}>
+                {isUnread && <View style={styles.unreadDot} />}
+                <Icon
+                  name="task-alt"
+                  size={20}
+                  color={
+                    isUnread ? theme.colors.primary : theme.colors.textSecondary
+                  }
+                />
+              </View>
+              <Text style={styles.notificationTime}>
+                {formatNotificationTime(item.createdAt)}
+              </Text>
+            </View>
+
+            <Text
+              style={[
+                styles.notificationMessage,
+                isUnread && styles.unreadMessage,
+              ]}
+              numberOfLines={3}
+            >
+              {item.message}
+            </Text>
+
+            {isHRUser && (
+              <View style={styles.notificationFooter}>
+                <Text style={styles.tapToViewText}>Tap to view details</Text>
+                <Icon
+                  name="chevron-right"
+                  size={16}
+                  color={theme.colors.textSecondary}
+                />
+              </View>
+            )}
+          </View>
+        </TouchableOpacity>
+      );
+    },
+    [handleNotificationPress, isHRUser],
+  );
+
+  // Render empty state
+  const renderEmptyState = () => (
+    <View style={styles.emptyState}>
+      <Icon name="inbox" size={64} color={theme.colors.textSecondary} />
+      <Text style={styles.emptyStateTitle}>No Notifications</Text>
+      <Text style={styles.emptyStateSubtitle}>
+        You don't have any notifications yet.{'\n'}
+        New task assignments will appear here.
+      </Text>
+    </View>
+  );
+
+  // Render error state
+  const renderErrorState = () => (
+    <View style={styles.errorState}>
+      <Icon name="error-outline" size={48} color={theme.colors.error} />
+      <Text style={styles.errorTitle}>Failed to Load Notifications</Text>
+      <Text style={styles.errorSubtitle}>{error}</Text>
+      <TouchableOpacity style={styles.retryButton} onPress={onRefresh}>
+        <Text style={styles.retryButtonText}>Retry</Text>
+      </TouchableOpacity>
+    </View>
+  );
+
+  // Optimize FlatList performance
+  const keyExtractor = useCallback((item: Notification) => item.id, []);
+  const getItemLayout = useCallback(
+    (_: any, index: number) => ({
+      length: 120, // Approximate item height
+      offset: 120 * index,
+      index,
+    }),
+    [],
+  );
+
+  return (
+    <View style={styles.container}>
+      <Header title="Inbox" showNotificationIcon={false} />
+
+      <View style={styles.content}>
+        {/* Header Info */}
+        <View style={styles.inboxHeader}>
+          <Text style={styles.inboxTitle}>Notifications</Text>
+          {unreadNotifications.length > 0 && (
+            <View style={styles.unreadBadge}>
+              <Text style={styles.unreadBadgeText}>
+                {unreadNotifications.length} new
+              </Text>
+            </View>
+          )}
+        </View>
+
+        {/* Access restriction info for non-HR users */}
+        {!isHRUser && (
+          <View style={styles.restrictionNotice}>
+            <Icon name="info-outline" size={16} color={theme.colors.warning} />
+            <Text style={styles.restrictionText}>
+              You can view notifications but cannot interact with them. Only HR
+              users can access task details.
+            </Text>
+          </View>
+        )}
+
+        {/* Notifications List */}
+        {error ? (
+          renderErrorState()
+        ) : (
+          <FlatList
+            data={notifications}
+            renderItem={renderNotificationItem}
+            keyExtractor={keyExtractor}
+            getItemLayout={getItemLayout}
+            showsVerticalScrollIndicator={false}
+            refreshControl={
+              <RefreshControl
+                refreshing={refreshing}
+                onRefresh={onRefresh}
+                colors={[theme.colors.primary]}
+                tintColor={theme.colors.primary}
+              />
+            }
+            ListEmptyComponent={
+              isLoading ? (
+                <View style={styles.loadingState}>
+                  <ActivityIndicator
+                    size="large"
+                    color={theme.colors.primary}
+                  />
+                  <Text style={styles.loadingText}>
+                    Loading notifications...
+                  </Text>
+                </View>
+              ) : (
+                renderEmptyState
+              )
+            }
+            contentContainerStyle={[
+              styles.listContainer,
+              notifications.length === 0 && styles.emptyListContainer,
+            ]}
+            // Performance optimizations
+            initialNumToRender={10}
+            maxToRenderPerBatch={5}
+            windowSize={10}
+            removeClippedSubviews={true}
+            updateCellsBatchingPeriod={100}
+          />
+        )}
+      </View>
+    </View>
+  );
+};
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: theme.colors.background,
+  },
+  content: {
+    flex: 1,
+    padding: theme.spacing.md,
+  },
+  inboxHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: theme.spacing.md,
+    paddingHorizontal: theme.spacing.sm,
+  },
+  inboxTitle: {
+    fontSize: theme.typography.fontSizes.xl,
+    fontWeight: theme.typography.fontWeights.bold,
+    color: theme.colors.text,
+  },
+  unreadBadge: {
+    backgroundColor: theme.colors.primary,
+    paddingHorizontal: theme.spacing.sm,
+    paddingVertical: theme.spacing.xs,
+    borderRadius: theme.borderRadius.lg,
+  },
+  unreadBadgeText: {
+    fontSize: theme.typography.fontSizes.xs,
+    fontWeight: theme.typography.fontWeights.semiBold,
+    color: theme.colors.surface,
+  },
+  legendNotice: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: theme.colors.primary + '10',
+    padding: theme.spacing.sm,
+    borderRadius: theme.borderRadius.md,
+    marginBottom: theme.spacing.sm,
+  },
+  legendText: {
+    flex: 1,
+    fontSize: theme.typography.fontSizes.xs,
+    color: theme.colors.primary,
+    marginLeft: theme.spacing.sm,
+    fontWeight: theme.typography.fontWeights.medium,
+  },
+  restrictionNotice: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: theme.colors.warning + '15',
+    padding: theme.spacing.sm,
+    borderRadius: theme.borderRadius.md,
+    marginBottom: theme.spacing.md,
+  },
+  restrictionText: {
+    flex: 1,
+    fontSize: theme.typography.fontSizes.sm,
+    color: theme.colors.warning,
+    marginLeft: theme.spacing.sm,
+  },
+  listContainer: {
+    paddingVertical: theme.spacing.sm,
+  },
+  emptyListContainer: {
+    flex: 1,
+  },
+  notificationItem: {
+    backgroundColor: theme.colors.surface,
+    borderRadius: theme.borderRadius.md,
+    marginBottom: theme.spacing.sm,
+    ...theme.shadows.sm,
+  },
+  unreadNotification: {
+    borderLeftWidth: 4,
+    borderLeftColor: theme.colors.primary,
+  },
+  disabledNotification: {
+    opacity: 0.7,
+  },
+  notificationContent: {
+    padding: theme.spacing.md,
+  },
+  notificationHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: theme.spacing.sm,
+  },
+  notificationIndicator: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  unreadDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: theme.colors.primary,
+    marginRight: theme.spacing.sm,
+  },
+  notificationTime: {
+    fontSize: theme.typography.fontSizes.xs,
+    color: theme.colors.textSecondary,
+  },
+  notificationMessage: {
+    fontSize: theme.typography.fontSizes.sm,
+    color: theme.colors.text,
+    lineHeight: theme.typography.lineHeights.relaxed,
+    marginBottom: theme.spacing.sm,
+  },
+  unreadMessage: {
+    fontWeight: theme.typography.fontWeights.medium,
+  },
+  notificationFooter: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  tapToViewText: {
+    fontSize: theme.typography.fontSizes.xs,
+    color: theme.colors.primary,
+    fontWeight: theme.typography.fontWeights.medium,
+  },
+  emptyState: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: theme.spacing.xl,
+  },
+  emptyStateTitle: {
+    fontSize: theme.typography.fontSizes.lg,
+    fontWeight: theme.typography.fontWeights.bold,
+    color: theme.colors.text,
+    marginTop: theme.spacing.md,
+    marginBottom: theme.spacing.sm,
+  },
+  emptyStateSubtitle: {
+    fontSize: theme.typography.fontSizes.sm,
+    color: theme.colors.textSecondary,
+    textAlign: 'center',
+    lineHeight: theme.typography.lineHeights.relaxed,
+  },
+  loadingState: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingVertical: theme.spacing.xl,
+  },
+  loadingText: {
+    fontSize: theme.typography.fontSizes.sm,
+    color: theme.colors.textSecondary,
+    marginTop: theme.spacing.sm,
+  },
+  errorState: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: theme.spacing.xl,
+  },
+  errorTitle: {
+    fontSize: theme.typography.fontSizes.lg,
+    fontWeight: theme.typography.fontWeights.bold,
+    color: theme.colors.error,
+    marginTop: theme.spacing.md,
+    marginBottom: theme.spacing.sm,
+  },
+  errorSubtitle: {
+    fontSize: theme.typography.fontSizes.sm,
+    color: theme.colors.textSecondary,
+    textAlign: 'center',
+    marginBottom: theme.spacing.md,
+  },
+  retryButton: {
+    backgroundColor: theme.colors.primary,
+    paddingHorizontal: theme.spacing.lg,
+    paddingVertical: theme.spacing.sm,
+    borderRadius: theme.borderRadius.md,
+  },
+  retryButtonText: {
+    fontSize: theme.typography.fontSizes.sm,
+    fontWeight: theme.typography.fontWeights.semiBold,
+    color: theme.colors.surface,
+  },
+});
+
+export default InboxScreen;

@@ -1,0 +1,690 @@
+import React, { useEffect, useMemo, useState, useRef } from 'react';
+import {
+  View,
+  Text,
+  StyleSheet,
+  TouchableOpacity,
+  FlatList,
+  Alert,
+  ActivityIndicator,
+  Switch,
+  Vibration,
+  Platform,
+} from 'react-native';
+import Sound from 'react-native-sound';
+import Icon from 'react-native-vector-icons/MaterialIcons';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { Header } from '../components';
+import { theme } from '../constants/theme';
+import { STORAGE_KEYS } from '../constants/app';
+import {
+  useAppDispatch,
+  useAppSelector,
+  selectNotificationSoundId,
+} from '../store';
+import { loadSettings, setNotificationSound } from '../store/settingsSlice';
+import {
+  ringtoneService,
+  CustomRingtone,
+  PredefinedSound,
+  SystemSound,
+} from '../services/ringtoneService';
+
+type SoundItem = SystemSound | PredefinedSound | CustomRingtone;
+
+interface NotificationSettingsScreenProps {
+  navigation: any;
+}
+
+const NotificationSettingsScreen: React.FC<NotificationSettingsScreenProps> = ({
+  navigation,
+}) => {
+  const dispatch = useAppDispatch();
+  const selectedSoundId = useAppSelector(selectNotificationSoundId);
+  const [availableSounds, setAvailableSounds] = useState<SoundItem[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [addingCustomSound, setAddingCustomSound] = useState(false);
+  const [vibrationEnabled, setVibrationEnabled] = useState(true);
+  const [currentlyPlaying, setCurrentlyPlaying] = useState<string | null>(null);
+
+  // Use ref to track all sound instances for proper cleanup
+  const soundInstancesRef = useRef<Map<string, Sound>>(new Map());
+  const systemSoundTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  );
+
+  useEffect(() => {
+    dispatch(loadSettings());
+    loadAvailableSounds();
+    loadVibrationSettings();
+  }, [dispatch]);
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      stopAllSounds();
+    };
+  }, []);
+
+  const loadVibrationSettings = async () => {
+    try {
+      const storedVibration = await AsyncStorage.getItem(
+        STORAGE_KEYS.VIBRATION_ENABLED,
+      );
+      if (storedVibration !== null) {
+        const vibrationSetting = JSON.parse(storedVibration);
+        setVibrationEnabled(vibrationSetting);
+      }
+    } catch (error) {
+      console.error('Error loading vibration settings:', error);
+    }
+  };
+
+  const handleVibrationToggle = async (enabled: boolean) => {
+    try {
+      setVibrationEnabled(enabled);
+      await AsyncStorage.setItem(
+        STORAGE_KEYS.VIBRATION_ENABLED,
+        JSON.stringify(enabled),
+      );
+
+      // Test vibration immediately when enabled
+      if (enabled && Platform.OS === 'android') {
+        Vibration.vibrate(100);
+      }
+    } catch (error) {
+      console.error('Error saving vibration setting:', error);
+      // Revert local state if the async operation failed
+      setVibrationEnabled(!enabled);
+    }
+  };
+
+  const loadAvailableSounds = async () => {
+    try {
+      setLoading(true);
+      const sounds = await ringtoneService.getAllSounds();
+      setAvailableSounds(sounds);
+    } catch (error) {
+      console.error('Error loading available sounds:', error);
+      Alert.alert('Error', 'Failed to load available sounds');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleSelectSound = async (sound: SoundItem) => {
+    try {
+      await ringtoneService.setSelectedRingtone(sound.id);
+      dispatch(setNotificationSound(sound.id === 'default' ? null : sound.id));
+    } catch (error) {
+      console.error('Error selecting sound:', error);
+      Alert.alert('Error', 'Failed to select sound');
+    }
+  };
+
+  const handleAddCustomSound = async () => {
+    try {
+      setAddingCustomSound(true);
+      const customRingtone = await ringtoneService.pickAudioFile();
+
+      if (customRingtone) {
+        await loadAvailableSounds(); // Refresh the list
+        Alert.alert(
+          'Success',
+          `"${customRingtone.name}" has been added to your notification sounds.`,
+          [{ text: 'OK' }],
+        );
+      }
+    } catch (error) {
+      console.error('Error adding custom sound:', error);
+      Alert.alert('Error', 'Failed to add custom sound');
+    } finally {
+      setAddingCustomSound(false);
+    }
+  };
+
+  const handleDeleteCustomSound = (sound: CustomRingtone) => {
+    Alert.alert(
+      'Delete Custom Sound',
+      `Are you sure you want to delete "${sound.name}"?`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await ringtoneService.deleteCustomRingtone(sound.id);
+              await loadAvailableSounds(); // Refresh the list
+
+              // If this was the selected sound, reset to default
+              if (selectedSoundId === sound.id) {
+                dispatch(setNotificationSound(null));
+                await ringtoneService.setSelectedRingtone('default');
+              }
+            } catch (error) {
+              console.error('Error deleting custom sound:', error);
+              Alert.alert('Error', 'Failed to delete custom sound');
+            }
+          },
+        },
+      ],
+    );
+  };
+
+  const stopAllSounds = () => {
+    // Stop all tracked sound instances
+    soundInstancesRef.current.forEach((soundInstance, soundId) => {
+      try {
+        soundInstance.stop();
+        soundInstance.release();
+      } catch (error) {
+        console.error(`Error stopping sound ${soundId}:`, error);
+      }
+    });
+    soundInstancesRef.current.clear();
+
+    // Clear any system sound timeouts
+    if (systemSoundTimeoutRef.current) {
+      clearTimeout(systemSoundTimeoutRef.current);
+      systemSoundTimeoutRef.current = null;
+    }
+
+    setCurrentlyPlaying(null);
+  };
+
+  const stopSound = (soundId?: string) => {
+    if (soundId) {
+      // Stop specific sound
+      const soundInstance = soundInstancesRef.current.get(soundId);
+      if (soundInstance) {
+        try {
+          soundInstance.stop();
+          soundInstance.release();
+          soundInstancesRef.current.delete(soundId);
+        } catch (error) {
+          console.error(`Error stopping sound ${soundId}:`, error);
+        }
+      }
+
+      // Clear system sound timeout if it's the current playing sound
+      if (currentlyPlaying === soundId && systemSoundTimeoutRef.current) {
+        clearTimeout(systemSoundTimeoutRef.current);
+        systemSoundTimeoutRef.current = null;
+      }
+
+      if (currentlyPlaying === soundId) {
+        setCurrentlyPlaying(null);
+      }
+    } else {
+      // Stop all sounds
+      stopAllSounds();
+    }
+  };
+
+  const playSound = async (sound: SoundItem) => {
+    try {
+      // Stop any currently playing sound
+      stopAllSounds();
+
+      setCurrentlyPlaying(sound.id);
+
+      // Validate sound object
+      if (!sound || !sound.id) {
+        console.error('Invalid sound object:', sound);
+        setCurrentlyPlaying(null);
+        return;
+      }
+
+      // For system sounds, use the notification sounds library
+      if ('isSystem' in sound && sound.isSystem) {
+        const systemSound = sound as SystemSound;
+        console.log('Playing system sound:', systemSound.title);
+
+        try {
+          await ringtoneService.playSystemSound(systemSound);
+          console.log('System sound played successfully');
+
+          // System sounds typically play for a short duration
+          // Set a timeout to clear the playing state
+          systemSoundTimeoutRef.current = setTimeout(() => {
+            if (currentlyPlaying === sound.id) {
+              setCurrentlyPlaying(null);
+            }
+          }, 3000);
+        } catch (error) {
+          console.error('Failed to play system sound:', error);
+          // Show fallback alert
+          Alert.alert(
+            'Sound Preview',
+            `🔊 Playing: ${systemSound.title}\n\nThis is a system notification sound.`,
+            [{ text: 'OK', onPress: () => setCurrentlyPlaying(null) }],
+          );
+          setCurrentlyPlaying(null);
+        }
+      }
+      // For predefined sounds, use bundled assets
+      else if ('fileName' in sound) {
+        const predefinedSound = sound as PredefinedSound;
+        if (!predefinedSound.fileName) {
+          console.error('Predefined sound missing fileName:', predefinedSound);
+          setCurrentlyPlaying(null);
+          return;
+        }
+
+        console.log(
+          'Attempting to play predefined sound:',
+          predefinedSound.fileName,
+        );
+
+        const soundFile = new Sound(
+          predefinedSound.fileName,
+          Sound.MAIN_BUNDLE,
+          error => {
+            if (error) {
+              console.error('Predefined sound file not found:', error);
+              // Show preview alert as fallback
+              Alert.alert(
+                'Sound Preview',
+                `🔊 Playing: ${predefinedSound.name}\n\nThis is a preview of the selected notification sound.`,
+                [{ text: 'OK', onPress: () => setCurrentlyPlaying(null) }],
+              );
+              return;
+            }
+
+            console.log(
+              'Sound file loaded successfully, attempting to play...',
+            );
+
+            // Store the sound instance for proper cleanup
+            soundInstancesRef.current.set(sound.id, soundFile);
+
+            soundFile.play(success => {
+              if (success) {
+                console.log('Predefined sound played successfully');
+              } else {
+                console.error('Predefined sound playback failed');
+              }
+
+              // Clean up this specific sound instance
+              try {
+                soundFile.release();
+                soundInstancesRef.current.delete(sound.id);
+              } catch (releaseError) {
+                console.error(
+                  'Error releasing predefined sound:',
+                  releaseError,
+                );
+              }
+
+              if (currentlyPlaying === sound.id) {
+                setCurrentlyPlaying(null);
+              }
+            });
+          },
+        );
+      } else {
+        // For custom sounds, use file URI
+        const customSound = sound as CustomRingtone;
+        if (!customSound.uri) {
+          console.error('Custom sound missing uri:', customSound);
+          setCurrentlyPlaying(null);
+          return;
+        }
+
+        console.log('Playing custom sound:', customSound.name);
+
+        const soundFile = new Sound(customSound.uri, '', error => {
+          if (error) {
+            console.error('Failed to load custom sound:', error);
+            Alert.alert('Error', 'Failed to play the selected custom sound.');
+            setCurrentlyPlaying(null);
+            return;
+          }
+
+          // Store the sound instance for proper cleanup
+          soundInstancesRef.current.set(sound.id, soundFile);
+
+          soundFile.play(success => {
+            if (success) {
+              console.log('Custom sound played successfully');
+            } else {
+              console.error('Custom sound playback failed');
+            }
+
+            // Clean up this specific sound instance
+            try {
+              soundFile.release();
+              soundInstancesRef.current.delete(sound.id);
+            } catch (releaseError) {
+              console.error('Error releasing custom sound:', releaseError);
+            }
+
+            if (currentlyPlaying === sound.id) {
+              setCurrentlyPlaying(null);
+            }
+          });
+        });
+      }
+
+      // Add vibration if enabled
+      if (vibrationEnabled) {
+        try {
+          Vibration.vibrate(200);
+          console.log('Vibration triggered');
+        } catch (vibrationError) {
+          console.error('Vibration failed:', vibrationError);
+          // Vibration permission might be missing, but don't crash the app
+        }
+      }
+    } catch (error) {
+      console.error('Error playing sound:', error);
+      setCurrentlyPlaying(null);
+    }
+  };
+
+  const renderItem = ({ item }: { item: SoundItem }) => {
+    const isSelected = item.id === (selectedSoundId || 'default');
+    const isCustom = 'isCustom' in item && item.isCustom;
+    const isSystem = 'isSystem' in item && item.isSystem;
+
+    // Get the display name based on sound type
+    const getDisplayName = () => {
+      if (isSystem) return (item as SystemSound).title;
+      if (isCustom) return (item as CustomRingtone).name;
+      return (item as PredefinedSound).name;
+    };
+
+    // Get the subtitle based on sound type
+    const getSubtitle = () => {
+      if (isSystem) return 'System Sound';
+      if (isCustom) return 'Custom Sound';
+      return 'App Sound';
+    };
+
+    return (
+      <TouchableOpacity
+        style={[styles.optionRow, isSelected && styles.optionRowSelected]}
+        onPress={() => handleSelectSound(item)}
+        activeOpacity={0.8}
+      >
+        <View style={styles.optionContent}>
+          <View style={styles.optionInfo}>
+            <Text style={styles.optionTitle}>{getDisplayName()}</Text>
+            <Text style={styles.optionSubtitle}>{getSubtitle()}</Text>
+          </View>
+
+          <View style={styles.optionActions}>
+            {/* Play/Stop Button */}
+            <TouchableOpacity
+              style={styles.playButton}
+              onPress={() => {
+                if (currentlyPlaying === item.id) {
+                  stopSound(item.id);
+                } else {
+                  playSound(item);
+                }
+              }}
+              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+            >
+              <Icon
+                name={currentlyPlaying === item.id ? 'stop' : 'play-arrow'}
+                size={20}
+                color={theme.colors.primary}
+              />
+            </TouchableOpacity>
+
+            {isCustom && (
+              <TouchableOpacity
+                style={styles.deleteButton}
+                onPress={() => handleDeleteCustomSound(item as CustomRingtone)}
+                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+              >
+                <Icon name="delete" size={20} color={theme.colors.error} />
+              </TouchableOpacity>
+            )}
+
+            <Text
+              style={[
+                styles.badge,
+                isSelected ? styles.badgeSelected : styles.badgeUnselected,
+              ]}
+            >
+              {isSelected ? 'Selected' : 'Select'}
+            </Text>
+          </View>
+        </View>
+      </TouchableOpacity>
+    );
+  };
+
+  if (loading) {
+    return (
+      <View style={styles.container}>
+        <Header
+          title="Notification Settings"
+          onNotificationPress={() => navigation.navigate('Inbox')}
+        />
+        <View style={styles.loadingContainer}>
+          <ActivityIndicator size="large" color={theme.colors.primary} />
+          <Text style={styles.loadingText}>Loading sounds...</Text>
+        </View>
+      </View>
+    );
+  }
+
+  return (
+    <View style={styles.container}>
+      <Header
+        title="Notification Settings"
+        onNotificationPress={() => navigation.navigate('Inbox')}
+      />
+      <View style={styles.content}>
+        <Text style={styles.sectionTitle}>Notification Sound</Text>
+
+        <FlatList
+          data={availableSounds}
+          keyExtractor={item => item.id}
+          renderItem={renderItem}
+          ItemSeparatorComponent={() => <View style={styles.separator} />}
+          showsVerticalScrollIndicator={false}
+        />
+
+        <TouchableOpacity
+          style={[
+            styles.addCustomButton,
+            addingCustomSound && styles.addCustomButtonDisabled,
+          ]}
+          onPress={handleAddCustomSound}
+          disabled={addingCustomSound}
+          activeOpacity={0.8}
+        >
+          {addingCustomSound ? (
+            <ActivityIndicator size="small" color={theme.colors.surface} />
+          ) : (
+            <Icon name="add" size={20} color={theme.colors.surface} />
+          )}
+          <Text style={styles.addCustomButtonText}>
+            {addingCustomSound ? 'Adding...' : 'Add Custom Sound'}
+          </Text>
+        </TouchableOpacity>
+
+        {/* Vibration Settings */}
+        <View style={styles.vibrationSection}>
+          <Text style={styles.sectionTitle}>Vibration</Text>
+          <View style={styles.vibrationRow}>
+            <View style={styles.vibrationInfo}>
+              <Text style={styles.vibrationTitle}>Enable Vibration</Text>
+              <Text style={styles.vibrationSubtitle}>
+                Vibrate when notifications arrive
+              </Text>
+            </View>
+            <Switch
+              value={vibrationEnabled}
+              onValueChange={handleVibrationToggle}
+              trackColor={{
+                false: theme.colors.border,
+                true: theme.colors.primary + '40',
+              }}
+              thumbColor={
+                vibrationEnabled
+                  ? theme.colors.primary
+                  : theme.colors.textSecondary
+              }
+            />
+          </View>
+        </View>
+
+        <Text style={styles.helpText}>
+          Your selected sound will be used when notifications arrive. You can
+          add custom sounds from your device or choose from the predefined
+          options. Tap the play button to preview sounds.
+        </Text>
+      </View>
+    </View>
+  );
+};
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: theme.colors.background,
+  },
+  loadingContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: theme.spacing.xl,
+  },
+  loadingText: {
+    marginTop: theme.spacing.md,
+    fontSize: theme.typography.fontSizes.md,
+    color: theme.colors.textSecondary,
+  },
+  content: {
+    flex: 1,
+    padding: theme.spacing.md,
+  },
+  sectionTitle: {
+    fontSize: theme.typography.fontSizes.lg,
+    fontWeight: theme.typography.fontWeights.bold,
+    color: theme.colors.text,
+    marginBottom: theme.spacing.sm,
+  },
+  optionRow: {
+    backgroundColor: theme.colors.surface,
+    padding: theme.spacing.md,
+    borderRadius: theme.borderRadius.md,
+  },
+  optionRowSelected: {
+    borderWidth: 2,
+    borderColor: theme.colors.primary,
+  },
+  optionContent: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  optionInfo: {
+    flex: 1,
+  },
+  optionTitle: {
+    fontSize: theme.typography.fontSizes.md,
+    color: theme.colors.text,
+    fontWeight: theme.typography.fontWeights.medium,
+  },
+  optionSubtitle: {
+    fontSize: theme.typography.fontSizes.sm,
+    color: theme.colors.textSecondary,
+    marginTop: 2,
+  },
+  optionActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  deleteButton: {
+    padding: theme.spacing.xs,
+    marginRight: theme.spacing.sm,
+  },
+  badge: {
+    paddingHorizontal: theme.spacing.sm,
+    paddingVertical: theme.spacing.xs,
+    borderRadius: theme.borderRadius.sm,
+    fontSize: theme.typography.fontSizes.sm,
+    fontWeight: theme.typography.fontWeights.medium,
+  },
+  badgeSelected: {
+    backgroundColor: theme.colors.primary,
+    color: theme.colors.surface,
+  },
+  badgeUnselected: {
+    backgroundColor: theme.colors.background,
+    color: theme.colors.textSecondary,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+  },
+  addCustomButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: theme.colors.primary,
+    padding: theme.spacing.md,
+    borderRadius: theme.borderRadius.md,
+    marginTop: theme.spacing.md,
+  },
+  addCustomButtonDisabled: {
+    backgroundColor: theme.colors.textSecondary,
+  },
+  addCustomButtonText: {
+    color: theme.colors.surface,
+    fontSize: theme.typography.fontSizes.md,
+    fontWeight: theme.typography.fontWeights.medium,
+    marginLeft: theme.spacing.sm,
+  },
+  separator: {
+    height: theme.spacing.sm,
+  },
+  helpText: {
+    marginTop: theme.spacing.md,
+    color: theme.colors.textSecondary,
+    fontSize: theme.typography.fontSizes.sm,
+    lineHeight: 20,
+  },
+  playButton: {
+    padding: theme.spacing.xs,
+    marginRight: theme.spacing.sm,
+    borderRadius: theme.borderRadius.sm,
+    backgroundColor: theme.colors.primary + '20',
+  },
+  vibrationSection: {
+    marginTop: theme.spacing.lg,
+    paddingTop: theme.spacing.md,
+    borderTopWidth: 1,
+    borderTopColor: theme.colors.border,
+  },
+  vibrationRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: theme.spacing.md,
+    paddingHorizontal: theme.spacing.md,
+    backgroundColor: theme.colors.surface,
+    borderRadius: theme.borderRadius.md,
+    marginTop: theme.spacing.sm,
+  },
+  vibrationInfo: {
+    flex: 1,
+  },
+  vibrationTitle: {
+    fontSize: theme.typography.fontSizes.md,
+    fontWeight: theme.typography.fontWeights.medium,
+    color: theme.colors.text,
+  },
+  vibrationSubtitle: {
+    fontSize: theme.typography.fontSizes.sm,
+    color: theme.colors.textSecondary,
+    marginTop: theme.spacing.xs,
+  },
+});
+
+export default NotificationSettingsScreen;

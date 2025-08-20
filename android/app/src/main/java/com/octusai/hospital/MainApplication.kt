@@ -1,4 +1,4 @@
-package com.usermanagementapp
+package com.octusai.hospital
 
 import android.app.Application
 import com.facebook.react.PackageList
