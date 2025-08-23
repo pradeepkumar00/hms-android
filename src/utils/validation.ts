@@ -1,6 +1,25 @@
 import { VALIDATION_RULES } from '../constants/app';
 import { ValidationError } from '../types';
 
+export const validateEmail = (email: string): ValidationError | null => {
+  if (!email || email.trim() === '') {
+    return {
+      field: 'email',
+      message: 'Email is required',
+    };
+  }
+
+  const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  if (!emailPattern.test(email.trim())) {
+    return {
+      field: 'email',
+      message: 'Please enter a valid email address',
+    };
+  }
+
+  return null;
+};
+
 export const validateMobileNumber = (
   mobileNumber: string,
 ): ValidationError | null => {
@@ -96,13 +115,13 @@ export const validateDescription = (
 };
 
 export const validateLoginForm = (
-  mobileNumber: string,
+  email: string,
   password: string,
 ): ValidationError[] => {
   const errors: ValidationError[] = [];
 
-  const mobileError = validateMobileNumber(mobileNumber);
-  if (mobileError) errors.push(mobileError);
+  const emailError = validateEmail(email);
+  if (emailError) errors.push(emailError);
 
   const passwordError = validatePassword(password);
   if (passwordError) errors.push(passwordError);
@@ -153,8 +172,8 @@ export const validateTimeline = (timeline: Date): ValidationError | null => {
 export const validateTaskForm = (
   title: string,
   description: string,
-  department: string,
-  assignedTo: string,
+  department: string | null,
+  assignedTo: string | null,
   timeline: Date,
 ): ValidationError[] => {
   const errors: ValidationError[] = [];
@@ -165,19 +184,8 @@ export const validateTaskForm = (
   const descriptionError = validateDescription(description);
   if (descriptionError) errors.push(descriptionError);
 
-  if (!department || department.trim() === '') {
-    errors.push({
-      field: 'department',
-      message: 'Please select a department',
-    });
-  }
-
-  if (!assignedTo || assignedTo.trim() === '') {
-    errors.push({
-      field: 'assignedTo',
-      message: 'Please select an employee to assign the task',
-    });
-  }
+  // Department and assignedTo are now optional - tasks can be created without assignment
+  // No validation errors for empty department or assignedTo
 
   const timelineError = validateTimeline(timeline);
   if (timelineError) errors.push(timelineError);

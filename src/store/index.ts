@@ -30,6 +30,7 @@ export const useAppSelector: TypedUseSelectorHook<AppRootState> = useSelector;
 // Auth Selectors
 export const selectAuth = (state: AppRootState) => state.auth;
 export const selectCurrentUser = (state: AppRootState) => state.auth.user;
+export const selectAuthToken = (state: AppRootState) => state.auth.token;
 export const selectIsAuthenticated = (state: AppRootState) =>
   state.auth.isAuthenticated;
 export const selectAuthLoading = (state: AppRootState) => state.auth.isLoading;
@@ -39,13 +40,21 @@ export const selectAuthError = (state: AppRootState) => state.auth.error;
 export const selectTasks = (state: AppRootState) => state.tasks;
 export const selectInboxNotifications = (state: AppRootState) =>
   state.tasks.inbox;
-export const selectAssignedTasks = (state: AppRootState) =>
-  state.tasks.assignedTasks;
-export const selectCreatedTasks = (state: AppRootState) =>
-  state.tasks.createdTasks;
+export const selectAssignedToMeTasks = (state: AppRootState) =>
+  state.tasks.assignedToMe;
+export const selectAssignedByMeTasks = (state: AppRootState) =>
+  state.tasks.assignedByMe;
+export const selectCurrentTask = (state: AppRootState) =>
+  state.tasks.currentTask;
 export const selectTasksLoading = (state: AppRootState) =>
   state.tasks.isLoading;
 export const selectTasksError = (state: AppRootState) => state.tasks.error;
+
+// Legacy selectors for backward compatibility
+export const selectAssignedTasks = (state: AppRootState) =>
+  state.tasks.assignedToMe;
+export const selectCreatedTasks = (state: AppRootState) =>
+  state.tasks.assignedByMe;
 
 // Computed selectors with memoization
 export const selectUnreadNotifications = createSelector(

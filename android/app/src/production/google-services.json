@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "1091141926537",
+    "project_id": "docpad-6ff99",
+    "storage_bucket": "docpad-6ff99.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1091141926537:android:45a7b467afd38509d81058",
+        "android_client_info": {
+          "package_name": "com.octusai.hospital"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyB_iqmwSdkqy7mGoFqGe-cftgc32YlnSkE"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

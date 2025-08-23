@@ -14,6 +14,7 @@ import MainScreen from '../screens/MainScreen';
 import InboxScreen from '../screens/InboxScreen';
 import TaskDetailsScreen from '../screens/TaskDetailsScreen';
 import AssignedTasksScreen from '../screens/AssignedTasksScreen';
+import HistoryScreen from '../screens/HistoryScreen';
 import CreateTaskScreen from '../screens/CreateTaskScreen';
 import NotificationSettingsScreen from '../screens/NotificationSettingsScreen';
 
@@ -86,6 +87,13 @@ const AppNavigator: React.FC = () => {
             <Stack.Screen
               name="AssignedTasks"
               component={AssignedTasksScreen}
+              options={{
+                gestureEnabled: true,
+              }}
+            />
+            <Stack.Screen
+              name="History"
+              component={HistoryScreen}
               options={{
                 gestureEnabled: true,
               }}

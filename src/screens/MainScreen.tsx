@@ -76,6 +76,11 @@ const MainScreen: React.FC<MainScreenProps> = ({ navigation }) => {
     navigation.navigate('AssignedTasks');
   };
 
+  const handleHistoryPress = () => {
+    // Navigate to History screen (Phase 6C - NEW!)
+    navigation.navigate('History');
+  };
+
   const handleNotificationSettingsPress = () => {
     navigation.navigate('NotificationSettings');
   };
@@ -193,6 +198,22 @@ const MainScreen: React.FC<MainScreenProps> = ({ navigation }) => {
 
           <TouchableOpacity
             style={styles.actionButton}
+            onPress={handleHistoryPress}
+            activeOpacity={0.8}
+          >
+            <View style={styles.actionButtonContent}>
+              <Icon name="history" size={20} color={theme.colors.primary} />
+              <Text style={styles.actionButtonTitle}>History</Text>
+              <Icon
+                name="chevron-right"
+                size={18}
+                color={theme.colors.textSecondary}
+              />
+            </View>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={styles.actionButton}
             onPress={handleNotificationSettingsPress}
             activeOpacity={0.8}
           >
@@ -217,7 +238,7 @@ const MainScreen: React.FC<MainScreenProps> = ({ navigation }) => {
         {/* Compact Phase Indicator */}
         <View style={styles.phaseIndicator}>
           <Text style={styles.phaseText}>
-            Phase 3 Complete ✅ | Task Management Ready 🎯
+            Phase 6C Active 🔄 | Advanced Features Ready 🚀
           </Text>
         </View>
       </ScrollView>

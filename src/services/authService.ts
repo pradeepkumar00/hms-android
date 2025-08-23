@@ -9,8 +9,8 @@ const MOCK_USERS: User[] = [
     name: 'Johnathan Michael Richardson',
     email: 'johnathan.richardson@company.com',
     mobileNumber: '+919876543210',
-    department: 'HR',
-    role: 'Senior Human Resources Manager',
+    type: 'admin',
+    role: 'Editor',
     createdAt: '2024-01-15T10:00:00Z',
   },
   {
@@ -18,8 +18,8 @@ const MOCK_USERS: User[] = [
     name: 'Elizabeth Catherine Thompson',
     email: 'elizabeth.thompson@company.com',
     mobileNumber: '+919876543211',
-    department: 'Admin',
-    role: 'Chief Administrative Officer',
+    type: 'doctor',
+    role: 'Viewer',
     createdAt: '2024-01-16T10:00:00Z',
   },
   {
@@ -27,17 +27,17 @@ const MOCK_USERS: User[] = [
     name: 'Christopher David Anderson',
     email: 'christopher.anderson@company.com',
     mobileNumber: '+919876543212',
-    department: 'Supervisor',
-    role: 'Senior Team Lead & Operations Manager',
+    type: 'tvscreen',
+    role: 'Viewer',
     createdAt: '2024-01-17T10:00:00Z',
   },
 ];
 
 // Mock credentials for testing
 const MOCK_CREDENTIALS = [
-  { mobileNumber: '+919876543210', password: 'password123' },
-  { mobileNumber: '+919876543211', password: 'password123' },
-  { mobileNumber: '+919876543212', password: 'password123' },
+  { email: 'johnathan.richardson@company.com', password: 'password123' },
+  { email: 'elizabeth.thompson@company.com', password: 'password123' },
+  { email: 'christopher.anderson@company.com', password: 'password123' },
 ];
 
 class AuthService {
@@ -48,11 +48,6 @@ class AuthService {
     await sleep(1000);
 
     // Validate input
-    const mobileError = validateMobileNumber(credentials.mobileNumber);
-    if (mobileError) {
-      throw new Error(mobileError.message);
-    }
-
     const passwordError = validatePassword(credentials.password);
     if (passwordError) {
       throw new Error(passwordError.message);
@@ -60,17 +55,15 @@ class AuthService {
 
     // Mock authentication logic
     const mockCredential = MOCK_CREDENTIALS.find(
-      cred => cred.mobileNumber === credentials.mobileNumber,
+      cred => cred.email === credentials.email,
     );
 
     if (!mockCredential || mockCredential.password !== credentials.password) {
-      throw new Error('Invalid mobile number or password');
+      throw new Error('Invalid email or password');
     }
 
     // Find user data
-    const user = MOCK_USERS.find(
-      u => u.mobileNumber === credentials.mobileNumber,
-    );
+    const user = MOCK_USERS.find(u => u.email === credentials.email);
 
     if (!user) {
       throw new Error('User not found');
@@ -151,26 +144,112 @@ class AuthService {
   // Method to get all mock credentials (for testing)
   getMockCredentials() {
     return MOCK_CREDENTIALS.map(cred => ({
-      mobileNumber: cred.mobileNumber,
+      email: cred.email,
       // Don't return actual password for security
       hasPassword: !!cred.password,
     }));
   }
 
-  // Method to get users by department
-  async getUsersByDepartment(
-    department: 'HR' | 'Admin' | 'Supervisor',
-  ): Promise<User[]> {
+  // Method to get users by department (type)
+  async getUsersByDepartment(department: string): Promise<User[]> {
     // Add artificial delay to simulate API call
     await sleep(300);
 
     // In real implementation: const response = await api.get(`/users/department/${department}`);
-    // For now, return mock data filtered by department
-    const departmentUsers = MOCK_USERS.filter(
-      user => user.department === department,
-    );
+    // For now, return mock data filtered by type
+    const departmentUsers = MOCK_USERS.filter(user => user.type === department);
 
     return departmentUsers;
+  }
+
+  // Method to get all users with departments from real API
+  async getAllUsersWithDepartments(
+    token: string,
+  ): Promise<{ departments: string[]; users: User[] }> {
+    try {
+      // Make real API call to /api/users with authorization
+      const response = await fetch('https://app.octusai.com/api/users', {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      const data = await response.json();
+      console.log('API Response:', data);
+
+      let users: User[] = [];
+      let departments: string[] = [];
+
+      // Parse the API response
+      if (data.users && Array.isArray(data.users)) {
+        // Map API users to our User interface
+        users = data.users.map((apiUser: any) => ({
+          id: apiUser._id,
+          _id: apiUser._id,
+          name: apiUser.name,
+          email: apiUser.email,
+          mobileNumber: apiUser.mobileNo || apiUser.mobileNumber,
+          mobileNo: apiUser.mobileNo,
+          type: apiUser.type,
+          role: apiUser.role,
+          createdAt: apiUser.createdAt,
+          tenantId: apiUser.tenantId,
+          status: apiUser.status,
+        }));
+
+        // Extract unique departments (types) from users
+        departments = [
+          ...new Set(users.map(user => user.type).filter(Boolean)),
+        ];
+      }
+
+      // If no departments found, fall back to default departments
+      if (departments.length === 0) {
+        departments = ['admin', 'doctor', 'tvscreen'];
+      }
+
+      return { departments, users };
+    } catch (error) {
+      console.error('Failed to fetch users from API:', error);
+
+      // Fallback to mock data if API fails
+      const departments = ['admin', 'doctor', 'tvscreen'];
+      const users = MOCK_USERS;
+
+      return { departments, users };
+    }
+  }
+
+  // Method to create a task using real API
+  async createTask(taskData: any, token: string): Promise<any> {
+    try {
+      const response = await fetch('http://192.168.31.123:3000/api/task', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(taskData),
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      const data = await response.json();
+      console.log('Task creation response:', data);
+
+      return data;
+    } catch (error) {
+      console.error('Failed to create task via API:', error);
+      throw error;
+    }
   }
 }
 

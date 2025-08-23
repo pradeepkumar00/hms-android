@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import {
   View,
   Text,
@@ -8,6 +8,8 @@ import {
   Alert,
   RefreshControl,
   ActivityIndicator,
+  Platform,
+  Vibration,
 } from 'react-native';
 import {
   useAppDispatch,
@@ -17,6 +19,7 @@ import {
   selectTasksLoading,
   selectTasksError,
   selectUnreadNotifications,
+  selectNotificationSoundId,
 } from '../store';
 import {
   fetchInboxNotifications,
@@ -26,9 +29,11 @@ import {
 } from '../store/taskSlice';
 import { theme } from '../constants/theme';
 import { Header } from '../components';
-import { APP_CONFIG } from '../constants/app';
+import { APP_CONFIG, STORAGE_KEYS } from '../constants/app';
 import { Notification } from '../types';
 import Icon from 'react-native-vector-icons/MaterialIcons';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { ringtoneService } from '../services/ringtoneService';
 
 interface InboxScreenProps {
   navigation: any;
@@ -41,11 +46,32 @@ const InboxScreen: React.FC<InboxScreenProps> = ({ navigation }) => {
   const unreadNotifications = useAppSelector(selectUnreadNotifications);
   const isLoading = useAppSelector(selectTasksLoading);
   const error = useAppSelector(selectTasksError);
+  const selectedSoundId = useAppSelector(selectNotificationSoundId);
 
   const [refreshing, setRefreshing] = useState(false);
+  const previousNotificationCountRef = useRef<number>(0);
+  const [vibrationEnabled, setVibrationEnabled] = useState(true);
 
   // Check if user is HR for interaction permissions
   const isHRUser = user?.department === 'HR';
+
+  // Load vibration settings
+  useEffect(() => {
+    const loadVibrationSettings = async () => {
+      try {
+        const storedVibration = await AsyncStorage.getItem(
+          STORAGE_KEYS.VIBRATION_ENABLED,
+        );
+        if (storedVibration !== null) {
+          setVibrationEnabled(JSON.parse(storedVibration));
+        }
+      } catch (error) {
+        console.error('Error loading vibration settings:', error);
+      }
+    };
+
+    loadVibrationSettings();
+  }, []);
 
   // Fetch notifications on screen load
   useEffect(() => {
@@ -53,6 +79,20 @@ const InboxScreen: React.FC<InboxScreenProps> = ({ navigation }) => {
       dispatch(fetchInboxNotifications(user.id));
     }
   }, [dispatch, user?.id]);
+
+  // Detect new notifications and play sound
+  useEffect(() => {
+    const currentCount = notifications.length;
+    const previousCount = previousNotificationCountRef.current;
+
+    // If we have new notifications (more than before and not initial load)
+    if (currentCount > previousCount && previousCount > 0) {
+      playNotificationSound();
+    }
+
+    // Update the ref with current count
+    previousNotificationCountRef.current = currentCount;
+  }, [notifications.length]);
 
   // Clear error when component unmounts
   useEffect(() => {
@@ -76,6 +116,28 @@ const InboxScreen: React.FC<InboxScreenProps> = ({ navigation }) => {
       }
     }
   }, [dispatch, user?.id]);
+
+  // Play notification sound when new notifications arrive
+  const playNotificationSound = useCallback(async () => {
+    try {
+      console.log('Playing notification sound for new notification');
+
+      // Trigger vibration if enabled
+      if (vibrationEnabled && Platform.OS === 'android') {
+        Vibration.vibrate(500); // 500ms vibration
+      }
+
+      // Play the selected notification sound
+      if (selectedSoundId) {
+        await ringtoneService.playNotificationSound(selectedSoundId);
+      } else {
+        // Play default system notification sound if no custom sound selected
+        await ringtoneService.playDefaultNotificationSound();
+      }
+    } catch (error) {
+      console.error('Error playing notification sound:', error);
+    }
+  }, [selectedSoundId, vibrationEnabled]);
 
   // Handle notification press - only for HR users
   const handleNotificationPress = useCallback(
@@ -163,10 +225,36 @@ const InboxScreen: React.FC<InboxScreenProps> = ({ navigation }) => {
                 styles.notificationMessage,
                 isUnread && styles.unreadMessage,
               ]}
-              numberOfLines={3}
+              numberOfLines={2}
             >
-              {item.message}
+              {item.taskTitle ? `Task: ${item.taskTitle}` : item.message}
             </Text>
+
+            {/* Assignment details */}
+            {item.assignedToName && item.createdByName && (
+              <View style={styles.assignmentDetails}>
+                <Text style={styles.assignmentText}>
+                  <Text style={styles.assignmentLabel}>Assigned to: </Text>
+                  <Text style={styles.assignmentValue}>
+                    {item.assignedToName}
+                  </Text>
+                </Text>
+                <Text style={styles.assignmentText}>
+                  <Text style={styles.assignmentLabel}>By: </Text>
+                  <Text style={styles.assignmentValue}>
+                    {item.createdByName}
+                  </Text>
+                </Text>
+                {item.department && (
+                  <Text style={styles.assignmentText}>
+                    <Text style={styles.assignmentLabel}>Department: </Text>
+                    <Text style={styles.assignmentValue}>
+                      {item.department}
+                    </Text>
+                  </Text>
+                )}
+              </View>
+            )}
 
             {isHRUser && (
               <View style={styles.notificationFooter}>
@@ -480,6 +568,26 @@ const styles = StyleSheet.create({
     fontSize: theme.typography.fontSizes.sm,
     fontWeight: theme.typography.fontWeights.semiBold,
     color: theme.colors.surface,
+  },
+  // Assignment details styles
+  assignmentDetails: {
+    marginTop: theme.spacing.sm,
+    paddingTop: theme.spacing.xs,
+    borderTopWidth: 1,
+    borderTopColor: theme.colors.border + '30',
+  },
+  assignmentText: {
+    fontSize: theme.typography.fontSizes.xs,
+    lineHeight: 16,
+    marginBottom: 2,
+  },
+  assignmentLabel: {
+    color: theme.colors.textSecondary,
+    fontWeight: theme.typography.fontWeights.medium,
+  },
+  assignmentValue: {
+    color: theme.colors.text,
+    fontWeight: theme.typography.fontWeights.normal,
   },
 });
 

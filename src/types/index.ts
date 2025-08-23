@@ -1,24 +1,29 @@
 // Authentication Types
 export interface User {
   id: string;
+  _id?: string; // API uses _id
   name: string;
   email: string;
-  mobileNumber: string;
-  department: 'HR' | 'Admin' | 'Supervisor';
-  role: string;
+  mobileNumber?: string;
+  mobileNo?: string; // API uses mobileNo
+  department: 'HR' | 'Admin' | 'Supervisor'; // Internal department mapping
+  role: string; // Editor, Viewer, etc. - from API
   createdAt: string;
+  tenantId: string; // Required for topic subscriptions
+  status?: string;
 }
 
 export interface AuthState {
   user: User | null;
   token: string | null;
   isAuthenticated: boolean;
+  tokenValidated: boolean;
   isLoading: boolean;
   error: string | null;
 }
 
 export interface LoginCredentials {
-  mobileNumber: string;
+  email: string;
   password: string;
 }
 
@@ -34,20 +39,42 @@ export interface Task {
   description: string;
   fileUrl?: string;
   createdBy: string;
-  assignedTo: string;
-  department: 'HR' | 'Admin' | 'Supervisor';
-  status: 'Assigned' | 'In Progress' | 'Completed';
+  assignedTo?: string | null; // Nullable for new tasks
+  department?: string;
+  status: 'new' | 'assigned' | 'in_progress' | 'completed';
   createdAt: string;
   updatedAt: string;
   dueDate?: string;
+  assignmentHistory?: AssignmentHistory[];
+}
+
+// Task Creation API Request
+export interface TaskCreateRequest {
+  title: string;
+  description: string;
+  status: 'new' | 'assigned' | 'progress' | 'completed';
+  assignedTo?: string; // ObjectId
+  asssinedToName?: string; // Note: typo in API field name
+  assignedBy: string; // ObjectId
+  assignedByName: string;
+  dueDate: string; // ISO date string
+}
+
+export interface AssignmentHistory {
+  assignedFrom?: string;
+  assignedTo: string;
+  assignedBy: string;
+  assignmentDate: string;
+  statusChange: string;
 }
 
 export interface TaskState {
-  assignedTasks: Task[];
-  createdTasks: Task[];
+  assignedToMe: Task[]; // Tasks assigned TO current user
+  assignedByMe: Task[]; // Tasks assigned BY current user (History)
   inbox: Notification[];
   isLoading: boolean;
   error: string | null;
+  currentTask: Task | null; // Single task for details view
 }
 
 // Notification Types
@@ -58,6 +85,13 @@ export interface Notification {
   message: string;
   readStatus: boolean;
   createdAt: string;
+  // Enhanced fields for better notification display
+  taskTitle?: string;
+  assignedTo?: string;
+  assignedToName?: string;
+  createdBy?: string;
+  createdByName?: string;
+  department?: string;
 }
 
 // Navigation Types
@@ -66,7 +100,8 @@ export type RootStackParamList = {
   Main: undefined;
   TaskDetails: { taskId: string; readonly?: boolean };
   Inbox: undefined;
-  AssignedTasks: undefined;
+  AssignedTasks: undefined; // Tasks assigned TO current user
+  History: undefined; // Tasks assigned BY current user
   CreateTask: undefined;
   NotificationSettings: undefined;
 };

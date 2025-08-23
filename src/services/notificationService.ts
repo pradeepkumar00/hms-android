@@ -4,6 +4,10 @@ import messaging, {
 import { Platform, PermissionsAndroid, Alert } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { STORAGE_KEYS } from '../constants/app';
+import {
+  requestNotificationsPermission,
+  checkNotificationPermissions,
+} from '../utils/permissionUtils';
 
 export interface NotificationPayload {
   title: string;
@@ -17,7 +21,7 @@ export interface NotificationPayload {
 }
 
 class NotificationService {
-  private fcmToken: string | null = null;
+  private currentTenantId: string | null = null;
   private isInitialized: boolean = false;
 
   /**
@@ -40,14 +44,8 @@ class NotificationService {
         // Request notification permissions
         await this.requestPermissions();
 
-        // Get FCM token
-        await this.getFCMToken();
-
         // Setup message handlers
         this.setupMessageHandlers();
-
-        // Setup token refresh handler
-        this.setupTokenRefreshHandler();
 
         this.isInitialized = true;
         console.log('✅ Firebase Cloud Messaging initialized successfully');
@@ -67,45 +65,23 @@ class NotificationService {
   }
 
   /**
-   * Request notification permissions
+   * Request notification permissions with proper handling and settings redirection
    */
   async requestPermissions(): Promise<boolean> {
     try {
-      if (Platform.OS === 'android') {
-        // For Android 13+ (API level 33), request POST_NOTIFICATIONS permission
-        if (Platform.Version >= 33) {
-          const granted = await PermissionsAndroid.request(
-            PermissionsAndroid.PERMISSIONS.POST_NOTIFICATIONS,
-            {
-              title: 'Notification Permission',
-              message:
-                'This app needs notification permission to send you task updates.',
-              buttonNeutral: 'Ask Me Later',
-              buttonNegative: 'Cancel',
-              buttonPositive: 'OK',
-            },
-          );
+      console.log('🔔 Requesting notification permissions...');
 
-          if (granted !== PermissionsAndroid.RESULTS.GRANTED) {
-            console.log('❌ Notification permission denied');
-            return false;
-          }
-        }
-      } else {
-        // iOS permission request
-        const authStatus = await messaging().requestPermission();
-        const enabled =
-          authStatus === messaging.AuthorizationStatus.AUTHORIZED ||
-          authStatus === messaging.AuthorizationStatus.PROVISIONAL;
+      // Use the new permission utility with proper error handling
+      const granted = await requestNotificationsPermission(
+        () => {
+          console.log('✅ Notification permissions granted');
+        },
+        () => {
+          console.log('❌ Notification permissions denied/blocked');
+        },
+      );
 
-        if (!enabled) {
-          console.log('❌ iOS notification permission denied');
-          return false;
-        }
-      }
-
-      console.log('✅ Notification permissions granted');
-      return true;
+      return granted;
     } catch (error) {
       console.error('❌ Error requesting notification permissions:', error);
       return false;
@@ -113,20 +89,80 @@ class NotificationService {
   }
 
   /**
-   * Get FCM token for this device
+   * Check current notification permission status
    */
-  async getFCMToken(): Promise<string | null> {
+  async checkPermissionStatus(): Promise<{
+    hasPermission: boolean;
+    status: string;
+  }> {
+    return await checkNotificationPermissions();
+  }
+
+  /**
+   * Subscribe to topic using tenantId for FCM notifications
+   */
+  async subscribeToTopic(tenantId: string): Promise<boolean> {
     try {
-      const token = await messaging().getToken();
-      this.fcmToken = token;
+      console.log(`🔔 Subscribing to topic: ${tenantId}`);
 
-      // Store token locally
-      await AsyncStorage.setItem(STORAGE_KEYS.FCM_TOKEN, token);
+      // Unsubscribe from previous topic if exists
+      if (this.currentTenantId && this.currentTenantId !== tenantId) {
+        await this.unsubscribeFromTopic(this.currentTenantId);
+      }
 
-      console.log('📱 FCM Token:', token);
-      return token;
+      // Subscribe to new topic
+      await messaging().subscribeToTopic(tenantId);
+      this.currentTenantId = tenantId;
+
+      // Store current tenantId locally
+      await AsyncStorage.setItem(STORAGE_KEYS.CURRENT_TENANT_ID, tenantId);
+
+      console.log(`✅ Successfully subscribed to topic: ${tenantId}`);
+      return true;
     } catch (error) {
-      console.error('❌ Error getting FCM token:', error);
+      console.error(`❌ Error subscribing to topic ${tenantId}:`, error);
+      return false;
+    }
+  }
+
+  /**
+   * Unsubscribe from topic
+   */
+  async unsubscribeFromTopic(tenantId: string): Promise<boolean> {
+    try {
+      console.log(`🔔 Unsubscribing from topic: ${tenantId}`);
+
+      await messaging().unsubscribeFromTopic(tenantId);
+
+      if (this.currentTenantId === tenantId) {
+        this.currentTenantId = null;
+        await AsyncStorage.removeItem(STORAGE_KEYS.CURRENT_TENANT_ID);
+      }
+
+      console.log(`✅ Successfully unsubscribed from topic: ${tenantId}`);
+      return true;
+    } catch (error) {
+      console.error(`❌ Error unsubscribing from topic ${tenantId}:`, error);
+      return false;
+    }
+  }
+
+  /**
+   * Get current subscribed tenantId
+   */
+  async getCurrentTenantId(): Promise<string | null> {
+    try {
+      if (this.currentTenantId) {
+        return this.currentTenantId;
+      }
+
+      const storedTenantId = await AsyncStorage.getItem(
+        STORAGE_KEYS.CURRENT_TENANT_ID,
+      );
+      this.currentTenantId = storedTenantId;
+      return storedTenantId;
+    } catch (error) {
+      console.error('❌ Error getting current tenantId:', error);
       return null;
     }
   }
@@ -168,20 +204,6 @@ class NotificationService {
           this.handleNotificationTap(remoteMessage);
         }
       });
-  }
-
-  /**
-   * Setup token refresh handler
-   */
-  private setupTokenRefreshHandler(): void {
-    messaging().onTokenRefresh(async (token: string) => {
-      console.log('🔄 FCM Token refreshed:', token);
-      this.fcmToken = token;
-      await AsyncStorage.setItem(STORAGE_KEYS.FCM_TOKEN, token);
-
-      // TODO: Send updated token to backend
-      // await this.sendTokenToBackend(token);
-    });
   }
 
   /**
@@ -301,33 +323,15 @@ class NotificationService {
   }
 
   /**
-   * Get stored FCM token
+   * Clean up legacy FCM token data
    */
-  async getStoredToken(): Promise<string | null> {
+  async cleanupLegacyTokenData(): Promise<void> {
     try {
-      if (this.fcmToken) {
-        return this.fcmToken;
-      }
-
-      const storedToken = await AsyncStorage.getItem(STORAGE_KEYS.FCM_TOKEN);
-      this.fcmToken = storedToken;
-      return storedToken;
+      console.log('🧹 Cleaning up legacy FCM token data...');
+      await AsyncStorage.removeItem(STORAGE_KEYS.FCM_TOKEN);
+      console.log('✅ Legacy FCM token data cleaned up');
     } catch (error) {
-      console.error('❌ Error getting stored token:', error);
-      return null;
-    }
-  }
-
-  /**
-   * Send token to backend (placeholder for future implementation)
-   */
-  async sendTokenToBackend(token: string): Promise<void> {
-    try {
-      console.log('📤 Sending token to backend:', token);
-      // TODO: Implement API call to send token to backend
-      // await api.post('/notifications/register-token', { token });
-    } catch (error) {
-      console.error('❌ Error sending token to backend:', error);
+      console.error('❌ Error cleaning up legacy FCM token data:', error);
     }
   }
 

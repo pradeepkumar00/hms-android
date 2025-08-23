@@ -10,15 +10,16 @@ import {
   TextInput,
   Keyboard,
 } from 'react-native';
+import { useFocusEffect } from '@react-navigation/native';
 import {
   useAppDispatch,
   useAppSelector,
   selectCurrentUser,
-  selectCreatedTasks,
+  selectAssignedToMeTasks,
   selectTasksLoading,
   selectTasksError,
 } from '../store';
-import { fetchCreatedTasks, clearTaskError } from '../store/taskSlice';
+import { fetchAssignedToMeTasks, clearTaskError } from '../store/taskSlice';
 import { theme } from '../constants/theme';
 import { Header } from '../components';
 import { Task } from '../types';
@@ -36,7 +37,7 @@ const AssignedTasksScreen: React.FC<AssignedTasksScreenProps> = ({
 }) => {
   const dispatch = useAppDispatch();
   const user = useAppSelector(selectCurrentUser);
-  const createdTasks = useAppSelector(selectCreatedTasks);
+  const assignedToMeTasks = useAppSelector(selectAssignedToMeTasks);
   const isLoading = useAppSelector(selectTasksLoading);
   const error = useAppSelector(selectTasksError);
 
@@ -46,12 +47,21 @@ const AssignedTasksScreen: React.FC<AssignedTasksScreenProps> = ({
   const [filterBy, setFilterBy] = useState<FilterOption>('all');
   const [showFilters, setShowFilters] = useState(false);
 
-  // Fetch created tasks on screen load
+  // Fetch assigned to me tasks on screen load and when screen comes into focus
   useEffect(() => {
     if (user?.id) {
-      dispatch(fetchCreatedTasks(user.id));
+      dispatch(fetchAssignedToMeTasks(user.id));
     }
   }, [dispatch, user?.id]);
+
+  // Refresh data when screen comes into focus (e.g., after creating a task)
+  useFocusEffect(
+    useCallback(() => {
+      if (user?.id) {
+        dispatch(fetchAssignedToMeTasks(user.id));
+      }
+    }, [dispatch, user?.id]),
+  );
 
   // Clear error when component unmounts
   useEffect(() => {
@@ -67,7 +77,7 @@ const AssignedTasksScreen: React.FC<AssignedTasksScreenProps> = ({
     if (user?.id) {
       setRefreshing(true);
       try {
-        await dispatch(fetchCreatedTasks(user.id)).unwrap();
+        await dispatch(fetchAssignedToMeTasks(user.id)).unwrap();
       } catch (error) {
         console.error('Refresh error:', error);
       } finally {
@@ -78,7 +88,7 @@ const AssignedTasksScreen: React.FC<AssignedTasksScreenProps> = ({
 
   // Filter and sort tasks
   const filteredAndSortedTasks = useMemo(() => {
-    let filtered = [...createdTasks];
+    let filtered = [...assignedToMeTasks];
 
     // Apply search filter
     if (searchQuery.trim()) {
@@ -128,11 +138,11 @@ const AssignedTasksScreen: React.FC<AssignedTasksScreenProps> = ({
     });
 
     return filtered;
-  }, [createdTasks, searchQuery, sortBy, filterBy]);
+  }, [assignedToMeTasks, searchQuery, sortBy, filterBy]);
 
   // Get task status statistics
   const taskStats = useMemo(() => {
-    return createdTasks.reduce(
+    return assignedToMeTasks.reduce(
       (stats, task) => {
         stats.total += 1;
         switch (task.status) {
@@ -150,7 +160,7 @@ const AssignedTasksScreen: React.FC<AssignedTasksScreenProps> = ({
       },
       { total: 0, assigned: 0, inProgress: 0, completed: 0 },
     );
-  }, [createdTasks]);
+  }, [assignedToMeTasks]);
 
   // Handle task press - navigate to editable task details (assigned tasks can be updated)
   const handleTaskPress = useCallback(

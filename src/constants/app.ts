@@ -33,9 +33,10 @@ export const DEPARTMENTS = [
 ] as const;
 
 export const TASK_STATUSES = [
-  { label: 'Assigned', value: 'Assigned' },
-  { label: 'In Progress', value: 'In Progress' },
-  { label: 'Completed', value: 'Completed' },
+  { label: 'New', value: 'new' },
+  { label: 'Assigned', value: 'assigned' },
+  { label: 'In Progress', value: 'in_progress' },
+  { label: 'Completed', value: 'completed' },
 ] as const;
 
 export const VALIDATION_RULES = {
@@ -74,7 +75,8 @@ export const STORAGE_KEYS = {
   NOTIFICATION_SOUND: '@notification_sound',
   CUSTOM_RINGTONE_URI: '@custom_ringtone_uri',
   CUSTOM_RINGTONES: '@custom_ringtones',
-  FCM_TOKEN: '@fcm_token',
+  FCM_TOKEN: '@fcm_token', // Legacy - kept for cleanup purposes
+  CURRENT_TENANT_ID: '@current_tenant_id', // For topic subscription
   LOCAL_NOTIFICATIONS: '@local_notifications',
   VIBRATION_ENABLED: '@vibration_enabled',
 } as const;

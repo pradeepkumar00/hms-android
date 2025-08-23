@@ -24,6 +24,7 @@ import {
   useAppDispatch,
   useAppSelector,
   selectCurrentUser,
+  selectAuthToken,
   selectTasksLoading,
   selectTasksError,
 } from '../store';
@@ -46,10 +47,8 @@ interface CreateTaskScreenProps {
 const CreateTaskScreen: React.FC<CreateTaskScreenProps> = ({ navigation }) => {
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
-  const [department, setDepartment] = useState<
-    'HR' | 'Admin' | 'Supervisor' | ''
-  >('');
-  const [assignedTo, setAssignedTo] = useState('');
+  const [department, setDepartment] = useState<string>('');
+  const [assignedTo, setAssignedTo] = useState<string>('');
   const [selectedFile, setSelectedFile] = useState<{
     name: string;
     uri: string;
@@ -62,15 +61,21 @@ const CreateTaskScreen: React.FC<CreateTaskScreenProps> = ({ navigation }) => {
   const [departmentUsers, setDepartmentUsers] = useState<User[]>([]);
   const [loadingUsers, setLoadingUsers] = useState(false);
   const [errors, setErrors] = useState<{ [key: string]: string }>({});
+  const [availableDepartments, setAvailableDepartments] = useState<string[]>([
+    'admin',
+    'doctor',
+    'tvscreen',
+  ]);
+  const [allUsers, setAllUsers] = useState<User[]>([]);
 
   // Dropdown states
   const [departmentOpen, setDepartmentOpen] = useState(false);
   const [employeeOpen, setEmployeeOpen] = useState(false);
   const [departmentItems, setDepartmentItems] = useState([
     { label: 'HR', value: 'HR' },
-    { label: 'Admin', value: 'Admin' },
     { label: 'Supervisor', value: 'Supervisor' },
-  ]);
+    { label: 'Manager', value: 'Manager' },
+  ] as any);
   const [employeeItems, setEmployeeItems] = useState<
     { label: string; value: string }[]
   >([]);
@@ -81,6 +86,7 @@ const CreateTaskScreen: React.FC<CreateTaskScreenProps> = ({ navigation }) => {
 
   const dispatch = useAppDispatch();
   const currentUser = useAppSelector(selectCurrentUser);
+  const authToken = useAppSelector(selectAuthToken);
   const isLoading = useAppSelector(selectTasksLoading);
   const error = useAppSelector(selectTasksError);
 
@@ -88,6 +94,43 @@ const CreateTaskScreen: React.FC<CreateTaskScreenProps> = ({ navigation }) => {
     // Clear errors when component mounts
     dispatch(clearTaskError());
   }, [dispatch]);
+
+  // Fetch departments and users from real API
+  useEffect(() => {
+    const fetchDepartmentsAndUsers = async () => {
+      if (!authToken) return;
+
+      try {
+        const { departments, users } =
+          await authService.getAllUsersWithDepartments(authToken);
+
+        setAvailableDepartments(departments);
+        setAllUsers(users);
+
+        // Update department dropdown items with proper labels
+        const departmentOptions = departments.map(dept => ({
+          label: dept.charAt(0).toUpperCase() + dept.slice(1), // Capitalize first letter
+          value: dept,
+        }));
+        setDepartmentItems(departmentOptions as any);
+
+        console.log('Departments fetched:', departments);
+        console.log('Users fetched:', users.length);
+      } catch (error) {
+        console.error('Failed to fetch departments and users:', error);
+        // Fallback to default departments if API fails
+        const defaultDepartments = ['admin', 'doctor', 'tvscreen'];
+        setAvailableDepartments(defaultDepartments);
+        setDepartmentItems([
+          { label: 'HR', value: 'HR' },
+          { label: 'Supervisor', value: 'Supervisor' },
+          { label: 'Manager', value: 'Manager' },
+        ] as any);
+      }
+    };
+
+    fetchDepartmentsAndUsers();
+  }, [authToken]);
 
   useEffect(() => {
     // Show error alert if task creation fails
@@ -98,40 +141,29 @@ const CreateTaskScreen: React.FC<CreateTaskScreenProps> = ({ navigation }) => {
     }
   }, [error, dispatch]);
 
-  // Fetch users when department changes
+  // Filter users when department changes
   useEffect(() => {
-    const fetchDepartmentUsers = async () => {
-      if (department) {
-        setLoadingUsers(true);
-        try {
-          const users = await authService.getUsersByDepartment(department);
-          setDepartmentUsers(users);
-          setAssignedTo(''); // Reset employee selection
+    if (department && allUsers.length > 0) {
+      setLoadingUsers(true);
 
-          // Update employee dropdown items
-          const items = users.map(user => ({
-            label: `${user.name} (${user.role})`,
-            value: user.id,
-          }));
-          setEmployeeItems(items);
-        } catch (error) {
-          console.error('Failed to fetch department users:', error);
-          Alert.alert(
-            'Error',
-            'Failed to fetch employees for selected department',
-          );
-        } finally {
-          setLoadingUsers(false);
-        }
-      } else {
-        setDepartmentUsers([]);
-        setEmployeeItems([]);
-        setAssignedTo('');
-      }
-    };
+      // Filter users by department from already fetched data
+      const departmentUsers = allUsers.filter(user => user.type === department);
+      setDepartmentUsers(departmentUsers);
+      setAssignedTo(''); // Reset employee selection
 
-    fetchDepartmentUsers();
-  }, [department]);
+      // Update employee dropdown items
+      const items = departmentUsers.map(user => ({
+        label: `${user.name} (${user.role})`,
+        value: user.id,
+      }));
+      setEmployeeItems(items);
+      setLoadingUsers(false);
+    } else {
+      setDepartmentUsers([]);
+      setEmployeeItems([]);
+      setAssignedTo('');
+    }
+  }, [department, allUsers]);
 
   const clearFieldError = useCallback(
     (field: string) => {
@@ -152,14 +184,12 @@ const CreateTaskScreen: React.FC<CreateTaskScreenProps> = ({ navigation }) => {
     clearFieldError('description');
   };
 
-  const handleDepartmentChange = (
-    value: 'HR' | 'Admin' | 'Supervisor' | '',
-  ) => {
+  const handleDepartmentChange = (value: string | null) => {
     setDepartment(value);
     clearFieldError('department');
   };
 
-  const handleAssignedToChange = (userId: string) => {
+  const handleAssignedToChange = (userId: string | null) => {
     setAssignedTo(userId);
     clearFieldError('assignedTo');
   };
@@ -235,14 +265,19 @@ const CreateTaskScreen: React.FC<CreateTaskScreenProps> = ({ navigation }) => {
     // Clear previous errors
     setErrors({});
 
-    // Validate form
+    // Validate form - department is optional, but if selected, user must be selected
     const validationErrors = validateTaskForm(
       title,
       description,
-      department,
-      assignedTo,
+      department, // Department validation handled separately
+      assignedTo, // Assignee validation handled separately
       timeline,
     );
+
+    // Additional validation for department/assignee relationship
+    // Note: Tasks can now be created without assignment (unassigned state)
+    // Only validate assignee if department is selected AND user wants to assign
+    // Users can select department but leave assignee empty to create unassigned task
 
     if (validationErrors.length > 0) {
       const errorMap: { [key: string]: string } = {};
@@ -258,17 +293,27 @@ const CreateTaskScreen: React.FC<CreateTaskScreenProps> = ({ navigation }) => {
       return;
     }
 
+    // Find the assigned user's name
+    let assignedToName = '';
+    if (assignedTo && allUsers.length > 0) {
+      const assignedUser = allUsers.find(user => user.id === assignedTo);
+      assignedToName = assignedUser ? assignedUser.name : '';
+    }
+
     // Prepare task data
     const taskData = {
       title: title.trim(),
       description: description.trim(),
-      department: department as 'HR' | 'Admin' | 'Supervisor',
-      assignedTo,
+      department: department,
+      assignedTo: assignedTo || null,
+      assignedToName: assignedToName,
       createdBy: currentUser.id,
+      createdByName: currentUser.name,
       fileUrl: selectedFile
         ? `https://example.com/files/${Date.now()}_${selectedFile.name}`
         : undefined,
       timeline: timeline.toISOString(),
+      tenantId: currentUser.tenantId,
     };
 
     try {
@@ -289,8 +334,7 @@ const CreateTaskScreen: React.FC<CreateTaskScreenProps> = ({ navigation }) => {
     }
   };
 
-  const isFormValid =
-    title.trim() && description.trim() && department && assignedTo;
+  const isFormValid = title.trim() && description.trim() && timeline;
 
   return (
     <SafeAreaView style={styles.container}>
@@ -349,18 +393,18 @@ const CreateTaskScreen: React.FC<CreateTaskScreenProps> = ({ navigation }) => {
                 numberOfLines={4}
                 textAlignVertical="top"
                 editable={!isLoading}
-                returnKeyType="next"
-                onSubmitEditing={() => dueDateRef.current?.focus()}
-                blurOnSubmit={false}
+                returnKeyType="done"
+                onSubmitEditing={() => {}}
+                blurOnSubmit={true}
               />
               {errors.description ? (
                 <Text style={styles.errorText}>{errors.description}</Text>
               ) : null}
             </View>
 
-            {/* Department Selection */}
+            {/* Department Selection - Optional */}
             <View style={[styles.inputContainer, { zIndex: 3000 }]}>
-              <Text style={styles.label}>Assign to Department *</Text>
+              <Text style={styles.label}>Assign to Department (Optional)</Text>
               <DropDownPicker
                 open={departmentOpen}
                 value={department}
@@ -386,51 +430,53 @@ const CreateTaskScreen: React.FC<CreateTaskScreenProps> = ({ navigation }) => {
               ) : null}
             </View>
 
-            {/* Employee Selection */}
-            <View style={[styles.inputContainer, { zIndex: 2000 }]}>
-              <Text style={styles.label}>Assign to Employee *</Text>
-              {loadingUsers ? (
-                <View style={styles.loadingContainer}>
-                  <ActivityIndicator
-                    size="small"
-                    color={theme.colors.primary}
+            {/* Employee Selection - Show if department is selected */}
+            {department && (
+              <View style={[styles.inputContainer, { zIndex: 2000 }]}>
+                <Text style={styles.label}>Assign to Employee (Optional)</Text>
+                {loadingUsers ? (
+                  <View style={styles.loadingContainer}>
+                    <ActivityIndicator
+                      size="small"
+                      color={theme.colors.primary}
+                    />
+                    <Text style={styles.loadingText}>Loading employees...</Text>
+                  </View>
+                ) : (
+                  <DropDownPicker
+                    open={employeeOpen}
+                    value={assignedTo}
+                    items={employeeItems}
+                    setOpen={setEmployeeOpen}
+                    setValue={setAssignedTo}
+                    setItems={setEmployeeItems}
+                    onChangeValue={handleAssignedToChange}
+                    placeholder={
+                      !department
+                        ? 'Select department first...'
+                        : employeeItems.length === 0
+                        ? 'No employees found'
+                        : 'Select employee...'
+                    }
+                    disabled={
+                      isLoading || !department || employeeItems.length === 0
+                    }
+                    style={[
+                      styles.dropdown,
+                      errors.assignedTo ? styles.inputError : null,
+                    ]}
+                    dropDownContainerStyle={styles.dropdownContainer}
+                    textStyle={styles.dropdownText}
+                    placeholderStyle={styles.dropdownPlaceholder}
+                    zIndex={2000}
+                    zIndexInverse={2000}
                   />
-                  <Text style={styles.loadingText}>Loading employees...</Text>
-                </View>
-              ) : (
-                <DropDownPicker
-                  open={employeeOpen}
-                  value={assignedTo}
-                  items={employeeItems}
-                  setOpen={setEmployeeOpen}
-                  setValue={setAssignedTo}
-                  setItems={setEmployeeItems}
-                  onChangeValue={handleAssignedToChange}
-                  placeholder={
-                    !department
-                      ? 'Select department first...'
-                      : employeeItems.length === 0
-                      ? 'No employees found'
-                      : 'Select employee...'
-                  }
-                  disabled={
-                    isLoading || !department || employeeItems.length === 0
-                  }
-                  style={[
-                    styles.dropdown,
-                    errors.assignedTo ? styles.inputError : null,
-                  ]}
-                  dropDownContainerStyle={styles.dropdownContainer}
-                  textStyle={styles.dropdownText}
-                  placeholderStyle={styles.dropdownPlaceholder}
-                  zIndex={2000}
-                  zIndexInverse={2000}
-                />
-              )}
-              {errors.assignedTo ? (
-                <Text style={styles.errorText}>{errors.assignedTo}</Text>
-              ) : null}
-            </View>
+                )}
+                {errors.assignedTo ? (
+                  <Text style={styles.errorText}>{errors.assignedTo}</Text>
+                ) : null}
+              </View>
+            )}
 
             {/* Timeline Field (Required) */}
             <View style={styles.inputContainer}>
@@ -719,7 +765,7 @@ const styles = StyleSheet.create({
     backgroundColor: theme.colors.surface,
     borderRadius: theme.borderRadius.md,
     elevation: 5,
-    shadowColor: theme.colors.shadow,
+    shadowColor: theme.colors.text,
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.1,
     shadowRadius: 4,

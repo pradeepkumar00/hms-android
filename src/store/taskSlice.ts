@@ -1,7 +1,8 @@
 import { createSlice, createAsyncThunk, PayloadAction } from '@reduxjs/toolkit';
-import { TaskState, Task, Notification } from '../types';
+import { TaskState, Task, Notification, TaskCreateRequest } from '../types';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { STORAGE_KEYS } from '../constants/app';
+import authService from '../services/authService';
 
 // Mock data for development (will be replaced with real API calls)
 const MOCK_NOTIFICATIONS: Notification[] = [
@@ -143,7 +144,7 @@ const MOCK_TASKS: Task[] = [
     createdBy: '2', // Admin user
     assignedTo: '1', // HR user
     department: 'HR',
-    status: 'Assigned',
+    status: 'assigned',
     createdAt: '2024-12-19T10:30:00Z',
     updatedAt: '2024-12-19T10:30:00Z',
     dueDate: '2024-12-25T17:00:00Z',
@@ -157,7 +158,7 @@ const MOCK_TASKS: Task[] = [
     createdBy: '3', // Supervisor
     assignedTo: '1', // HR user
     department: 'HR',
-    status: 'In Progress',
+    status: 'in_progress',
     createdAt: '2024-12-19T09:15:00Z',
     updatedAt: '2024-12-19T14:20:00Z',
     dueDate: '2024-12-22T12:00:00Z',
@@ -171,7 +172,7 @@ const MOCK_TASKS: Task[] = [
     createdBy: '2', // Admin user
     assignedTo: '1', // HR user
     department: 'HR',
-    status: 'Assigned',
+    status: 'assigned',
     createdAt: '2024-12-19T08:00:00Z',
     updatedAt: '2024-12-19T08:00:00Z',
     dueDate: '2024-12-30T17:00:00Z',
@@ -185,7 +186,7 @@ const MOCK_TASKS: Task[] = [
     createdBy: '3', // Supervisor
     assignedTo: '1', // HR user
     department: 'HR',
-    status: 'Completed',
+    status: 'completed',
     createdAt: '2024-12-17T14:20:00Z',
     updatedAt: '2024-12-19T09:45:00Z',
     dueDate: '2024-12-20T17:00:00Z',
@@ -199,7 +200,7 @@ const MOCK_TASKS: Task[] = [
     createdBy: '2', // Admin user
     assignedTo: '1', // HR user
     department: 'HR',
-    status: 'In Progress',
+    status: 'in_progress',
     createdAt: '2024-12-18T11:30:00Z',
     updatedAt: '2024-12-19T13:15:00Z',
     dueDate: '2024-12-28T17:00:00Z',
@@ -215,7 +216,7 @@ const MOCK_TASKS: Task[] = [
     createdBy: '3', // Supervisor
     assignedTo: '2', // Admin user
     department: 'Admin',
-    status: 'Assigned',
+    status: 'assigned',
     createdAt: '2024-12-19T11:45:00Z',
     updatedAt: '2024-12-19T11:45:00Z',
     dueDate: '2024-12-21T09:00:00Z',
@@ -229,7 +230,7 @@ const MOCK_TASKS: Task[] = [
     createdBy: '1', // HR user
     assignedTo: '2', // Admin user
     department: 'Admin',
-    status: 'In Progress',
+    status: 'in_progress',
     createdAt: '2024-12-19T09:30:00Z',
     updatedAt: '2024-12-19T15:20:00Z',
     dueDate: '2024-12-24T17:00:00Z',
@@ -243,7 +244,7 @@ const MOCK_TASKS: Task[] = [
     createdBy: '3', // Supervisor
     assignedTo: '2', // Admin user
     department: 'Admin',
-    status: 'Completed',
+    status: 'completed',
     createdAt: '2024-12-18T15:20:00Z',
     updatedAt: '2024-12-19T10:30:00Z',
     dueDate: '2024-12-19T17:00:00Z',
@@ -257,7 +258,7 @@ const MOCK_TASKS: Task[] = [
     createdBy: '1', // HR user
     assignedTo: '2', // Admin user
     department: 'Admin',
-    status: 'Assigned',
+    status: 'assigned',
     createdAt: '2024-12-18T13:10:00Z',
     updatedAt: '2024-12-18T13:10:00Z',
     dueDate: '2024-12-23T17:00:00Z',
@@ -271,7 +272,7 @@ const MOCK_TASKS: Task[] = [
     createdBy: '3', // Supervisor
     assignedTo: '2', // Admin user
     department: 'Admin',
-    status: 'Completed',
+    status: 'completed',
     createdAt: '2024-12-17T10:30:00Z',
     updatedAt: '2024-12-18T16:45:00Z',
     dueDate: '2024-12-18T17:00:00Z',
@@ -287,7 +288,7 @@ const MOCK_TASKS: Task[] = [
     createdBy: '1', // HR user
     assignedTo: '3', // Supervisor
     department: 'Supervisor',
-    status: 'Assigned',
+    status: 'assigned',
     createdAt: '2024-12-19T12:15:00Z',
     updatedAt: '2024-12-19T12:15:00Z',
     dueDate: '2024-12-26T17:00:00Z',
@@ -301,7 +302,7 @@ const MOCK_TASKS: Task[] = [
     createdBy: '2', // Admin user
     assignedTo: '3', // Supervisor
     department: 'Supervisor',
-    status: 'In Progress',
+    status: 'in_progress',
     createdAt: '2024-12-19T10:45:00Z',
     updatedAt: '2024-12-19T14:30:00Z',
     dueDate: '2024-12-20T17:00:00Z',
@@ -315,7 +316,7 @@ const MOCK_TASKS: Task[] = [
     createdBy: '1', // HR user
     assignedTo: '3', // Supervisor
     department: 'Supervisor',
-    status: 'Completed',
+    status: 'completed',
     createdAt: '2024-12-18T14:30:00Z',
     updatedAt: '2024-12-19T11:20:00Z',
     dueDate: '2024-12-19T17:00:00Z',
@@ -329,7 +330,7 @@ const MOCK_TASKS: Task[] = [
     createdBy: '2', // Admin user
     assignedTo: '3', // Supervisor
     department: 'Supervisor',
-    status: 'Assigned',
+    status: 'assigned',
     createdAt: '2024-12-18T11:20:00Z',
     updatedAt: '2024-12-18T11:20:00Z',
     dueDate: '2024-12-22T17:00:00Z',
@@ -343,7 +344,7 @@ const MOCK_TASKS: Task[] = [
     createdBy: '1', // HR user
     assignedTo: '3', // Supervisor
     department: 'Supervisor',
-    status: 'Completed',
+    status: 'completed',
     createdAt: '2024-12-17T16:45:00Z',
     updatedAt: '2024-12-18T14:20:00Z',
     dueDate: '2024-12-18T17:00:00Z',
@@ -360,7 +361,7 @@ const MOCK_TASKS: Task[] = [
     createdBy: '1', // HR user (creator)
     assignedTo: '2', // Admin user (assignee)
     department: 'Admin',
-    status: 'In Progress',
+    status: 'in_progress',
     createdAt: '2024-12-18T16:45:00Z',
     updatedAt: '2024-12-19T11:30:00Z',
     dueDate: '2024-12-30T17:00:00Z',
@@ -374,7 +375,7 @@ const MOCK_TASKS: Task[] = [
     createdBy: '1', // HR user (creator)
     assignedTo: '3', // Supervisor (assignee)
     department: 'Supervisor',
-    status: 'Assigned',
+    status: 'assigned',
     createdAt: '2024-12-19T09:20:00Z',
     updatedAt: '2024-12-19T09:20:00Z',
     dueDate: '2024-12-27T17:00:00Z',
@@ -389,7 +390,7 @@ const MOCK_TASKS: Task[] = [
     createdBy: '2', // Admin user (creator)
     assignedTo: '1', // HR user (assignee)
     department: 'HR',
-    status: 'Assigned',
+    status: 'assigned',
     createdAt: '2024-12-18T14:15:00Z',
     updatedAt: '2024-12-18T14:15:00Z',
     dueDate: '2024-12-29T17:00:00Z',
@@ -402,7 +403,7 @@ const MOCK_TASKS: Task[] = [
     createdBy: '2', // Admin user (creator)
     assignedTo: '3', // Supervisor (assignee)
     department: 'Supervisor',
-    status: 'In Progress',
+    status: 'in_progress',
     createdAt: '2024-12-17T11:30:00Z',
     updatedAt: '2024-12-19T10:15:00Z',
     dueDate: '2024-12-25T17:00:00Z',
@@ -417,7 +418,7 @@ const MOCK_TASKS: Task[] = [
     createdBy: '3', // Supervisor (creator)
     assignedTo: '1', // HR user (assignee)
     department: 'HR',
-    status: 'Completed',
+    status: 'completed',
     createdAt: '2024-12-16T13:45:00Z',
     updatedAt: '2024-12-18T15:30:00Z',
     dueDate: '2024-12-19T17:00:00Z',
@@ -430,7 +431,7 @@ const MOCK_TASKS: Task[] = [
     createdBy: '3', // Supervisor (creator)
     assignedTo: '2', // Admin user (assignee)
     department: 'Admin',
-    status: 'Assigned',
+    status: 'assigned',
     createdAt: '2024-12-18T10:20:00Z',
     updatedAt: '2024-12-18T10:20:00Z',
     dueDate: '2024-12-26T17:00:00Z',
@@ -438,11 +439,12 @@ const MOCK_TASKS: Task[] = [
 ];
 
 const initialState: TaskState = {
-  assignedTasks: [], // Tasks assigned TO current user
-  createdTasks: [], // Tasks created BY current user
+  assignedToMe: [], // Tasks assigned TO current user
+  assignedByMe: [], // Tasks assigned BY current user (History)
   inbox: [], // Notifications for current user
   isLoading: false,
   error: null,
+  currentTask: null, // Single task for details view
 };
 
 // Async thunks for API calls
@@ -450,9 +452,6 @@ export const fetchInboxNotifications = createAsyncThunk(
   'tasks/fetchInboxNotifications',
   async (userId: string, { rejectWithValue }) => {
     try {
-      // Simulate API call delay
-      await new Promise<void>(resolve => setTimeout(resolve, 800));
-
       // In real implementation: const response = await api.get(`/notifications/inbox/${userId}`);
       // For now, return mock data filtered by user
       const userNotifications = MOCK_NOTIFICATIONS.filter(
@@ -491,20 +490,20 @@ export const fetchInboxNotifications = createAsyncThunk(
   },
 );
 
-export const fetchAssignedTasks = createAsyncThunk(
-  'tasks/fetchAssignedTasks',
+export const fetchAssignedToMeTasks = createAsyncThunk(
+  'tasks/fetchAssignedToMeTasks',
   async (userId: string, { rejectWithValue }) => {
     try {
       // Simulate API call delay
       await new Promise<void>(resolve => setTimeout(resolve, 600));
 
-      // In real implementation: const response = await api.get(`/tasks/assigned/${userId}`);
+      // In real implementation: const response = await api.get(`/tasks/assigned-to-me/${userId}`);
       // For now, return mock data filtered by assignedTo
-      const assignedTasks = MOCK_TASKS.filter(
+      const assignedToMeTasks = MOCK_TASKS.filter(
         task => task.assignedTo === userId,
       );
 
-      return assignedTasks;
+      return assignedToMeTasks;
     } catch (error) {
       const message =
         error instanceof Error
@@ -515,23 +514,139 @@ export const fetchAssignedTasks = createAsyncThunk(
   },
 );
 
-export const fetchCreatedTasks = createAsyncThunk(
-  'tasks/fetchCreatedTasks',
-  async (userId: string, { rejectWithValue }) => {
+export const fetchAssignedByMeTasks = createAsyncThunk(
+  'tasks/fetchAssignedByMeTasks',
+  async (userId: string, { rejectWithValue, getState }) => {
     try {
       // Simulate API call delay
       await new Promise<void>(resolve => setTimeout(resolve, 500));
 
-      // In real implementation: const response = await api.get(`/tasks/created/${userId}`);
-      // For now, return mock data filtered by createdBy
-      const createdTasks = MOCK_TASKS.filter(task => task.createdBy === userId);
+      // In real implementation: const response = await api.get(`/tasks/assigned-by-me/${userId}`);
+      // For now, return mock data filtered by createdBy (tasks assigned BY current user)
+      const mockAssignedByMeTasks = MOCK_TASKS.filter(
+        task => task.createdBy === userId,
+      );
 
-      return createdTasks;
+      // Get current state to preserve locally created tasks
+      const state = getState() as any;
+      const currentAssignedByMeTasks = state.tasks.assignedByMe || [];
+
+      // Find locally created tasks (tasks with IDs starting with 'task_' and timestamp)
+      const locallyAssignedByMeTasks = currentAssignedByMeTasks.filter(
+        (task: Task) =>
+          task.id.startsWith('task_') &&
+          task.createdBy === userId &&
+          !mockAssignedByMeTasks.find(mockTask => mockTask.id === task.id),
+      );
+
+      // Merge mock tasks with locally created tasks, with locally created tasks first (newest first)
+      const allAssignedByMeTasks = [
+        ...locallyAssignedByMeTasks,
+        ...mockAssignedByMeTasks,
+      ];
+
+      return allAssignedByMeTasks;
     } catch (error) {
       const message =
         error instanceof Error
           ? error.message
-          : 'Failed to fetch created tasks';
+          : 'Failed to fetch assigned by me tasks';
+      return rejectWithValue(message);
+    }
+  },
+);
+
+export const reassignTask = createAsyncThunk(
+  'tasks/reassignTask',
+  async (
+    {
+      taskId,
+      newAssigneeId,
+      newDepartment,
+      reassignedBy,
+    }: {
+      taskId: string;
+      newAssigneeId: string | null; // null for new tasks
+      newDepartment?: string | null;
+      reassignedBy: string;
+    },
+    { rejectWithValue, getState },
+  ) => {
+    try {
+      // Simulate API call delay
+      await new Promise<void>(resolve => setTimeout(resolve, 800));
+
+      // In real implementation:
+      // const response = await api.put(`/tasks/${taskId}/reassign`, { assignedTo: newAssigneeId, department: newDepartment });
+
+      const state = getState() as any;
+      const allTasks = [
+        ...state.tasks.assignedToMe,
+        ...state.tasks.assignedByMe,
+      ];
+      const taskToReassign = allTasks.find(task => task.id === taskId);
+
+      if (!taskToReassign) {
+        throw new Error('Task not found');
+      }
+
+      // Create updated task with new assignment
+      const updatedTask: Task = {
+        ...taskToReassign,
+        assignedTo: newAssigneeId,
+        department: newDepartment || taskToReassign.department,
+        status: newAssigneeId ? 'assigned' : 'new',
+        updatedAt: new Date().toISOString(),
+        assignmentHistory: [
+          ...(taskToReassign.assignmentHistory || []),
+          {
+            assignedFrom: taskToReassign.assignedTo || 'new',
+            assignedTo: newAssigneeId || 'new',
+            assignedBy: reassignedBy,
+            assignmentDate: new Date().toISOString(),
+            statusChange: `Reassigned from ${
+              taskToReassign.assignedTo || 'new'
+            } to ${newAssigneeId || 'new'}`,
+          },
+        ],
+      };
+
+      return { taskId, updatedTask };
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : 'Failed to reassign task';
+      return rejectWithValue(message);
+    }
+  },
+);
+
+export const fetchTaskById = createAsyncThunk(
+  'tasks/fetchTaskById',
+  async (taskId: string, { rejectWithValue, getState }) => {
+    try {
+      // Simulate API call delay
+      await new Promise<void>(resolve => setTimeout(resolve, 300));
+
+      // In real implementation: const response = await api.get(`/tasks/${taskId}`);
+
+      // First check if the task exists in current state (locally created tasks)
+      const state = getState() as any;
+      const allTasks = [
+        ...state.tasks.assignedTasks,
+        ...state.tasks.createdTasks,
+        ...MOCK_TASKS,
+      ];
+
+      const task = allTasks.find(t => t.id === taskId);
+
+      if (!task) {
+        return rejectWithValue(`Task with ID ${taskId} not found`);
+      }
+
+      return task;
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : 'Failed to fetch task details';
       return rejectWithValue(message);
     }
   },
@@ -590,56 +705,120 @@ export const createTask = createAsyncThunk(
     taskData: {
       title: string;
       description: string;
-      department: 'HR' | 'Admin' | 'Supervisor';
-      assignedTo: string;
+      department: string;
+      assignedTo: string | null;
+      assignedToName?: string;
       fileUrl?: string;
       timeline: string;
       createdBy: string;
+      createdByName: string;
+      tenantId: string;
     },
     { rejectWithValue, getState },
   ) => {
     try {
-      // Simulate API call delay
-      await new Promise<void>(resolve => setTimeout(resolve, 1000));
+      // Get auth token from state
+      const state = getState() as any;
+      const token = state.auth.token;
+      const AsyncStorage = await import(
+        '@react-native-async-storage/async-storage'
+      );
+      const { STORAGE_KEYS } = await import('../constants/app');
 
-      // In real implementation:
-      // const response = await api.post('/tasks/create', taskData);
+      if (!token) {
+        throw new Error('No authentication token available');
+      }
 
-      // For now, simulate successful task creation
-      const newTask: Task = {
-        id: `task_${Date.now()}`, // Generate unique ID
+      // Prepare API request data according to the curl request format
+      const apiTaskData: any = {
         title: taskData.title,
         description: taskData.description,
+        dueDate: taskData.timeline.split('T')[0], // Format as YYYY-MM-DD
+        status: 'new', // Always set status to 'new' as per requirement
+        tenantId: taskData.tenantId,
+        createdBy: taskData.createdBy,
+        createdByName: taskData.createdByName,
+      };
+
+      // Add assigned user info if provided
+      if (taskData.assignedTo && taskData.assignedToName) {
+        apiTaskData.assignedTo = taskData.assignedTo;
+        apiTaskData.assignedToName = taskData.assignedToName;
+        apiTaskData.status = 'assigned';
+      }
+
+      // Add notification payload for backend to send FCM topic notifications
+      const notificationPayload = {
+        title: taskData.title,
+        assignedToName: taskData.assignedToName || null,
+      };
+      apiTaskData.notificationPayload = notificationPayload;
+
+      // Call real API
+      const response = await authService.createTask(apiTaskData, token);
+      console.log('Task created successfully:', response);
+
+      // Map API response to our Task interface
+      const newTask: Task = {
+        id: response._id || response.id || `task_${Date.now()}`,
+        title: apiTaskData.title,
+        description: apiTaskData.description,
         fileUrl: taskData.fileUrl,
         createdBy: taskData.createdBy,
         assignedTo: taskData.assignedTo,
         department: taskData.department,
-        status: 'Assigned',
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-        dueDate: taskData.timeline, // Using timeline as dueDate for now
+        status:
+          apiTaskData.status === 'progress'
+            ? 'in_progress'
+            : (apiTaskData.status as
+                | 'new'
+                | 'assigned'
+                | 'in_progress'
+                | 'completed'),
+        createdAt: response.createdAt || new Date().toISOString(),
+        updatedAt: response.updatedAt || new Date().toISOString(),
+        dueDate: taskData.timeline,
       };
 
       // Create notifications for all users
-      const state = getState() as any;
+      const currentState = getState() as any;
       const allUsers = [
         { id: '1', name: 'John Doe', department: 'HR' },
         { id: '2', name: 'Jane Smith', department: 'Admin' },
         { id: '3', name: 'Mike Johnson', department: 'Supervisor' },
       ];
 
+      // Find assigned user and creator names
+      const assignedUser = allUsers.find(
+        user => user.id === newTask.assignedTo,
+      );
+      const creatorUser = allUsers.find(user => user.id === newTask.createdBy);
+
       const notifications: Notification[] = allUsers.map(user => ({
         id: `notif_${Date.now()}_${user.id}`,
         userId: user.id,
         taskId: newTask.id,
-        message: `New task created: ${newTask.title}`,
+        message: newTask.assignedTo
+          ? `New task "${newTask.title}" assigned to ${
+              assignedUser?.name || 'Unknown'
+            } by ${creatorUser?.name || 'Unknown'}`
+          : `New unassigned task "${newTask.title}" created by ${
+              creatorUser?.name || 'Unknown'
+            }`,
         readStatus: false,
         createdAt: new Date().toISOString(),
+        // Enhanced fields
+        taskTitle: newTask.title,
+        assignedTo: newTask.assignedTo ?? undefined,
+        assignedToName: assignedUser?.name,
+        createdBy: newTask.createdBy,
+        createdByName: creatorUser?.name,
+        department: newTask.department ?? undefined,
       }));
 
       // Store notifications in AsyncStorage
       try {
-        const existingNotifications = await AsyncStorage.getItem(
+        const existingNotifications = await AsyncStorage.default.getItem(
           STORAGE_KEYS.LOCAL_NOTIFICATIONS,
         );
         const currentNotifications = existingNotifications
@@ -649,7 +828,7 @@ export const createTask = createAsyncThunk(
           ...currentNotifications,
           ...notifications,
         ];
-        await AsyncStorage.setItem(
+        await AsyncStorage.default.setItem(
           STORAGE_KEYS.LOCAL_NOTIFICATIONS,
           JSON.stringify(updatedNotifications),
         );
@@ -678,18 +857,18 @@ const taskSlice = createSlice({
       state,
       action: PayloadAction<{
         taskId: string;
-        status: 'Assigned' | 'In Progress' | 'Completed';
+        status: 'new' | 'assigned' | 'in_progress' | 'completed';
       }>,
     ) => {
       const { taskId, status } = action.payload;
-      // Try to find and update in assigned tasks first
-      let task = state.assignedTasks.find(task => task.id === taskId);
+      // Try to find and update in assigned to me tasks first
+      let task = state.assignedToMe.find(task => task.id === taskId);
       if (task) {
         task.status = status;
         task.updatedAt = new Date().toISOString();
       } else {
-        // If not found in assigned tasks, try created tasks
-        task = state.createdTasks.find(task => task.id === taskId);
+        // If not found in assigned to me tasks, try assigned by me tasks
+        task = state.assignedByMe.find(task => task.id === taskId);
         if (task) {
           task.status = status;
           task.updatedAt = new Date().toISOString();
@@ -727,38 +906,38 @@ const taskSlice = createSlice({
         state.error = action.payload as string;
       })
 
-      // Fetch assigned tasks
-      .addCase(fetchAssignedTasks.pending, state => {
+      // Fetch assigned to me tasks
+      .addCase(fetchAssignedToMeTasks.pending, state => {
         state.isLoading = true;
         state.error = null;
       })
       .addCase(
-        fetchAssignedTasks.fulfilled,
+        fetchAssignedToMeTasks.fulfilled,
         (state, action: PayloadAction<Task[]>) => {
           state.isLoading = false;
-          state.assignedTasks = action.payload;
+          state.assignedToMe = action.payload;
           state.error = null;
         },
       )
-      .addCase(fetchAssignedTasks.rejected, (state, action) => {
+      .addCase(fetchAssignedToMeTasks.rejected, (state, action) => {
         state.isLoading = false;
         state.error = action.payload as string;
       })
 
-      // Fetch created tasks
-      .addCase(fetchCreatedTasks.pending, state => {
+      // Fetch assigned by me tasks
+      .addCase(fetchAssignedByMeTasks.pending, state => {
         state.isLoading = true;
         state.error = null;
       })
       .addCase(
-        fetchCreatedTasks.fulfilled,
+        fetchAssignedByMeTasks.fulfilled,
         (state, action: PayloadAction<Task[]>) => {
           state.isLoading = false;
-          state.createdTasks = action.payload;
+          state.assignedByMe = action.payload;
           state.error = null;
         },
       )
-      .addCase(fetchCreatedTasks.rejected, (state, action) => {
+      .addCase(fetchAssignedByMeTasks.rejected, (state, action) => {
         state.isLoading = false;
         state.error = action.payload as string;
       })
@@ -778,16 +957,24 @@ const taskSlice = createSlice({
           }>,
         ) => {
           const { taskId, status, updatedAt } = action.payload;
-          // Try to find and update in assigned tasks first
-          let task = state.assignedTasks.find(task => task.id === taskId);
+          // Try to find and update in assigned to me tasks first
+          let task = state.assignedToMe.find(task => task.id === taskId);
           if (task) {
-            task.status = status as 'Assigned' | 'In Progress' | 'Completed';
+            task.status = status as
+              | 'new'
+              | 'assigned'
+              | 'in_progress'
+              | 'completed';
             task.updatedAt = updatedAt;
           } else {
-            // If not found in assigned tasks, try created tasks
-            task = state.createdTasks.find(task => task.id === taskId);
+            // If not found in assigned to me tasks, try assigned by me tasks
+            task = state.assignedByMe.find(task => task.id === taskId);
             if (task) {
-              task.status = status as 'Assigned' | 'In Progress' | 'Completed';
+              task.status = status as
+                | 'new'
+                | 'assigned'
+                | 'in_progress'
+                | 'completed';
               task.updatedAt = updatedAt;
             }
           }
@@ -825,14 +1012,76 @@ const taskSlice = createSlice({
           action: PayloadAction<{ task: Task; notifications: Notification[] }>,
         ) => {
           state.isLoading = false;
-          // Add the new task to created tasks (since current user created it)
-          state.createdTasks.push(action.payload.task);
+          // Add the new task to assigned by me tasks (since current user created/assigned it)
+          state.assignedByMe.push(action.payload.task);
           // Note: Notifications are stored in AsyncStorage and will be loaded by fetchInboxNotifications
           // We don't add them directly to the Redux state to avoid the refresh override issue
           state.error = null;
         },
       )
       .addCase(createTask.rejected, (state, action) => {
+        state.isLoading = false;
+        state.error = action.payload as string;
+      })
+
+      // Fetch task by ID
+      .addCase(fetchTaskById.pending, state => {
+        state.isLoading = true;
+        state.error = null;
+      })
+      .addCase(
+        fetchTaskById.fulfilled,
+        (state, action: PayloadAction<Task>) => {
+          state.isLoading = false;
+          state.currentTask = action.payload;
+          state.error = null;
+        },
+      )
+      .addCase(fetchTaskById.rejected, (state, action) => {
+        state.isLoading = false;
+        state.error = action.payload as string;
+        state.currentTask = null;
+      })
+
+      // Reassign task
+      .addCase(reassignTask.pending, state => {
+        state.isLoading = true;
+        state.error = null;
+      })
+      .addCase(
+        reassignTask.fulfilled,
+        (
+          state,
+          action: PayloadAction<{ taskId: string; updatedTask: Task }>,
+        ) => {
+          state.isLoading = false;
+          const { taskId, updatedTask } = action.payload;
+
+          // Update in assigned to me tasks if found
+          const assignedToMeTaskIndex = state.assignedToMe.findIndex(
+            task => task.id === taskId,
+          );
+          if (assignedToMeTaskIndex !== -1) {
+            state.assignedToMe[assignedToMeTaskIndex] = updatedTask;
+          }
+
+          // Update in assigned by me tasks if found
+          const assignedByMeTaskIndex = state.assignedByMe.findIndex(
+            task => task.id === taskId,
+          );
+          if (assignedByMeTaskIndex !== -1) {
+            state.assignedByMe[assignedByMeTaskIndex] = updatedTask;
+          }
+
+          // Update current task if it's the same
+          if (state.currentTask && state.currentTask.id === taskId) {
+            state.currentTask = updatedTask;
+          }
+
+          state.error = null;
+        },
+      )
+      .addCase(reassignTask.rejected, (state, action) => {
         state.isLoading = false;
         state.error = action.payload as string;
       });

@@ -6,12 +6,15 @@ import {
   StyleSheet,
   StatusBar,
   Platform,
+  Image,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Icon from 'react-native-vector-icons/MaterialIcons';
 import { useAppSelector, selectNotificationCount } from '../store';
 import { theme } from '../constants/theme';
 import { APP_CONFIG } from '../constants/app';
+
+import AppLogo from '../../assets/images/app-logo.jpeg';
 
 interface HeaderProps {
   title?: string;
@@ -37,7 +40,9 @@ const Header: React.FC<HeaderProps> = ({
         <View style={styles.container}>
           {/* Left Side - App Logo */}
           <View style={styles.leftSection}>
-            <Icon name="business" size={28} color={theme.colors.surface} />
+            <View style={styles.headerLogoContainer}>
+              <Image source={AppLogo} style={styles.headerLogo} />
+            </View>
           </View>
 
           {/* Center - App Name */}
@@ -141,6 +146,21 @@ const styles = StyleSheet.create({
     color: theme.colors.surface,
     fontSize: 10,
     fontWeight: theme.typography.fontWeights.bold,
+  },
+  headerLogoContainer: {
+    width: 32,
+    height: 32,
+    borderRadius: 8,
+    backgroundColor: theme.colors.surface,
+    justifyContent: 'center',
+    alignItems: 'center',
+    resizeMode: 'cover',
+  },
+  headerLogo: {
+    width: 20,
+    height: 20,
+    borderRadius: 2,
+    resizeMode: 'cover',
   },
 });
 

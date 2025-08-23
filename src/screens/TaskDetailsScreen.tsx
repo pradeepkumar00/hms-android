@@ -16,6 +16,7 @@ import {
   selectCurrentUser,
   selectAssignedTasks,
   selectCreatedTasks,
+  selectCurrentTask,
   selectTasksLoading,
   selectTasksError,
 } from '../store';
@@ -25,6 +26,7 @@ import {
   clearTaskError,
   fetchAssignedTasks,
   fetchCreatedTasks,
+  fetchTaskById,
 } from '../store/taskSlice';
 import { theme } from '../constants/theme';
 import { Header } from '../components';
@@ -55,13 +57,14 @@ const TaskDetailsScreen: React.FC<TaskDetailsScreenProps> = ({
   const user = useAppSelector(selectCurrentUser);
   const assignedTasks = useAppSelector(selectAssignedTasks);
   const createdTasks = useAppSelector(selectCreatedTasks);
+  const currentTask = useAppSelector(selectCurrentTask);
   const isLoading = useAppSelector(selectTasksLoading);
   const error = useAppSelector(selectTasksError);
 
   const [isUpdatingStatus, setIsUpdatingStatus] = useState(false);
   const [task, setTask] = useState<Task | null>(null);
 
-  // Find the task from the store (check both assigned and created tasks)
+  // Find the task from the store or fetch it
   useEffect(() => {
     // First, try to find in assigned tasks
     let foundTask = assignedTasks.find(t => t.id === taskId);
@@ -71,14 +74,25 @@ const TaskDetailsScreen: React.FC<TaskDetailsScreenProps> = ({
       foundTask = createdTasks.find(t => t.id === taskId);
     }
 
+    // If not found in either, check currentTask from redux (might be from fetchTaskById)
+    if (!foundTask && currentTask && currentTask.id === taskId) {
+      foundTask = currentTask;
+    }
+
     if (foundTask) {
       setTask(foundTask);
-    } else if (user?.id) {
-      // If task not found in either store, fetch both assigned and created tasks
-      dispatch(fetchAssignedTasks(user.id));
-      dispatch(fetchCreatedTasks(user.id));
+    } else {
+      // If task not found anywhere, fetch it by ID (works for notifications and deep linking)
+      dispatch(fetchTaskById(taskId));
     }
-  }, [taskId, assignedTasks, createdTasks, dispatch, user?.id]);
+  }, [taskId, assignedTasks, createdTasks, currentTask, dispatch]);
+
+  // Update local task state when currentTask changes
+  useEffect(() => {
+    if (currentTask && currentTask.id === taskId) {
+      setTask(currentTask);
+    }
+  }, [currentTask, taskId]);
 
   // Clear error when component unmounts
   useEffect(() => {
@@ -111,61 +125,153 @@ const TaskDetailsScreen: React.FC<TaskDetailsScreenProps> = ({
     [],
   );
 
-  // Get allowed status transitions based on current status
-  const getAllowedStatusOptions = useCallback((currentStatus: string) => {
-    const allStatuses = TASK_STATUSES.map(status => ({
-      label: status.label,
-      value: status.value,
-    }));
+  // Get allowed status transitions based on current status and user permissions
+  const getAllowedStatusOptions = useCallback(
+    (currentStatus: string) => {
+      const allStatuses = TASK_STATUSES.map(status => ({
+        label: status.label,
+        value: status.value,
+      }));
 
-    // Define allowed transitions
-    switch (currentStatus) {
-      case 'Assigned':
-        // From Assigned, can stay Assigned or move to In Progress
-        return allStatuses.filter(
-          s => s.value === 'Assigned' || s.value === 'In Progress',
-        );
-      case 'In Progress':
-        // From In Progress, can stay In Progress or move to Completed
-        return allStatuses.filter(
-          s => s.value === 'In Progress' || s.value === 'Completed',
-        );
-      case 'Completed':
-        // From Completed, can only stay Completed (no backwards flow)
-        return allStatuses.filter(s => s.value === 'Completed');
-      default:
-        return allStatuses;
-    }
-  }, []);
+      // Check if current user is the task creator
+      const isCreator =
+        task && currentUser && task.createdBy === currentUser.id;
+
+      // Define allowed transitions
+      switch (currentStatus) {
+        case 'new':
+          // From New status, only creator can change to assigned or keep it new
+          if (isCreator) {
+            return allStatuses.filter(
+              s => s.value === 'new' || s.value === 'assigned',
+            );
+          } else {
+            // Non-creators can only view, no status change allowed
+            return allStatuses.filter(s => s.value === 'new');
+          }
+        case 'assigned':
+          // From Assigned, can stay assigned or move to in_progress
+          return allStatuses.filter(
+            s => s.value === 'assigned' || s.value === 'in_progress',
+          );
+        case 'in_progress':
+          // From In Progress, can stay in_progress or move to completed
+          return allStatuses.filter(
+            s => s.value === 'in_progress' || s.value === 'completed',
+          );
+        case 'completed':
+          // From Completed, can only stay completed (no backwards flow)
+          return allStatuses.filter(s => s.value === 'completed');
+        default:
+          return allStatuses.filter(s => s.value === currentStatus);
+      }
+    },
+    [task, currentUser],
+  );
 
   // Calculate due date status
-  const getDueDateStatus = useCallback((dueDate?: string) => {
-    if (!dueDate) return null;
+  const getDueDateStatus = useCallback(
+    (dueDate?: string) => {
+      if (!dueDate || !task) return null;
 
-    const due = new Date(dueDate);
-    const now = new Date();
-    const diffInDays = Math.ceil(
-      (due.getTime() - now.getTime()) / (1000 * 60 * 60 * 24),
-    );
+      const due = new Date(dueDate);
+      const now = new Date();
+      const diffInDays = Math.ceil(
+        (due.getTime() - now.getTime()) / (1000 * 60 * 60 * 24),
+      );
 
-    if (diffInDays < 0) {
-      return {
-        text: `Overdue by ${Math.abs(diffInDays)} days`,
-        color: theme.colors.error,
-      };
-    } else if (diffInDays === 0) {
-      return { text: 'Due today', color: theme.colors.warning };
-    } else if (diffInDays <= 3) {
-      return { text: `Due in ${diffInDays} days`, color: theme.colors.warning };
-    } else {
-      return { text: `Due in ${diffInDays} days`, color: theme.colors.success };
-    }
-  }, []);
+      // For completed tasks, show completion information instead of overdue
+      if (task.status === 'Completed') {
+        const completionDate = task.updatedAt ? new Date(task.updatedAt) : now;
+        const daysSinceCompletion = Math.ceil(
+          (now.getTime() - completionDate.getTime()) / (1000 * 60 * 60 * 24),
+        );
+
+        if (daysSinceCompletion === 0) {
+          return {
+            text: 'Completed today',
+            color: theme.colors.success,
+          };
+        } else if (daysSinceCompletion === 1) {
+          return {
+            text: 'Completed yesterday',
+            color: theme.colors.success,
+          };
+        } else {
+          return {
+            text: `Completed ${daysSinceCompletion} days ago`,
+            color: theme.colors.success,
+          };
+        }
+      }
+
+      // For non-completed tasks, show due date status
+      if (diffInDays < 0) {
+        return {
+          text: `Overdue by ${Math.abs(diffInDays)} days`,
+          color: theme.colors.error,
+        };
+      } else if (diffInDays === 0) {
+        return { text: 'Due today', color: theme.colors.warning };
+      } else if (diffInDays <= 3) {
+        return {
+          text: `Due in ${diffInDays} days`,
+          color: theme.colors.warning,
+        };
+      } else {
+        return {
+          text: `Due in ${diffInDays} days`,
+          color: theme.colors.success,
+        };
+      }
+    },
+    [task],
+  );
 
   // Handle status update
   const handleStatusUpdate = useCallback(
-    async (newStatus: 'Assigned' | 'In Progress' | 'Completed') => {
+    async (newStatus: 'new' | 'assigned' | 'in_progress' | 'completed') => {
       if (!task || readonly) return;
+
+      // Special handling for changing from 'new' to 'assigned'
+      if (task.status === 'new' && newStatus === 'assigned') {
+        // Check if user is creator
+        const isCreator = currentUser && task.createdBy === currentUser.id;
+        if (!isCreator) {
+          Alert.alert(
+            'Access Denied',
+            'Only the task creator can assign new tasks.',
+            [{ text: 'OK' }],
+          );
+          return;
+        }
+
+        // For now, we'll show an alert that assignment is needed
+        // In a full implementation, this would open a user selection modal
+        Alert.alert(
+          'Task Assignment Required',
+          'To mark this task as assigned, you need to assign it to a user. This will be implemented in the next update.',
+          [
+            { text: 'Cancel', style: 'cancel' },
+            {
+              text: 'Assign Later',
+              onPress: () => {
+                // For now, just update the status
+                setIsUpdatingStatus(true);
+                dispatch(
+                  updateTaskStatusOptimistic({
+                    taskId: task.id,
+                    status: newStatus,
+                  }),
+                );
+                // TODO: Implement user assignment modal
+                setIsUpdatingStatus(false);
+              },
+            },
+          ],
+        );
+        return;
+      }
 
       setIsUpdatingStatus(true);
 
@@ -181,7 +287,10 @@ const TaskDetailsScreen: React.FC<TaskDetailsScreenProps> = ({
 
         Alert.alert(
           'Status Updated',
-          `Task status has been updated to "${newStatus}".`,
+          `Task status has been updated to "${
+            newStatus.charAt(0).toUpperCase() +
+            newStatus.slice(1).replace('_', ' ')
+          }".`,
           [{ text: 'OK' }],
         );
       } catch (error) {
@@ -195,7 +304,7 @@ const TaskDetailsScreen: React.FC<TaskDetailsScreenProps> = ({
         setIsUpdatingStatus(false);
       }
     },
-    [task, readonly, dispatch],
+    [task, readonly, dispatch, currentUser],
   );
 
   // Handle file download
@@ -650,6 +759,20 @@ const styles = StyleSheet.create({
     fontSize: theme.typography.fontSizes.sm,
     color: theme.colors.textSecondary,
     lineHeight: theme.typography.lineHeights.relaxed,
+  },
+  // Missing picker styles
+  pickerWrapper: {
+    backgroundColor: theme.colors.background,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    borderRadius: theme.borderRadius.md,
+    paddingHorizontal: theme.spacing.xs,
+  },
+  picker: {
+    height: 50,
+    width: '100%',
+    color: theme.colors.text,
+    fontSize: theme.typography.fontSizes.md,
   },
 });
 

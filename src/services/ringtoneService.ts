@@ -7,6 +7,7 @@ import {
 } from '@react-native-documents/picker';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import RNFS from 'react-native-fs';
+import Sound from 'react-native-sound';
 import NotificationSounds, {
   playSampleSound,
 } from 'react-native-notification-sounds';
@@ -443,6 +444,112 @@ class RingtoneService {
     } catch (error) {
       console.error('❌ Error cleaning up invalid ringtones:', error);
     }
+  }
+
+  /**
+   * Play notification sound by ID (for incoming notifications)
+   */
+  async playNotificationSound(soundId: string): Promise<void> {
+    try {
+      const availableSounds = await this.getAllSounds();
+      const sound = availableSounds.find((s: any) => s.id === soundId);
+
+      if (!sound) {
+        console.warn(`Sound with ID ${soundId} not found, playing default`);
+        await this.playDefaultNotificationSound();
+        return;
+      }
+
+      if ('isSystem' in sound && sound.isSystem) {
+        await this.playSystemSound(sound as SystemSound);
+      } else if ('fileName' in sound) {
+        // Predefined sound
+        const predefinedSound = sound as PredefinedSound;
+        await this.playPredefinedSound(predefinedSound);
+      } else {
+        // Custom sound
+        const customSound = sound as CustomRingtone;
+        await this.playCustomSound(customSound);
+      }
+    } catch (error) {
+      console.error('Error playing notification sound:', error);
+      await this.playDefaultNotificationSound();
+    }
+  }
+
+  /**
+   * Play default system notification sound
+   */
+  async playDefaultNotificationSound(): Promise<void> {
+    try {
+      // Play the default system notification sound
+      // Use the existing systemSounds property or get first available system sound
+      const systemSounds = this.systemSounds;
+      const defaultSound = systemSounds[0]; // Use first system sound as default
+
+      if (defaultSound) {
+        await this.playSystemSound(defaultSound);
+      } else {
+        console.warn('No system sounds available, cannot play notification');
+      }
+    } catch (error) {
+      console.error('Error playing default notification sound:', error);
+    }
+  }
+
+  /**
+   * Play predefined sound (private helper)
+   */
+  private async playPredefinedSound(sound: PredefinedSound): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const soundFile = new Sound(
+        sound.fileName,
+        Sound.MAIN_BUNDLE,
+        (error: any) => {
+          if (error) {
+            reject(error);
+            return;
+          }
+
+          soundFile.play((success: boolean) => {
+            soundFile.release();
+            if (success) {
+              resolve();
+            } else {
+              reject(new Error('Failed to play predefined sound'));
+            }
+          });
+        },
+      );
+    });
+  }
+
+  /**
+   * Play custom sound (private helper)
+   */
+  private async playCustomSound(sound: CustomRingtone): Promise<void> {
+    return new Promise((resolve, reject) => {
+      if (!sound.uri) {
+        reject(new Error('Custom sound missing URI'));
+        return;
+      }
+
+      const soundFile = new Sound(sound.uri, '', (error: any) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+
+        soundFile.play((success: boolean) => {
+          soundFile.release();
+          if (success) {
+            resolve();
+          } else {
+            reject(new Error('Failed to play custom sound'));
+          }
+        });
+      });
+    });
   }
 }
 

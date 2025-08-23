@@ -29,6 +29,12 @@ import {
   PredefinedSound,
   SystemSound,
 } from '../services/ringtoneService';
+import {
+  requestNotificationsPermission,
+  checkNotificationPermissions,
+  redirectToNotificationSettings,
+} from '../utils/permissionUtils';
+import { notificationService } from '../services/notificationService';
 
 type SoundItem = SystemSound | PredefinedSound | CustomRingtone;
 
@@ -46,6 +52,11 @@ const NotificationSettingsScreen: React.FC<NotificationSettingsScreenProps> = ({
   const [addingCustomSound, setAddingCustomSound] = useState(false);
   const [vibrationEnabled, setVibrationEnabled] = useState(true);
   const [currentlyPlaying, setCurrentlyPlaying] = useState<string | null>(null);
+  const [permissionStatus, setPermissionStatus] = useState<{
+    hasPermission: boolean;
+    status: string;
+  }>({ hasPermission: false, status: 'unknown' });
+  const [checkingPermission, setCheckingPermission] = useState(false);
 
   // Use ref to track all sound instances for proper cleanup
   const soundInstancesRef = useRef<Map<string, Sound>>(new Map());
@@ -57,6 +68,7 @@ const NotificationSettingsScreen: React.FC<NotificationSettingsScreenProps> = ({
     dispatch(loadSettings());
     loadAvailableSounds();
     loadVibrationSettings();
+    checkPermissions();
   }, [dispatch]);
 
   // Cleanup on unmount
@@ -97,6 +109,57 @@ const NotificationSettingsScreen: React.FC<NotificationSettingsScreenProps> = ({
       // Revert local state if the async operation failed
       setVibrationEnabled(!enabled);
     }
+  };
+
+  const checkPermissions = async () => {
+    try {
+      setCheckingPermission(true);
+      const status = await checkNotificationPermissions();
+      setPermissionStatus(status);
+    } catch (error) {
+      console.error('Error checking permissions:', error);
+      setPermissionStatus({ hasPermission: false, status: 'error' });
+    } finally {
+      setCheckingPermission(false);
+    }
+  };
+
+  const handleRequestPermissions = async () => {
+    try {
+      setCheckingPermission(true);
+      const granted = await requestNotificationsPermission();
+
+      // Refresh permission status after request
+      await checkPermissions();
+
+      if (granted) {
+        Alert.alert(
+          'Success',
+          'Notification permissions granted! You will now receive task updates.',
+        );
+      }
+    } catch (error) {
+      console.error('Error requesting permissions:', error);
+    } finally {
+      setCheckingPermission(false);
+    }
+  };
+
+  const handleOpenSettings = () => {
+    Alert.alert(
+      'Open Notification Settings',
+      'You will be redirected to your device settings to enable notifications manually.',
+      [
+        {
+          text: 'Cancel',
+          style: 'cancel',
+        },
+        {
+          text: 'Open Settings',
+          onPress: redirectToNotificationSettings,
+        },
+      ],
+    );
   };
 
   const loadAvailableSounds = async () => {
@@ -248,10 +311,11 @@ const NotificationSettingsScreen: React.FC<NotificationSettingsScreenProps> = ({
           // System sounds typically play for a short duration
           // Set a timeout to clear the playing state
           systemSoundTimeoutRef.current = setTimeout(() => {
-            if (currentlyPlaying === sound.id) {
-              setCurrentlyPlaying(null);
-            }
-          }, 3000);
+            setCurrentlyPlaying(prevState => {
+              // Only clear if this sound is still the currently playing one
+              return prevState === sound.id ? null : prevState;
+            });
+          }, 2000); // Reduced to 2 seconds for better responsiveness
         } catch (error) {
           console.error('Failed to play system sound:', error);
           // Show fallback alert
@@ -317,9 +381,10 @@ const NotificationSettingsScreen: React.FC<NotificationSettingsScreenProps> = ({
                 );
               }
 
-              if (currentlyPlaying === sound.id) {
-                setCurrentlyPlaying(null);
-              }
+              setCurrentlyPlaying(prevState => {
+                // Only clear if this sound is still the currently playing one
+                return prevState === sound.id ? null : prevState;
+              });
             });
           },
         );
@@ -360,9 +425,10 @@ const NotificationSettingsScreen: React.FC<NotificationSettingsScreenProps> = ({
               console.error('Error releasing custom sound:', releaseError);
             }
 
-            if (currentlyPlaying === sound.id) {
-              setCurrentlyPlaying(null);
-            }
+            setCurrentlyPlaying(prevState => {
+              // Only clear if this sound is still the currently playing one
+              return prevState === sound.id ? null : prevState;
+            });
           });
         });
       }
@@ -480,6 +546,82 @@ const NotificationSettingsScreen: React.FC<NotificationSettingsScreenProps> = ({
         onNotificationPress={() => navigation.navigate('Inbox')}
       />
       <View style={styles.content}>
+        {/* Permission Management Section */}
+        <View style={styles.permissionSection}>
+          <Text style={styles.sectionTitle}>Notification Permissions</Text>
+
+          <View style={styles.permissionRow}>
+            <View style={styles.permissionInfo}>
+              <Text style={styles.permissionTitle}>
+                {permissionStatus.hasPermission
+                  ? 'Notifications Enabled'
+                  : 'Notifications Disabled'}
+              </Text>
+              <Text style={styles.permissionSubtitle}>
+                Status: {permissionStatus.status}
+              </Text>
+              {!permissionStatus.hasPermission && (
+                <Text style={styles.permissionWarning}>
+                  Enable notifications to receive task updates
+                </Text>
+              )}
+            </View>
+
+            <View style={styles.permissionActions}>
+              {checkingPermission ? (
+                <ActivityIndicator size="small" color={theme.colors.primary} />
+              ) : (
+                <View style={styles.permissionButtons}>
+                  <TouchableOpacity
+                    style={styles.permissionButton}
+                    onPress={checkPermissions}
+                  >
+                    <Icon
+                      name="refresh"
+                      size={16}
+                      color={theme.colors.primary}
+                    />
+                    <Text style={styles.permissionButtonText}>Check</Text>
+                  </TouchableOpacity>
+
+                  {!permissionStatus.hasPermission && (
+                    <>
+                      <TouchableOpacity
+                        style={[styles.permissionButton, styles.primaryButton]}
+                        onPress={handleRequestPermissions}
+                      >
+                        <Icon name="notifications" size={16} color="white" />
+                        <Text
+                          style={[
+                            styles.permissionButtonText,
+                            styles.primaryButtonText,
+                          ]}
+                        >
+                          Enable
+                        </Text>
+                      </TouchableOpacity>
+
+                      <TouchableOpacity
+                        style={styles.permissionButton}
+                        onPress={handleOpenSettings}
+                      >
+                        <Icon
+                          name="settings"
+                          size={16}
+                          color={theme.colors.primary}
+                        />
+                        <Text style={styles.permissionButtonText}>
+                          Settings
+                        </Text>
+                      </TouchableOpacity>
+                    </>
+                  )}
+                </View>
+              )}
+            </View>
+          </View>
+        </View>
+
         <Text style={styles.sectionTitle}>Notification Sound</Text>
 
         <FlatList
@@ -684,6 +826,69 @@ const styles = StyleSheet.create({
     fontSize: theme.typography.fontSizes.sm,
     color: theme.colors.textSecondary,
     marginTop: theme.spacing.xs,
+  },
+  // Permission Management Styles
+  permissionSection: {
+    marginBottom: theme.spacing.lg,
+  },
+  permissionRow: {
+    backgroundColor: theme.colors.surface,
+    padding: theme.spacing.md,
+    borderRadius: theme.borderRadius.md,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+  },
+  permissionInfo: {
+    flex: 1,
+    marginRight: theme.spacing.md,
+  },
+  permissionTitle: {
+    fontSize: theme.typography.fontSizes.md,
+    color: theme.colors.text,
+    fontWeight: theme.typography.fontWeights.medium,
+    marginBottom: theme.spacing.xs,
+  },
+  permissionSubtitle: {
+    fontSize: theme.typography.fontSizes.sm,
+    color: theme.colors.textSecondary,
+    marginBottom: theme.spacing.xs,
+  },
+  permissionWarning: {
+    fontSize: theme.typography.fontSizes.sm,
+    color: theme.colors.error,
+    fontStyle: 'italic',
+  },
+  permissionActions: {
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  permissionButtons: {
+    flexDirection: 'row',
+    gap: theme.spacing.xs,
+  },
+  permissionButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: theme.spacing.sm,
+    paddingVertical: theme.spacing.xs,
+    borderRadius: theme.borderRadius.sm,
+    borderWidth: 1,
+    borderColor: theme.colors.primary,
+    backgroundColor: 'transparent',
+  },
+  primaryButton: {
+    backgroundColor: theme.colors.primary,
+    borderColor: theme.colors.primary,
+  },
+  permissionButtonText: {
+    fontSize: theme.typography.fontSizes.sm,
+    color: theme.colors.primary,
+    marginLeft: theme.spacing.xs,
+    fontWeight: theme.typography.fontWeights.medium,
+  },
+  primaryButtonText: {
+    color: 'white',
   },
 });
 
