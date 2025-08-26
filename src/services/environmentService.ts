@@ -36,18 +36,18 @@ class EnvironmentService {
       environment,
 
       // API Configuration - Default to DEVELOPMENT environment
-      apiBaseUrl: Config.API_BASE_URL || 'http://192.168.31.123:3000/api',
+      apiBaseUrl: Config.API_BASE_URL || 'https://app.octusai.com/api',
       authApiBaseUrl:
         Config.AUTH_API_BASE_URL ||
         Config.API_BASE_URL ||
-        'http://192.168.31.123:3000/api',
+        'https://app.octusai.com/api',
       apiTimeout: parseInt(Config.API_TIMEOUT || '30000', 10),
 
       // Firebase Configuration - Default to DEVELOPMENT project
-      firebaseProjectId: Config.FIREBASE_PROJECT_ID || 'user-management-fd816',
+      firebaseProjectId: Config.FIREBASE_PROJECT_ID || 'doctor-app-fd816',
       firebaseStorageBucket:
         Config.FIREBASE_STORAGE_BUCKET ||
-        'user-management-fd816.firebasestorage.app',
+        'doctor-app-fd816.firebasestorage.app',
 
       // Feature Flags (convert string to boolean) - Default to DEVELOPMENT friendly
       enableDebugLogging: this.stringToBoolean(
@@ -224,9 +224,9 @@ class EnvironmentService {
     }
 
     return {
-      localhost: 'http://localhost:3000/api',
-      androidEmulator: 'http://10.0.2.2:3000/api',
-      physicalDevice: 'http://192.168.31.123:3000/api', // Real device testing IP
+      localhost: 'https://app.octusai.com/api',
+      androidEmulator: 'https://app.octusai.com/api',
+      physicalDevice: 'https://app.octusai.com/api', // Real device testing IP
     };
   }
 

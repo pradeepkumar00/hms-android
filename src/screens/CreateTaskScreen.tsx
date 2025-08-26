@@ -35,6 +35,7 @@ import {
 } from '../store/taskSlice';
 import { validateTaskForm } from '../utils/validation';
 import { authService } from '../services/authService';
+import { notificationService } from '../services/notificationService';
 import { theme } from '../constants/theme';
 import { DEPARTMENTS } from '../constants/app';
 import { User } from '../types';
@@ -47,8 +48,8 @@ interface CreateTaskScreenProps {
 const CreateTaskScreen: React.FC<CreateTaskScreenProps> = ({ navigation }) => {
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
-  const [department, setDepartment] = useState<string>('');
-  const [assignedTo, setAssignedTo] = useState<string>('');
+  const [department, setDepartment] = useState<string | null>('');
+  const [assignedTo, setAssignedTo] = useState<string | null>('');
   const [selectedFile, setSelectedFile] = useState<{
     name: string;
     uri: string;
@@ -147,7 +148,9 @@ const CreateTaskScreen: React.FC<CreateTaskScreenProps> = ({ navigation }) => {
       setLoadingUsers(true);
 
       // Filter users by department from already fetched data
-      const departmentUsers = allUsers.filter(user => user.type === department);
+      const departmentUsers = allUsers.filter(
+        user => user.department === department,
+      );
       setDepartmentUsers(departmentUsers);
       setAssignedTo(''); // Reset employee selection
 
@@ -185,12 +188,12 @@ const CreateTaskScreen: React.FC<CreateTaskScreenProps> = ({ navigation }) => {
   };
 
   const handleDepartmentChange = (value: string | null) => {
-    setDepartment(value);
+    setDepartment(value || '');
     clearFieldError('department');
   };
 
   const handleAssignedToChange = (userId: string | null) => {
-    setAssignedTo(userId);
+    setAssignedTo(userId || '');
     clearFieldError('assignedTo');
   };
 
@@ -304,7 +307,7 @@ const CreateTaskScreen: React.FC<CreateTaskScreenProps> = ({ navigation }) => {
     const taskData = {
       title: title.trim(),
       description: description.trim(),
-      department: department,
+      department: department || '', // Convert null to empty string
       assignedTo: assignedTo || null,
       assignedToName: assignedToName,
       createdBy: currentUser.id,
@@ -317,7 +320,28 @@ const CreateTaskScreen: React.FC<CreateTaskScreenProps> = ({ navigation }) => {
     };
 
     try {
-      await dispatch(createTask(taskData)).unwrap();
+      const createdTask = await dispatch(createTask(taskData)).unwrap();
+      console.log('✅ Task created successfully:', createdTask);
+
+      // Send FCM notification payload to backend (enhanced reliability)
+      try {
+        await notificationService.sendTaskNotificationToBackend({
+          title: taskData.title,
+          assignedToName: taskData.assignedToName,
+          taskId: createdTask.task?.id || `task_${Date.now()}`,
+          tenantId: currentUser.tenantId,
+          createdBy: currentUser.id,
+          createdByName: currentUser.name,
+          type: assignedTo ? 'task_assigned' : 'task_created',
+        });
+        console.log('📨 FCM notification payload processed');
+      } catch (notificationError) {
+        console.warn(
+          '⚠️ FCM notification failed (continuing anyway):',
+          notificationError,
+        );
+        // Don't fail task creation if notification fails
+      }
 
       // Refresh inbox notifications to show the new notification immediately
       if (currentUser?.id) {
@@ -325,12 +349,24 @@ const CreateTaskScreen: React.FC<CreateTaskScreenProps> = ({ navigation }) => {
       }
 
       // Show success message and navigate back
-      Alert.alert('Success', 'Task created successfully!', [
+      const successMessage = assignedTo
+        ? `Task created and assigned to ${assignedToName}!`
+        : 'Task created successfully!';
+
+      Alert.alert('Success', successMessage, [
         { text: 'OK', onPress: () => navigation.goBack() },
       ]);
     } catch (error) {
       // Error is handled in useEffect above
       console.error('Task creation error:', error);
+
+      // Show specific error message if available
+      const errorMessage =
+        error instanceof Error ? error.message : 'Failed to create task';
+      Alert.alert('Task Creation Failed', errorMessage, [
+        { text: 'Try Again', style: 'cancel' },
+        { text: 'OK' },
+      ]);
     }
   };
 

@@ -1,13 +1,13 @@
 {
   "project_info": {
-    "project_number": "471078257380",
-    "project_id": "user-management-fd816",
-    "storage_bucket": "user-management-fd816.firebasestorage.app"
+    "project_number": "1091141926537",
+    "project_id": "docpad-6ff99",
+    "storage_bucket": "docpad-6ff99.firebasestorage.app"
   },
   "client": [
     {
       "client_info": {
-        "mobilesdk_app_id": "1:471078257380:android:13811464322b1736eba2f1",
+        "mobilesdk_app_id": "1:1091141926537:android:45a7b467afd38509d81058",
         "android_client_info": {
           "package_name": "com.octusai.hospital"
         }
@@ -15,7 +15,7 @@
       "oauth_client": [],
       "api_key": [
         {
-          "current_key": "AIzaSyBZQnkU2ZDSMW7aH_OsPybxiBp_3XP6gII"
+          "current_key": "AIzaSyB_iqmwSdkqy7mGoFqGe-cftgc32YlnSkE"
         }
       ],
       "services": {

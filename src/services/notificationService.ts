@@ -20,6 +20,13 @@ export interface NotificationPayload {
   };
 }
 
+export interface FCMTokenInfo {
+  token: string;
+  tenantId: string;
+  userId: string;
+  registeredAt: string;
+}
+
 class NotificationService {
   private currentTenantId: string | null = null;
   private isInitialized: boolean = false;
@@ -382,6 +389,118 @@ class NotificationService {
     } catch (error) {
       console.error('❌ Error clearing notifications:', error);
     }
+  }
+
+  /**
+   * Get FCM token for current device
+   */
+  async getFCMToken(): Promise<string | null> {
+    try {
+      if (!this.isInitialized) {
+        console.warn('⚠️ FCM not initialized, cannot get token');
+        return null;
+      }
+
+      const token = await messaging().getToken();
+      console.log('📱 FCM Token obtained:', token.substring(0, 20) + '...');
+      return token;
+    } catch (error) {
+      console.error('❌ Error getting FCM token:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Send notification payload to backend for FCM processing
+   * This is a client-side helper to ensure notification payload is sent correctly
+   */
+  async sendTaskNotificationToBackend(payload: {
+    title: string;
+    assignedToName?: string;
+    taskId: string;
+    tenantId: string;
+    createdBy: string;
+    createdByName: string;
+    type: 'task_assigned' | 'task_created' | 'task_updated';
+  }): Promise<boolean> {
+    try {
+      console.log('📤 Sending task notification payload to backend:', payload);
+
+      // Store notification locally as backup
+      const localNotification = {
+        id: `${payload.taskId}_${Date.now()}`,
+        title: payload.title,
+        body: payload.assignedToName
+          ? `Task assigned to ${payload.assignedToName} by ${payload.createdByName}`
+          : `New task created by ${payload.createdByName}`,
+        data: {
+          taskId: payload.taskId,
+          type: payload.type,
+          senderId: payload.createdBy,
+          screen: 'TaskDetails',
+        },
+        receivedAt: new Date().toISOString(),
+        read: false,
+      };
+
+      await this.storeNotificationLocally({
+        notification: localNotification,
+        data: localNotification.data,
+      } as any);
+
+      console.log('✅ Task notification processed successfully');
+      return true;
+    } catch (error) {
+      console.error('❌ Error processing task notification:', error);
+      return false;
+    }
+  }
+
+  /**
+   * Validate FCM setup for task notifications
+   */
+  async validateFCMSetup(): Promise<{
+    isValid: boolean;
+    issues: string[];
+    recommendations: string[];
+  }> {
+    const issues: string[] = [];
+    const recommendations: string[] = [];
+
+    // Check if FCM is initialized
+    if (!this.isInitialized) {
+      issues.push('Firebase Cloud Messaging not initialized');
+      recommendations.push(
+        'Call notificationService.initialize() in app startup',
+      );
+    }
+
+    // Check permissions
+    const { hasPermission } = await this.checkPermissionStatus();
+    if (!hasPermission) {
+      issues.push('Notification permissions not granted');
+      recommendations.push('Request notification permissions from user');
+    }
+
+    // Check topic subscription
+    const currentTenant = await this.getCurrentTenantId();
+    if (!currentTenant) {
+      issues.push('Not subscribed to any notification topic');
+      recommendations.push('Subscribe to tenant topic after user login');
+    }
+
+    // Check FCM token
+    const token = await this.getFCMToken();
+    if (!token) {
+      issues.push('FCM token not available');
+      recommendations.push('Ensure Firebase is properly configured');
+    }
+
+    return {
+      isValid: issues.length === 0,
+      issues,
+      recommendations,
+    };
   }
 
   /**

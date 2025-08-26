@@ -229,7 +229,7 @@ class AuthService {
   // Method to create a task using real API
   async createTask(taskData: any, token: string): Promise<any> {
     try {
-      const response = await fetch('http://192.168.31.123:3000/api/task', {
+      const response = await fetch('https://app.octusai.com/api/task', {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${token}`,
