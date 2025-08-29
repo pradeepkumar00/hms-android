@@ -9,7 +9,7 @@ export const navigationRef = createNavigationContainerRef<RootStackParamList>();
 
 class NavigationService {
   /**
-   * Navigate to a screen
+   * Navigate to a screen with retry mechanism
    */
   navigate<T extends keyof RootStackParamList>(
     screen: T,
@@ -19,7 +19,17 @@ class NavigationService {
       // Use type assertion to handle the complex navigation typing
       (navigationRef as any).navigate(screen, params);
     } else {
-      console.warn('Navigation is not ready yet');
+      console.warn('Navigation is not ready yet, retrying...');
+      // Retry navigation after a short delay
+      setTimeout(() => {
+        if (navigationRef.isReady()) {
+          (navigationRef as any).navigate(screen, params);
+        } else {
+          console.error(
+            'Navigation still not ready after retry, navigation failed',
+          );
+        }
+      }, 500);
     }
   }
 
@@ -83,16 +93,31 @@ class NavigationService {
    */
   handleNotificationDeepLink(data: any): void {
     try {
-      console.log('🔗 Handling notification deep link:', data);
+      console.log(
+        '🔗 Handling notification deep link:',
+        JSON.stringify(data, null, 2),
+      );
+      console.log('📍 Navigation ready status:', navigationRef.isReady());
 
-      if (data.taskId) {
-        // Navigate to task details
-        this.navigate('TaskDetails', {
-          taskId: data.taskId,
-          readonly: data.readonly === 'true',
-        });
-      } else if (data.screen) {
+      // Validate data exists and is an object
+      if (!data || typeof data !== 'object') {
+        console.warn('⚠️ Invalid notification data for deep link:', data);
+        this.navigate('Main');
+        return;
+      }
+
+      if (data.taskId && typeof data.taskId === 'string') {
+        // Navigate to task details with proper validation
+        const params = {
+          taskId: String(data.taskId),
+          readonly: data.readonly === 'true' || data.readonly === true || false, // Default to false for creator access
+        };
+
+        console.log('🔗 Navigating to TaskDetails with params:', params);
+        this.navigate('TaskDetails', params);
+      } else if (data.screen && typeof data.screen === 'string') {
         // Navigate to specific screen
+        console.log(`🔗 Navigating to screen: ${data.screen}`);
         switch (data.screen) {
           case 'Inbox':
             this.navigate('Inbox');
@@ -112,6 +137,9 @@ class NavigationService {
         }
       } else {
         // Default to main screen
+        console.log(
+          '🔗 No valid taskId or screen found in data, navigating to Main',
+        );
         this.navigate('Main');
       }
     } catch (error) {

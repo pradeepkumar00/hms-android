@@ -72,11 +72,7 @@ const CreateTaskScreen: React.FC<CreateTaskScreenProps> = ({ navigation }) => {
   // Dropdown states
   const [departmentOpen, setDepartmentOpen] = useState(false);
   const [employeeOpen, setEmployeeOpen] = useState(false);
-  const [departmentItems, setDepartmentItems] = useState([
-    { label: 'HR', value: 'HR' },
-    { label: 'Supervisor', value: 'Supervisor' },
-    { label: 'Manager', value: 'Manager' },
-  ] as any);
+  const [departmentItems, setDepartmentItems] = useState<any[]>([]);
   const [employeeItems, setEmployeeItems] = useState<
     { label: string; value: string }[]
   >([]);
@@ -104,6 +100,9 @@ const CreateTaskScreen: React.FC<CreateTaskScreenProps> = ({ navigation }) => {
       try {
         const { departments, users } =
           await authService.getAllUsersWithDepartments(authToken);
+        console.log('====================================');
+        console.log({ departments, users });
+        console.log('====================================');
 
         setAvailableDepartments(departments);
         setAllUsers(users);
@@ -148,9 +147,7 @@ const CreateTaskScreen: React.FC<CreateTaskScreenProps> = ({ navigation }) => {
       setLoadingUsers(true);
 
       // Filter users by department from already fetched data
-      const departmentUsers = allUsers.filter(
-        user => user.department === department,
-      );
+      const departmentUsers = allUsers.filter(user => user.type === department);
       setDepartmentUsers(departmentUsers);
       setAssignedTo(''); // Reset employee selection
 
@@ -374,7 +371,12 @@ const CreateTaskScreen: React.FC<CreateTaskScreenProps> = ({ navigation }) => {
 
   return (
     <SafeAreaView style={styles.container}>
-      <Header title="Create Task" showNotificationIcon={false} />
+      <Header
+        title="Create Task"
+        showNotificationIcon={false}
+        showHomeIcon={true}
+        onHomePress={() => navigation.navigate('Main')}
+      />
 
       <KeyboardAvoidingView
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}

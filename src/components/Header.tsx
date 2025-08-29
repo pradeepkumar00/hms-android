@@ -14,18 +14,22 @@ import { useAppSelector, selectNotificationCount } from '../store';
 import { theme } from '../constants/theme';
 import { APP_CONFIG } from '../constants/app';
 
-import AppLogo from '../../assets/images/app-logo.jpeg';
+const AppLogo = require('../../assets/images/app-logo.jpeg');
 
 interface HeaderProps {
   title?: string;
   onNotificationPress?: () => void;
   showNotificationIcon?: boolean;
+  showHomeIcon?: boolean;
+  onHomePress?: () => void;
 }
 
 const Header: React.FC<HeaderProps> = ({
   title = APP_CONFIG.name,
   onNotificationPress,
   showNotificationIcon = true,
+  showHomeIcon = false,
+  onHomePress,
 }) => {
   const unreadCount = useAppSelector(selectNotificationCount);
 
@@ -38,11 +42,22 @@ const Header: React.FC<HeaderProps> = ({
       />
       <SafeAreaView style={styles.safeArea}>
         <View style={styles.container}>
-          {/* Left Side - App Logo */}
+          {/* Left Side - Home Icon or App Logo */}
           <View style={styles.leftSection}>
-            <View style={styles.headerLogoContainer}>
-              <Image source={AppLogo} style={styles.headerLogo} />
-            </View>
+            {showHomeIcon ? (
+              <TouchableOpacity
+                style={styles.homeButton}
+                onPress={onHomePress}
+                activeOpacity={0.7}
+                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+              >
+                <Icon name="home" size={24} color={theme.colors.surface} />
+              </TouchableOpacity>
+            ) : (
+              <View style={styles.headerLogoContainer}>
+                <Image source={AppLogo} style={styles.headerLogo} />
+              </View>
+            )}
           </View>
 
           {/* Center - App Name */}
@@ -161,6 +176,12 @@ const styles = StyleSheet.create({
     height: 20,
     borderRadius: 2,
     resizeMode: 'cover',
+  },
+  homeButton: {
+    padding: theme.spacing.xs,
+    borderRadius: theme.borderRadius.sm,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
 });
 

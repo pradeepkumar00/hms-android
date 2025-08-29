@@ -80,6 +80,18 @@ const InboxScreen: React.FC<InboxScreenProps> = ({ navigation }) => {
     }
   }, [dispatch, user?.id]);
 
+  // Refresh notifications when screen comes into focus (to catch background notifications)
+  useEffect(() => {
+    const unsubscribe = navigation.addListener('focus', () => {
+      if (user?.id) {
+        console.log('📱 InboxScreen focused - refreshing notifications');
+        dispatch(fetchInboxNotifications(user.id));
+      }
+    });
+
+    return unsubscribe;
+  }, [navigation, dispatch, user?.id]);
+
   // Detect new notifications and play sound
   useEffect(() => {
     const currentCount = notifications.length;
@@ -310,7 +322,12 @@ const InboxScreen: React.FC<InboxScreenProps> = ({ navigation }) => {
 
   return (
     <View style={styles.container}>
-      <Header title="Inbox" showNotificationIcon={false} />
+      <Header
+        title="Inbox"
+        showNotificationIcon={false}
+        showHomeIcon={true}
+        onHomePress={() => navigation.navigate('Main')}
+      />
 
       <View style={styles.content}>
         {/* Header Info */}

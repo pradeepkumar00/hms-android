@@ -1,9 +1,9 @@
 buildscript {
     ext {
-        buildToolsVersion = "36.0.0"
-        minSdkVersion = 24
-        compileSdkVersion = 36
-        targetSdkVersion = 36
+        buildToolsVersion = "35.0.0"
+        minSdkVersion = 29     // Android 10 - Minimum supported version
+        compileSdkVersion = 35 // Latest SDK for development
+        targetSdkVersion = 35  // Target latest Android for maximum compatibility
         ndkVersion = "27.1.12297006"
         kotlinVersion = "2.1.20"
         hermesEnabled = true  // For backward compatibility with libraries

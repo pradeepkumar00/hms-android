@@ -1,5 +1,6 @@
 import * as Keychain from 'react-native-keychain';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { decode as base64Decode } from 'base-64';
 import { STORAGE_KEYS } from '../constants/app';
 
 /**
@@ -18,6 +19,7 @@ export interface StoredUserData {
   mobileNumber?: string; // Optional to match API response
   department: 'HR' | 'Admin' | 'Supervisor';
   role: string;
+  type: string; // Required for user type
   tenantId: string; // Required for topic subscriptions
   createdAt: string;
 }
@@ -75,20 +77,21 @@ class TokenService {
    * Remove JWT token from all storage locations
    */
   async removeToken(): Promise<void> {
-    const promises: Promise<any>[] = [];
-
-    // Clear from Keychain
+    // Clear from Keychain with proper error handling
     try {
-      promises.push(Keychain.resetInternetCredentials(KEYCHAIN_SERVICE));
+      await Keychain.resetGenericPassword({ service: KEYCHAIN_SERVICE });
+      console.log('✅ Token removed from Keychain');
     } catch (error) {
       console.warn('⚠️ Failed to clear Keychain:', error);
     }
 
     // Clear from AsyncStorage
-    promises.push(AsyncStorage.removeItem(STORAGE_KEYS.AUTH_TOKEN));
-
-    await Promise.allSettled(promises);
-    console.log('✅ Token cleared from all storage locations');
+    try {
+      await AsyncStorage.removeItem(STORAGE_KEYS.AUTH_TOKEN);
+      console.log('✅ Token cleared from all storage locations');
+    } catch (error) {
+      console.error('❌ Failed to clear token from AsyncStorage:', error);
+    }
   }
 
   /**
@@ -168,7 +171,7 @@ class TokenService {
       }
 
       // Decode payload (second part)
-      const payload = JSON.parse(atob(parts[1]));
+      const payload = JSON.parse(base64Decode(parts[1]));
       console.log('====================================');
       console.log(payload);
       console.log('====================================');
@@ -203,7 +206,7 @@ class TokenService {
         return null;
       }
 
-      return JSON.parse(atob(parts[1]));
+      return JSON.parse(base64Decode(parts[1]));
     } catch (error) {
       console.error('❌ Error parsing token payload:', error);
       return null;

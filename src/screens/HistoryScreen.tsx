@@ -17,15 +17,16 @@ import {
   useAppDispatch,
   useAppSelector,
   selectCurrentUser,
-  selectAssignedByMeTasks,
+  selectCreatedByMeTasks,
   selectTasksLoading,
   selectTasksError,
 } from '../store';
 import {
-  fetchAssignedByMeTasks,
+  fetchCreatedTasks,
   clearTaskError,
   reassignTask,
   updateTaskStatusOptimistic,
+  updateTaskStatusReal,
 } from '../store/taskSlice';
 import { theme } from '../constants/theme';
 import { Header } from '../components';
@@ -42,7 +43,7 @@ type FilterOption = 'all' | 'new' | 'assigned' | 'in-progress' | 'completed';
 const HistoryScreen: React.FC<HistoryScreenProps> = ({ navigation }) => {
   const dispatch = useAppDispatch();
   const user = useAppSelector(selectCurrentUser);
-  const assignedByMeTasks = useAppSelector(selectAssignedByMeTasks);
+  const createdTasks = useAppSelector(selectCreatedByMeTasks);
   const isLoading = useAppSelector(selectTasksLoading);
   const error = useAppSelector(selectTasksError);
 
@@ -54,11 +55,11 @@ const HistoryScreen: React.FC<HistoryScreenProps> = ({ navigation }) => {
   const [showReassignModal, setShowReassignModal] = useState(false);
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
 
-  // Fetch assigned by me tasks on screen load and when screen comes into focus
+  // Fetch created tasks (assigned to others) on screen load and when screen comes into focus
   useFocusEffect(
     useCallback(() => {
       if (user?.id) {
-        dispatch(fetchAssignedByMeTasks(user.id));
+        dispatch(fetchCreatedTasks({ status: 'assigned' }));
       }
     }, [dispatch, user?.id]),
   );
@@ -80,7 +81,7 @@ const HistoryScreen: React.FC<HistoryScreenProps> = ({ navigation }) => {
 
     setRefreshing(true);
     try {
-      await dispatch(fetchAssignedByMeTasks(user.id)).unwrap();
+      await dispatch(fetchCreatedTasks({ status: 'assigned' })).unwrap();
     } catch (error) {
       console.error('Failed to refresh tasks:', error);
     } finally {
@@ -89,14 +90,17 @@ const HistoryScreen: React.FC<HistoryScreenProps> = ({ navigation }) => {
   }, [dispatch, user?.id]);
 
   const filteredAndSortedTasks = useMemo(() => {
-    let filtered = assignedByMeTasks.filter(task => {
-      const matchesSearch =
-        task.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        task.description.toLowerCase().includes(searchQuery.toLowerCase());
+    // Filter to show only tasks assigned to others (status = assigned and assignedTo exists)
+    let filtered = createdTasks
+      .filter(task => task.status === 'assigned' && task.assignedTo)
+      .filter(task => {
+        const matchesSearch =
+          task.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
+          task.description.toLowerCase().includes(searchQuery.toLowerCase());
 
-      if (filterBy === 'all') return matchesSearch;
-      return matchesSearch && task.status === filterBy;
-    });
+        if (filterBy === 'all') return matchesSearch;
+        return matchesSearch && task.status === filterBy;
+      });
 
     // Sort tasks
     filtered.sort((a, b) => {
@@ -121,7 +125,7 @@ const HistoryScreen: React.FC<HistoryScreenProps> = ({ navigation }) => {
     });
 
     return filtered;
-  }, [assignedByMeTasks, searchQuery, sortBy, filterBy]);
+  }, [createdTasks, searchQuery, sortBy, filterBy]);
 
   const getStatusColor = (status: string) => {
     switch (status) {
@@ -129,7 +133,7 @@ const HistoryScreen: React.FC<HistoryScreenProps> = ({ navigation }) => {
         return theme.colors.textSecondary;
       case 'assigned':
         return theme.colors.primary;
-      case 'in_progress':
+      case 'progress':
         return theme.colors.warning;
       case 'completed':
         return theme.colors.success;
@@ -144,7 +148,7 @@ const HistoryScreen: React.FC<HistoryScreenProps> = ({ navigation }) => {
         return 'fiber-new';
       case 'assigned':
         return 'assignment-ind';
-      case 'in_progress':
+      case 'progress':
         return 'work';
       case 'completed':
         return 'check-circle';
@@ -180,7 +184,7 @@ const HistoryScreen: React.FC<HistoryScreenProps> = ({ navigation }) => {
     dispatch(
       updateTaskStatusOptimistic({
         taskId: task.id,
-        status: newStatus as 'new' | 'assigned' | 'in_progress' | 'completed',
+        status: newStatus as 'new' | 'assigned' | 'progress' | 'completed',
       }),
     );
   };
@@ -410,7 +414,7 @@ const HistoryScreen: React.FC<HistoryScreenProps> = ({ navigation }) => {
   const renderEmptyState = () => (
     <View style={styles.emptyContainer}>
       <Icon name="history" size={64} color={theme.colors.textSecondary} />
-      <Text style={styles.emptyTitle}>No History Yet</Text>
+      <Text style={styles.emptyTitle}>No Assigned Tasks</Text>
       <Text style={styles.emptyDescription}>
         Tasks you create and assign to others will appear here
       </Text>
@@ -439,7 +443,13 @@ const HistoryScreen: React.FC<HistoryScreenProps> = ({ navigation }) => {
 
       <View style={styles.statsContainer}>
         <Text style={styles.statsText}>
-          {filteredAndSortedTasks.length} of {assignedByMeTasks.length} tasks
+          {filteredAndSortedTasks.length} of{' '}
+          {
+            createdTasks.filter(
+              task => task.status === 'assigned' && task.assignedTo,
+            ).length
+          }{' '}
+          tasks
         </Text>
       </View>
     </View>
@@ -448,7 +458,11 @@ const HistoryScreen: React.FC<HistoryScreenProps> = ({ navigation }) => {
   if (error && !refreshing) {
     return (
       <View style={styles.container}>
-        <Header title="History" />
+        <Header
+          title="Task Assigned"
+          showHomeIcon={true}
+          onHomePress={() => navigation.navigate('Main')}
+        />
         <View style={styles.errorContainer}>
           <Icon name="error" size={48} color={theme.colors.error} />
           <Text style={styles.errorText}>{error}</Text>
@@ -462,7 +476,11 @@ const HistoryScreen: React.FC<HistoryScreenProps> = ({ navigation }) => {
 
   return (
     <View style={styles.container}>
-      <Header title="History" />
+      <Header
+        title="Task Assigned"
+        showHomeIcon={true}
+        onHomePress={() => navigation.navigate('Main')}
+      />
 
       {renderHeader()}
 

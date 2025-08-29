@@ -1,17 +1,43 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    
+    <!-- Storage permissions for Android 10+ compatibility -->
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" 
+        android:maxSdkVersion="28" />
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" 
+        android:minSdkVersion="30" />
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" 
+        android:minSdkVersion="33" />
+    <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" 
+        android:minSdkVersion="33" />
+    
+    <!-- Camera permissions for document/image picking -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    
+    <!-- Network state for connectivity checks -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
     <application
       android:name=".MainApplication"
       android:label="@string/app_name"
       android:icon="@mipmap/ic_launcher"
       android:roundIcon="@mipmap/ic_launcher_round"
-      android:allowBackup="false"
+      android:allowBackup="true"
+      android:fullBackupContent="@xml/backup_rules"
+      android:dataExtractionRules="@xml/data_extraction_rules"
       android:theme="@style/AppTheme"
-      android:supportsRtl="true">
+      android:supportsRtl="true"
+      android:usesCleartextTraffic="true"
+      android:requestLegacyExternalStorage="true"
+      android:preserveLegacyExternalStorage="true"
+      android:largeHeap="true">
       <activity
         android:name=".MainActivity"
         android:label="@string/app_name"
@@ -24,5 +50,32 @@
             <category android:name="android.intent.category.LAUNCHER" />
         </intent-filter>
       </activity>
+
+      <!-- Firebase Cloud Messaging Service -->
+      <service
+          android:name="io.invertase.firebase.messaging.ReactNativeFirebaseMessagingService"
+          android:exported="false">
+          <intent-filter>
+              <action android:name="com.google.firebase.MESSAGING_EVENT" />
+          </intent-filter>
+      </service>
+
+      <!-- Firebase Messaging Headless Service -->
+      <service
+          android:name="io.invertase.firebase.messaging.ReactNativeFirebaseMessagingHeadlessService"
+          android:exported="false" />
+
+      <!-- Firebase Default Notification Channel and Icons -->
+      <meta-data
+          android:name="com.google.firebase.messaging.default_notification_icon"
+          android:resource="@drawable/ic_notification" />
+      <meta-data
+          android:name="com.google.firebase.messaging.default_notification_color"
+          android:resource="@color/colorAccent"
+          tools:replace="android:resource" />
+      <meta-data
+          android:name="com.google.firebase.messaging.default_notification_channel_id"
+          android:value="default_notifications"
+          tools:replace="android:value" />
     </application>
 </manifest>

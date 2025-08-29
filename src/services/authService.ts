@@ -251,6 +251,30 @@ class AuthService {
       throw error;
     }
   }
+
+  async assignedTasks(token: string): Promise<any> {
+    try {
+      const response = await fetch(
+        `https://app.octusai.com/api/tasks/created?status=new`,
+        {
+          method: 'GET',
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        },
+      );
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      const data = await response.json();
+      return data;
+    } catch (error) {
+      console.error('Failed to fetch assigned tasks via API:', error);
+      throw error;
+    }
+  }
 }
 
 export const authService = new AuthService();

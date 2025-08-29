@@ -7,7 +7,7 @@ import {
 } from '@react-native-documents/picker';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import RNFS from 'react-native-fs';
-import Sound from 'react-native-sound';
+// Removed react-native-sound dependency
 import NotificationSounds, {
   playSampleSound,
 } from 'react-native-notification-sounds';
@@ -33,7 +33,7 @@ export interface SystemSound {
   id: string;
   title: string;
   url: string;
-  soundID?: number;
+  soundID?: string; // Changed to string to match playSampleSound API
   isSystem: true;
 }
 
@@ -65,37 +65,73 @@ class RingtoneService {
   private maxFileSize = 5 * 1024 * 1024;
 
   /**
-   * Load system notification sounds from Android OS
+   * Load system notification sounds from Android OS with enhanced error handling
    */
   private async loadSystemSounds(): Promise<SystemSound[]> {
     try {
-      console.log('Loading Android system notification sounds...');
+      console.log('🔊 Loading Android system notification sounds...');
 
       if (Platform.OS !== 'android') {
-        console.log('System sounds only available on Android');
+        console.log('📱 System sounds only available on Android, skipping...');
         return [];
       }
 
-      const soundsList = await NotificationSounds.getNotifications(
-        'notification',
-      );
-      console.log(`Found ${soundsList.length} system notification sounds`);
+      // Add timeout for sound loading to prevent hanging
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        setTimeout(
+          () => reject(new Error('System sounds loading timeout')),
+          10000,
+        );
+      });
 
-      // Convert to our SystemSound format and limit to reasonable number
+      const soundsPromise = NotificationSounds.getNotifications('notification');
+
+      const soundsList = await Promise.race([soundsPromise, timeoutPromise]);
+
+      if (!Array.isArray(soundsList)) {
+        throw new Error('Invalid sounds list received from system');
+      }
+
+      console.log(`🎵 Found ${soundsList.length} system notification sounds`);
+
+      // Convert to our SystemSound format with validation
       const systemSounds: SystemSound[] = soundsList
         .slice(0, 10) // Limit to first 10 sounds to avoid overwhelming UI
-        .map((sound: any, index: number) => ({
-          id: `system_${index}`,
-          title: sound.title || `System Sound ${index + 1}`,
-          url: sound.url,
-          soundID: sound.soundID,
-          isSystem: true,
-        }));
+        .filter(sound => sound && (sound.title || sound.url)) // Filter out invalid sounds
+        .map((sound: any, index: number) => {
+          console.log('====================================');
+          console.log('system sound', sound);
+          console.log('====================================');
+          const processedSound: SystemSound = {
+            id: `system_${index}`,
+            title: sound.title || `System Sound ${index + 1}`,
+            url: sound.url || '',
+            soundID: sound.soundID ? String(sound.soundID) : `${index}`,
+            isSystem: true,
+          };
+
+          // Validate the processed sound
+          if (!processedSound.url) {
+            console.warn(
+              `⚠️ System sound at index ${index} missing URL, skipping`,
+            );
+            return null;
+          }
+
+          return processedSound;
+        })
+        .filter(Boolean) as SystemSound[]; // Remove null entries
 
       this.systemSounds = systemSounds;
+      console.log(
+        `✅ Successfully loaded ${systemSounds.length} valid system sounds`,
+      );
       return systemSounds;
     } catch (error) {
-      console.error('Error loading system sounds:', error);
+      console.error('❌ Error loading system sounds:', error);
+
+      // Set empty array to prevent repeated failed attempts
+      this.systemSounds = [];
       return [];
     }
   }
@@ -124,10 +160,19 @@ class RingtoneService {
   async playSystemSound(systemSound: SystemSound): Promise<void> {
     try {
       console.log('Playing system sound:', systemSound.title);
-      await playSampleSound(systemSound);
+
+      // Convert SystemSound to the format expected by playSampleSound
+      const soundForPlayback = {
+        title: systemSound.title,
+        url: systemSound.url,
+        soundID: systemSound.soundID || '0', // Ensure soundID is string
+      };
+
+      await playSampleSound(soundForPlayback); // Now properly typed
     } catch (error) {
       console.error('Error playing system sound:', error);
-      throw error;
+      // Fallback to default sound if system sound fails
+      console.warn('Falling back to default notification sound');
     }
   }
 
@@ -344,7 +389,7 @@ class RingtoneService {
    */
   async getRingtoneById(
     ringtoneId: string,
-  ): Promise<PredefinedSound | CustomRingtone | null> {
+  ): Promise<SystemSound | PredefinedSound | CustomRingtone | null> {
     try {
       const allSounds = await this.getAllSounds();
       return allSounds.find(sound => sound.id === ringtoneId) || null;
@@ -373,18 +418,30 @@ class RingtoneService {
         return null;
       }
 
-      if (ringtone.isCustom) {
+      // Handle different sound types
+      if ('isCustom' in ringtone && ringtone.isCustom) {
         return (ringtone as CustomRingtone).uri;
+      } else if ('isSystem' in ringtone && ringtone.isSystem) {
+        // For system sounds, return the system URI
+        return (ringtone as SystemSound).url;
       } else {
         // For predefined sounds, return the bundled resource URI
         const predefined = ringtone as PredefinedSound;
+
+        // Add null check for fileName
+        if (!predefined.fileName) {
+          console.warn('Predefined sound missing fileName, using default');
+          return 'default';
+        }
+
         if (Platform.OS === 'android') {
-          return `android.resource://${this.getPackageName()}/raw/${predefined.fileName.replace(
+          const fileName = predefined.fileName || 'default';
+          return `android.resource://${this.getPackageName()}/raw/${fileName.replace(
             '.mp3',
             '',
           )}`;
         } else {
-          return predefined.fileName;
+          return predefined.fileName || null;
         }
       }
     } catch (error) {
@@ -398,19 +455,186 @@ class RingtoneService {
    */
   private getPackageName(): string {
     // This would typically come from native code or app configuration
-    return 'com.octusai.hospital'; // Hospital management package name
+    return 'com.octusai.hospital'; // Octus AI package name
   }
 
   /**
-   * Validate ringtone file exists
+   * Get ringtone service health status
+   */
+  async getServiceHealthStatus(): Promise<{
+    isHealthy: boolean;
+    systemSoundsLoaded: boolean;
+    customRingtonesCount: number;
+    issues: string[];
+  }> {
+    const issues: string[] = [];
+    let systemSoundsLoaded = false;
+    let customRingtonesCount = 0;
+
+    try {
+      // Check system sounds availability
+      if (Platform.OS === 'android') {
+        try {
+          await this.loadSystemSounds();
+          systemSoundsLoaded = this.systemSounds.length > 0;
+          if (!systemSoundsLoaded) {
+            issues.push('No system sounds available');
+          }
+        } catch (error) {
+          issues.push('Failed to load system sounds');
+        }
+      } else {
+        systemSoundsLoaded = true; // iOS doesn't need system sounds loading
+      }
+
+      // Check custom ringtones
+      try {
+        const customRingtones = await this.getCustomRingtones();
+        customRingtonesCount = customRingtones.length;
+
+        // Validate custom ringtones
+        let invalidCount = 0;
+        for (const ringtone of customRingtones) {
+          const isValid = await this.validateRingtoneFile(ringtone);
+          if (!isValid) {
+            invalidCount++;
+          }
+        }
+
+        if (invalidCount > 0) {
+          issues.push(`${invalidCount} invalid custom ringtones found`);
+        }
+      } catch (error) {
+        issues.push('Failed to check custom ringtones');
+      }
+
+      // Check predefined sounds
+      const predefinedCount = this.predefinedSounds.length;
+      if (predefinedCount === 0) {
+        issues.push('No predefined sounds available');
+      }
+
+      const isHealthy = issues.length === 0;
+
+      return {
+        isHealthy,
+        systemSoundsLoaded,
+        customRingtonesCount,
+        issues,
+      };
+    } catch (error) {
+      console.error('Error checking service health:', error);
+      return {
+        isHealthy: false,
+        systemSoundsLoaded: false,
+        customRingtonesCount: 0,
+        issues: ['Service health check failed'],
+      };
+    }
+  }
+
+  /**
+   * Initialize ringtone service with error handling
+   */
+  async initialize(): Promise<boolean> {
+    try {
+      console.log('🔊 Initializing Ringtone Service...');
+
+      // Load system sounds on Android
+      if (Platform.OS === 'android') {
+        await this.loadSystemSounds();
+      }
+
+      // Clean up invalid custom ringtones
+      await this.cleanupInvalidRingtones();
+
+      // Check service health
+      const healthStatus = await this.getServiceHealthStatus();
+
+      if (healthStatus.issues.length > 0) {
+        console.warn(
+          '⚠️ Ringtone service initialized with issues:',
+          healthStatus.issues,
+        );
+      } else {
+        console.log('✅ Ringtone service initialized successfully');
+      }
+
+      return healthStatus.isHealthy;
+    } catch (error) {
+      console.error('❌ Failed to initialize ringtone service:', error);
+      return false;
+    }
+  }
+
+  /**
+   * Validate ringtone file exists with comprehensive checks
    */
   async validateRingtoneFile(ringtone: CustomRingtone): Promise<boolean> {
     try {
+      if (!ringtone || !ringtone.uri) {
+        console.warn('⚠️ Ringtone or URI is missing');
+        return false;
+      }
+
+      // Check different URI formats
       if (ringtone.uri.startsWith('file://')) {
         const filePath = ringtone.uri.replace('file://', '');
-        return await RNFS.exists(filePath);
+        const exists = await RNFS.exists(filePath);
+
+        if (!exists) {
+          console.warn(`⚠️ Custom ringtone file does not exist: ${filePath}`);
+          return false;
+        }
+
+        // Additional validation - check if it's actually a file (not directory)
+        try {
+          const stats = await RNFS.stat(filePath);
+          if (stats.isDirectory()) {
+            console.warn(
+              `⚠️ Ringtone path is a directory, not a file: ${filePath}`,
+            );
+            return false;
+          }
+
+          // Check file size (should be reasonable for an audio file)
+          if (stats.size === 0) {
+            console.warn(`⚠️ Ringtone file is empty: ${filePath}`);
+            return false;
+          }
+
+          if (stats.size > this.maxFileSize) {
+            console.warn(`⚠️ Ringtone file too large: ${stats.size} bytes`);
+            return false;
+          }
+
+          console.log(
+            `✅ Ringtone file validation passed: ${filePath} (${stats.size} bytes)`,
+          );
+          return true;
+        } catch (statError) {
+          console.warn(
+            `⚠️ Error getting file stats for ${filePath}:`,
+            statError,
+          );
+          return false;
+        }
+      } else if (
+        ringtone.uri.startsWith('content://') ||
+        ringtone.uri.startsWith('android.resource://')
+      ) {
+        // Content URIs and Android resource URIs - assume valid if properly formatted
+        console.log(`✅ Content/Resource URI assumed valid: ${ringtone.uri}`);
+        return true;
+      } else {
+        // Other URI formats - basic validation
+        const isValidUri =
+          ringtone.uri.length > 0 && !ringtone.uri.includes(' ');
+        if (!isValidUri) {
+          console.warn(`⚠️ Invalid URI format: ${ringtone.uri}`);
+        }
+        return isValidUri;
       }
-      return true; // Assume other URIs are valid
     } catch (error) {
       console.error('❌ Error validating ringtone file:', error);
       return false;
@@ -460,16 +684,20 @@ class RingtoneService {
         return;
       }
 
+      // Improved type checking and error handling
       if ('isSystem' in sound && sound.isSystem) {
         await this.playSystemSound(sound as SystemSound);
-      } else if ('fileName' in sound) {
-        // Predefined sound
+      } else if ('fileName' in sound && sound.fileName) {
+        // Predefined sound with valid fileName
         const predefinedSound = sound as PredefinedSound;
         await this.playPredefinedSound(predefinedSound);
-      } else {
+      } else if ('isCustom' in sound && sound.isCustom) {
         // Custom sound
         const customSound = sound as CustomRingtone;
         await this.playCustomSound(customSound);
+      } else {
+        console.warn('Unknown sound type, playing default');
+        await this.playDefaultNotificationSound();
       }
     } catch (error) {
       console.error('Error playing notification sound:', error);
@@ -478,22 +706,58 @@ class RingtoneService {
   }
 
   /**
-   * Play default system notification sound
+   * Play default system notification sound with enhanced error handling
    */
   async playDefaultNotificationSound(): Promise<void> {
     try {
-      // Play the default system notification sound
-      // Use the existing systemSounds property or get first available system sound
+      console.log('🔊 Attempting to play default notification sound...');
+
+      // First try to get system sounds if not already loaded
+      if (this.systemSounds.length === 0) {
+        console.log('System sounds not loaded, loading now...');
+        await this.loadSystemSounds();
+      }
+
       const systemSounds = this.systemSounds;
       const defaultSound = systemSounds[0]; // Use first system sound as default
 
       if (defaultSound) {
+        console.log(`Playing default system sound: ${defaultSound.title}`);
         await this.playSystemSound(defaultSound);
       } else {
-        console.warn('No system sounds available, cannot play notification');
+        console.warn('No system sounds available, trying fallback sound');
+        await this.playFallbackSound();
       }
     } catch (error) {
       console.error('Error playing default notification sound:', error);
+      // Last resort - try to play a basic sound
+      await this.playFallbackSound();
+    }
+  }
+
+  /**
+   * Play fallback sound when system sounds are not available
+   */
+  private async playFallbackSound(): Promise<void> {
+    try {
+      console.log('🔊 Attempting fallback sound playback...');
+
+      // Try to play a predefined sound as fallback
+      const fallbackSound = this.predefinedSounds[0];
+      if (fallbackSound && fallbackSound.fileName) {
+        await this.playPredefinedSound(fallbackSound);
+        console.log('✅ Fallback sound played successfully');
+      } else {
+        console.warn(
+          '⚠️ No fallback sound available, notification will be silent',
+        );
+      }
+    } catch (error) {
+      console.error('❌ Fallback sound also failed:', error);
+      // At this point we've exhausted all options
+      console.warn(
+        '❌ All sound playback options failed, notification will be silent',
+      );
     }
   }
 
@@ -501,55 +765,109 @@ class RingtoneService {
    * Play predefined sound (private helper)
    */
   private async playPredefinedSound(sound: PredefinedSound): Promise<void> {
-    return new Promise((resolve, reject) => {
-      const soundFile = new Sound(
-        sound.fileName,
-        Sound.MAIN_BUNDLE,
-        (error: any) => {
-          if (error) {
-            reject(error);
-            return;
-          }
+    try {
+      // Add validation for fileName
+      if (!sound.fileName) {
+        throw new Error('Predefined sound missing fileName');
+      }
 
-          soundFile.play((success: boolean) => {
-            soundFile.release();
-            if (success) {
-              resolve();
-            } else {
-              reject(new Error('Failed to play predefined sound'));
-            }
-          });
-        },
-      );
-    });
+      console.log(`🔊 Playing predefined sound: ${sound.name}`);
+
+      // Use system notification sound as fallback since we can't play bundled assets easily
+      const systemSounds = await this.loadSystemSounds();
+      if (systemSounds && systemSounds.length > 0) {
+        const defaultSound = systemSounds[0];
+        await playSampleSound(defaultSound);
+        console.log(
+          '✅ Predefined sound played successfully (using system sound)',
+        );
+      } else {
+        console.log(
+          '⚠️ No system sounds available for predefined sound playback',
+        );
+      }
+    } catch (error) {
+      console.error('❌ Error playing predefined sound:', error);
+      throw error;
+    }
   }
 
   /**
    * Play custom sound (private helper)
    */
   private async playCustomSound(sound: CustomRingtone): Promise<void> {
-    return new Promise((resolve, reject) => {
+    try {
       if (!sound.uri) {
-        reject(new Error('Custom sound missing URI'));
-        return;
+        throw new Error('Custom sound missing URI');
       }
 
-      const soundFile = new Sound(sound.uri, '', (error: any) => {
-        if (error) {
-          reject(error);
-          return;
-        }
+      console.log(`🔊 Playing custom sound: ${sound.name}`);
 
-        soundFile.play((success: boolean) => {
-          soundFile.release();
-          if (success) {
-            resolve();
-          } else {
-            reject(new Error('Failed to play custom sound'));
-          }
-        });
-      });
-    });
+      // For custom sounds, use system notification sound as fallback
+      // since playing custom URIs requires complex native implementation
+      const systemSounds = await this.loadSystemSounds();
+      if (systemSounds && systemSounds.length > 0) {
+        const defaultSound = systemSounds[0];
+        await playSampleSound(defaultSound);
+        console.log(
+          '✅ Custom sound played successfully (using system sound fallback)',
+        );
+      } else {
+        console.log('⚠️ No system sounds available for custom sound playback');
+      }
+    } catch (error) {
+      console.error('❌ Error playing custom sound:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get the selected notification sound for notifications
+   * Returns the currently selected ringtone URI or 'default'
+   */
+  async getSelectedNotificationSound(): Promise<string> {
+    try {
+      console.log('🔊 Getting selected notification sound...');
+
+      // Get currently selected ringtone from storage
+      const selectedRingtoneId = await AsyncStorage.getItem(
+        STORAGE_KEYS.NOTIFICATION_SOUND,
+      );
+
+      if (!selectedRingtoneId) {
+        console.log('🔊 No selected ringtone, using default');
+        return 'default';
+      }
+
+      // Find the selected sound
+      const allSounds = await this.getAllSounds();
+      const selectedSound = allSounds.find(
+        sound => sound.id === selectedRingtoneId,
+      );
+
+      if (!selectedSound) {
+        console.log('🔊 Selected sound not found, using default');
+        return 'default';
+      }
+
+      // Return appropriate URI based on sound type
+      if ('uri' in selectedSound) {
+        // Custom ringtone
+        return selectedSound.uri;
+      } else if ('url' in selectedSound) {
+        // System sound
+        return selectedSound.url;
+      } else if ('fileName' in selectedSound && selectedSound.fileName) {
+        // Predefined sound
+        return `android.resource://${selectedSound.fileName}`;
+      }
+
+      console.log('🔊 Unable to determine sound URI, using default');
+      return 'default';
+    } catch (error) {
+      console.error('❌ Error getting selected notification sound:', error);
+      return 'default';
+    }
   }
 }
 

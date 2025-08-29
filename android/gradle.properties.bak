@@ -15,7 +15,7 @@ android.enableJetifier=true
 
 # React Native Settings
 reactNativeArchitectures=armeabi-v7a,arm64-v8a,x86,x86_64
-newArchEnabled=false
+newArchEnabled=true
 
 # Performance Settings
 org.gradle.parallel=true

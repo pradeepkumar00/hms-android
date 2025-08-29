@@ -57,8 +57,9 @@ react {
 
 /**
  * Set this to true to Run Proguard on Release builds to minify the Java bytecode.
+ * Enabled for better performance and smaller APK size
  */
-def enableProguardInReleaseBuilds = false
+def enableProguardInReleaseBuilds = true
 
 /**
  * In React Native 0.81+, JavaScript engine selection is handled automatically
@@ -77,6 +78,30 @@ android {
         targetSdkVersion rootProject.ext.targetSdkVersion
         versionCode 1
         versionName "1.0"
+        
+        // Specify supported ABIs for better compatibility across devices
+        ndk {
+            abiFilters "arm64-v8a", "armeabi-v7a"
+        }
+        
+        // Enable multiDex support for Android 10+ and large app bundles
+        multiDexEnabled true
+        
+        // Additional optimization for wide device compatibility
+        vectorDrawables.useSupportLibrary true
+    }
+    
+    // Configure packaging options for native libraries
+    packagingOptions {
+        pickFirst '**/libc++_shared.so'
+        pickFirst '**/libjsc.so'
+        pickFirst '**/libhermes.so'
+        pickFirst '**/libfbjni.so'
+        exclude 'META-INF/DEPENDENCIES'
+        exclude 'META-INF/LICENSE'
+        exclude 'META-INF/LICENSE.txt'
+        exclude 'META-INF/NOTICE'
+        exclude 'META-INF/NOTICE.txt'
     }
     signingConfigs {
         debug {
@@ -84,6 +109,8 @@ android {
             storePassword 'android'
             keyAlias 'androiddebugkey'
             keyPassword 'android'
+            v1SigningEnabled true
+            v2SigningEnabled true
         }
     }
     buildTypes {
@@ -96,6 +123,13 @@ android {
             signingConfig signingConfigs.debug
             minifyEnabled enableProguardInReleaseBuilds
             proguardFiles getDefaultProguardFile("proguard-android.txt"), "proguard-rules.pro"
+            
+            // Additional optimizations for production builds
+            shrinkResources enableProguardInReleaseBuilds
+            zipAlignEnabled true
+            
+            // Optimize for wide device compatibility
+            manifestPlaceholders = [usesCleartextTraffic:"false"]
         }
     }
 }
@@ -116,6 +150,9 @@ dependencies {
     if (hermesEnabled) {
         implementation("com.facebook.react:hermes-android")
     }
+    
+    // MultiDex support for Android 10 compatibility
+    implementation 'androidx.multidex:multidex:2.0.1'
 }
 
 // Vector icons configuration

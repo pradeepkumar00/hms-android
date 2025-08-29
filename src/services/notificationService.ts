@@ -1,13 +1,22 @@
 import messaging, {
   FirebaseMessagingTypes,
 } from '@react-native-firebase/messaging';
-import { Platform, PermissionsAndroid, Alert } from 'react-native';
+import {
+  Platform,
+  PermissionsAndroid,
+  Alert,
+  AppState,
+  AppStateStatus,
+} from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { STORAGE_KEYS } from '../constants/app';
 import {
   requestNotificationsPermission,
   checkNotificationPermissions,
 } from '../utils/permissionUtils';
+import NotificationSounds, {
+  playSampleSound,
+} from 'react-native-notification-sounds';
 
 export interface NotificationPayload {
   title: string;
@@ -30,13 +39,22 @@ export interface FCMTokenInfo {
 class NotificationService {
   private currentTenantId: string | null = null;
   private isInitialized: boolean = false;
+  private appState: AppStateStatus = 'active';
+  private navigationQueue: Array<any> = [];
+  private isNavigating: boolean = false;
 
   /**
-   * Initialize Firebase Cloud Messaging
+   * Initialize Firebase Cloud Messaging with enhanced connection stability
    */
   async initialize(): Promise<void> {
     try {
       console.log('🔔 Initializing Firebase Cloud Messaging...');
+
+      // Initialize notification channels first (Android)
+      await this.initializeNotificationChannels();
+
+      // Setup app state monitoring for connection stability
+      this.setupAppStateHandling();
 
       // Check if Firebase is properly configured
       try {
@@ -51,7 +69,7 @@ class NotificationService {
         // Request notification permissions
         await this.requestPermissions();
 
-        // Setup message handlers
+        // Setup message handlers with improved stability
         this.setupMessageHandlers();
 
         this.isInitialized = true;
@@ -175,7 +193,39 @@ class NotificationService {
   }
 
   /**
-   * Setup message handlers for foreground and background
+   * Setup app state handling for connection stability
+   */
+  private setupAppStateHandling(): void {
+    AppState.addEventListener('change', (nextAppState: AppStateStatus) => {
+      console.log('📱 App state changed:', this.appState, '->', nextAppState);
+      this.appState = nextAppState;
+
+      // Process queued navigation when app becomes active
+      if (nextAppState === 'active' && this.navigationQueue.length > 0) {
+        this.processNavigationQueue();
+      }
+    });
+  }
+
+  /**
+   * Initialize notification channels (Firebase handles this automatically)
+   */
+  private async initializeNotificationChannels(): Promise<void> {
+    try {
+      if (Platform.OS === 'android') {
+        console.log(
+          '📱 Firebase will handle notification channels automatically',
+        );
+        // Firebase creates channels automatically based on AndroidManifest.xml configuration
+        // No manual channel creation needed with pure Firebase implementation
+      }
+    } catch (error) {
+      console.error('❌ Error initializing notification setup:', error);
+    }
+  }
+
+  /**
+   * Setup message handlers with enhanced stability
    */
   private setupMessageHandlers(): void {
     // Handle foreground messages
@@ -214,7 +264,38 @@ class NotificationService {
   }
 
   /**
-   * Handle foreground messages (app is open)
+   * Play default notification sound from assets
+   */
+  private async playDefaultNotificationSound(): Promise<void> {
+    try {
+      console.log('🔊 Playing default notification sound...');
+
+      // Get available system sounds
+      const sounds = await NotificationSounds.getNotifications('notification');
+
+      if (sounds && sounds.length > 0) {
+        // Use the first available notification sound as default
+        const defaultSound = sounds[0];
+        console.log(
+          `🔊 Playing system notification sound: ${defaultSound.title}`,
+        );
+
+        // Play the system notification sound
+        await playSampleSound(defaultSound);
+        console.log('✅ Default notification sound played successfully');
+      } else {
+        console.log(
+          '⚠️ No system notification sounds available, using silent notification',
+        );
+      }
+    } catch (error) {
+      console.error('❌ Error playing default notification sound:', error);
+      // Fallback: Continue without sound rather than breaking the notification
+    }
+  }
+
+  /**
+   * Handle foreground messages (app is open) with enhanced stability
    */
   private async handleForegroundMessage(
     remoteMessage: FirebaseMessagingTypes.RemoteMessage,
@@ -222,25 +303,70 @@ class NotificationService {
     try {
       const { notification, data } = remoteMessage;
 
+      // Play default notification sound
+      await this.playDefaultNotificationSound();
+
       if (notification) {
-        // Show in-app notification or alert
-        Alert.alert(
-          notification.title || 'New Notification',
-          notification.body || 'You have a new notification',
-          [
-            { text: 'Dismiss', style: 'cancel' },
-            {
-              text: 'View',
-              onPress: () => this.handleNotificationTap(remoteMessage),
-            },
-          ],
-        );
+        // Use Firebase-compatible notification with enhanced stability
+        await this.showFirebaseNotification({
+          title: notification.title || 'New Notification',
+          body: notification.body || 'You have a new notification',
+          data: data || {},
+          remoteMessage,
+        });
       }
 
       // Store notification in local storage for inbox
       await this.storeNotificationLocally(remoteMessage);
     } catch (error) {
       console.error('❌ Error handling foreground message:', error);
+    }
+  }
+
+  /**
+   * Show Firebase-compatible notification with enhanced stability
+   */
+  private async showFirebaseNotification({
+    title,
+    body,
+    data,
+    remoteMessage,
+  }: {
+    title: string;
+    body: string;
+    data: any;
+    remoteMessage: FirebaseMessagingTypes.RemoteMessage;
+  }): Promise<void> {
+    try {
+      console.log('🔔 Displaying foreground notification:', title);
+
+      // Use Alert.alert with improved navigation queue for stability
+      Alert.alert(
+        title,
+        body,
+        [
+          { text: 'Dismiss', style: 'cancel' },
+          {
+            text: 'View',
+            onPress: () => {
+              console.log('👆 User selected View - queuing navigation');
+              this.queueNavigation(remoteMessage);
+            },
+          },
+        ],
+        {
+          cancelable: true,
+          onDismiss: () => {
+            console.log('🔕 Notification alert dismissed');
+          },
+        },
+      );
+
+      console.log('✅ Firebase notification displayed successfully');
+    } catch (error) {
+      console.error('❌ Error showing Firebase notification:', error);
+      // Minimal fallback - just store the notification
+      console.log('💾 Storing notification without display due to error');
     }
   }
 
@@ -253,6 +379,9 @@ class NotificationService {
     try {
       console.log('📨 Processing background message:', remoteMessage);
 
+      // Play default notification sound for background notifications
+      await this.playDefaultNotificationSound();
+
       // Store notification in local storage for inbox
       await this.storeNotificationLocally(remoteMessage);
 
@@ -264,21 +393,86 @@ class NotificationService {
   }
 
   /**
-   * Handle notification tap (deep linking)
+   * Queue navigation to prevent WebSocket connection issues
+   */
+  private queueNavigation(
+    remoteMessage: FirebaseMessagingTypes.RemoteMessage,
+  ): void {
+    const { data } = remoteMessage;
+    if (data) {
+      this.navigationQueue.push({ data, timestamp: Date.now() });
+
+      // Process immediately if app is active
+      if (this.appState === 'active') {
+        this.processNavigationQueue();
+      }
+    }
+  }
+
+  /**
+   * Process navigation queue with enhanced stability
+   */
+  private async processNavigationQueue(): Promise<void> {
+    if (this.isNavigating || this.navigationQueue.length === 0) {
+      return;
+    }
+
+    this.isNavigating = true;
+
+    try {
+      // Process only the latest navigation request to prevent conflicts
+      const latestNavigation = this.navigationQueue.pop();
+      this.navigationQueue = []; // Clear the queue
+
+      if (latestNavigation) {
+        console.log('🔗 Processing queued navigation:', latestNavigation.data);
+
+        // Import navigation service dynamically
+        const { navigationService } = await import(
+          '../services/navigationService'
+        );
+
+        // Add delay only if necessary
+        const delay = this.appState === 'active' ? 0 : 500;
+
+        if (delay > 0) {
+          await new Promise<void>(resolve =>
+            setTimeout(() => resolve(), delay),
+          );
+        }
+
+        await navigationService.handleNotificationDeepLink(
+          latestNavigation.data,
+        );
+        console.log('✅ Navigation completed successfully');
+      }
+    } catch (error) {
+      console.error('❌ Error processing navigation queue:', error);
+    } finally {
+      this.isNavigating = false;
+    }
+  }
+
+  /**
+   * Handle notification tap (deep linking) with improved stability
    */
   private handleNotificationTap(
     remoteMessage: FirebaseMessagingTypes.RemoteMessage,
   ): void {
     try {
-      const { data } = remoteMessage;
+      const { data, notification } = remoteMessage;
+
+      console.log('👆 Processing notification tap:', {
+        data,
+        notificationTitle: notification?.title,
+        notificationBody: notification?.body,
+        appState: this.appState,
+      });
 
       if (data) {
-        // Import navigation service dynamically to avoid circular dependencies
-        import('../services/navigationService').then(
-          ({ navigationService }) => {
-            navigationService.handleNotificationDeepLink(data);
-          },
-        );
+        this.queueNavigation(remoteMessage);
+      } else {
+        console.warn('⚠️ No data found in notification for navigation');
       }
     } catch (error) {
       console.error('❌ Error handling notification tap:', error);
@@ -501,6 +695,39 @@ class NotificationService {
       issues,
       recommendations,
     };
+  }
+
+  /**
+   * Setup Firebase-only notification handlers (pure implementation)
+   */
+  setupNotificationActions(): void {
+    try {
+      console.log('📱 Setting up pure Firebase notification handlers...');
+      // All notification handling is done through Firebase messaging handlers
+      // setupMessageHandlers() already handles foreground, background, and tap events
+      // No additional configuration needed for pure Firebase implementation
+      console.log('✅ Firebase notification handlers configured');
+    } catch (error) {
+      console.error('❌ Error setting up notification handlers:', error);
+    }
+  }
+
+  /**
+   * Cleanup resources and listeners
+   */
+  cleanup(): void {
+    try {
+      // Clear navigation queue
+      this.navigationQueue = [];
+      this.isNavigating = false;
+
+      // Note: AppState.removeEventListener is deprecated in newer RN versions
+      // The listener will be automatically cleaned up when component unmounts
+
+      console.log('🧹 NotificationService cleanup completed');
+    } catch (error) {
+      console.error('❌ Error during cleanup:', error);
+    }
   }
 
   /**

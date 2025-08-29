@@ -11,6 +11,7 @@ export interface User {
   createdAt: string;
   tenantId: string; // Required for topic subscriptions
   status?: string;
+  type: string;
 }
 
 export interface AuthState {
@@ -39,9 +40,10 @@ export interface Task {
   description: string;
   fileUrl?: string;
   createdBy: string;
+  createdByName?: string; // Name of task creator
   assignedTo?: string | null; // Nullable for new tasks
-  department?: string;
-  status: 'new' | 'assigned' | 'in_progress' | 'completed';
+  assignedToName?: string; // Name of assigned user
+  status: 'new' | 'assigned' | 'progress' | 'completed';
   createdAt: string;
   updatedAt: string;
   dueDate?: string;
@@ -71,6 +73,7 @@ export interface AssignmentHistory {
 export interface TaskState {
   assignedToMe: Task[]; // Tasks assigned TO current user
   assignedByMe: Task[]; // Tasks assigned BY current user (History)
+  createdTasks: Task[]; // Tasks created BY current user (new requirements)
   inbox: Notification[];
   isLoading: boolean;
   error: string | null;
@@ -100,8 +103,8 @@ export type RootStackParamList = {
   Main: undefined;
   TaskDetails: { taskId: string; readonly?: boolean };
   Inbox: undefined;
-  AssignedTasks: undefined; // Tasks assigned TO current user
-  History: undefined; // Tasks assigned BY current user
+  AssignedTasks: undefined; // Tasks created BY current user
+  History: undefined; // Tasks assigned to others BY current user
   CreateTask: undefined;
   NotificationSettings: undefined;
 };

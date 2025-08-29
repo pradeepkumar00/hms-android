@@ -29,11 +29,16 @@ const AppNavigator: React.FC = () => {
     // Check if user is already authenticated on app start
     const initializeAuth = async () => {
       try {
+        console.log('🔍 AppNavigator: Initializing auth state...');
         await dispatch(checkAuthState()).unwrap();
+        console.log('✅ AppNavigator: Auth state initialized successfully');
       } catch (error) {
         // User is not authenticated, that's fine
-        console.log('No stored auth state found');
+        console.log('⚠️ AppNavigator: No stored auth state found:', error);
       } finally {
+        console.log(
+          '✅ AppNavigator: Auth initialization complete, setting isInitializing to false',
+        );
         setIsInitializing(false);
       }
     };
@@ -43,12 +48,23 @@ const AppNavigator: React.FC = () => {
 
   // Show loading spinner while initializing
   if (isInitializing || isLoading) {
+    console.log(
+      '🔄 AppNavigator: Showing loading spinner - isInitializing:',
+      isInitializing,
+      'isLoading:',
+      isLoading,
+    );
     return (
       <View style={styles.loadingContainer}>
         <ActivityIndicator size="large" color={theme.colors.primary} />
       </View>
     );
   }
+
+  console.log(
+    '📱 AppNavigator: Rendering app - isAuthenticated:',
+    isAuthenticated,
+  );
 
   return (
     <NavigationContainer ref={navigationRef}>

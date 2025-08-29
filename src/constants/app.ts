@@ -35,7 +35,7 @@ export const DEPARTMENTS = [
 export const TASK_STATUSES = [
   { label: 'New', value: 'new' },
   { label: 'Assigned', value: 'assigned' },
-  { label: 'In Progress', value: 'in_progress' },
+  { label: 'In Progress', value: 'progress' },
   { label: 'Completed', value: 'completed' },
 ] as const;
 

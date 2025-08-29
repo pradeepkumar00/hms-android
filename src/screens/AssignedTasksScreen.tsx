@@ -15,11 +15,11 @@ import {
   useAppDispatch,
   useAppSelector,
   selectCurrentUser,
-  selectAssignedToMeTasks,
+  selectCreatedByMeTasks,
   selectTasksLoading,
   selectTasksError,
 } from '../store';
-import { fetchAssignedToMeTasks, clearTaskError } from '../store/taskSlice';
+import { fetchCreatedTasks, clearTaskError } from '../store/taskSlice';
 import { theme } from '../constants/theme';
 import { Header } from '../components';
 import { Task } from '../types';
@@ -37,7 +37,7 @@ const AssignedTasksScreen: React.FC<AssignedTasksScreenProps> = ({
 }) => {
   const dispatch = useAppDispatch();
   const user = useAppSelector(selectCurrentUser);
-  const assignedToMeTasks = useAppSelector(selectAssignedToMeTasks);
+  const createdTasks = useAppSelector(selectCreatedByMeTasks);
   const isLoading = useAppSelector(selectTasksLoading);
   const error = useAppSelector(selectTasksError);
 
@@ -47,10 +47,10 @@ const AssignedTasksScreen: React.FC<AssignedTasksScreenProps> = ({
   const [filterBy, setFilterBy] = useState<FilterOption>('all');
   const [showFilters, setShowFilters] = useState(false);
 
-  // Fetch assigned to me tasks on screen load and when screen comes into focus
+  // Fetch created tasks on screen load and when screen comes into focus
   useEffect(() => {
     if (user?.id) {
-      dispatch(fetchAssignedToMeTasks(user.id));
+      dispatch(fetchCreatedTasks({}));
     }
   }, [dispatch, user?.id]);
 
@@ -58,7 +58,7 @@ const AssignedTasksScreen: React.FC<AssignedTasksScreenProps> = ({
   useFocusEffect(
     useCallback(() => {
       if (user?.id) {
-        dispatch(fetchAssignedToMeTasks(user.id));
+        dispatch(fetchCreatedTasks({}));
       }
     }, [dispatch, user?.id]),
   );
@@ -77,7 +77,7 @@ const AssignedTasksScreen: React.FC<AssignedTasksScreenProps> = ({
     if (user?.id) {
       setRefreshing(true);
       try {
-        await dispatch(fetchAssignedToMeTasks(user.id)).unwrap();
+        await dispatch(fetchCreatedTasks({})).unwrap();
       } catch (error) {
         console.error('Refresh error:', error);
       } finally {
@@ -88,7 +88,7 @@ const AssignedTasksScreen: React.FC<AssignedTasksScreenProps> = ({
 
   // Filter and sort tasks
   const filteredAndSortedTasks = useMemo(() => {
-    let filtered = [...assignedToMeTasks];
+    let filtered = [...createdTasks];
 
     // Apply search filter
     if (searchQuery.trim()) {
@@ -97,7 +97,7 @@ const AssignedTasksScreen: React.FC<AssignedTasksScreenProps> = ({
         task =>
           task.title.toLowerCase().includes(query) ||
           task.description.toLowerCase().includes(query) ||
-          task.department.toLowerCase().includes(query),
+          (task.department?.toLowerCase() || '').includes(query),
       );
     }
 
@@ -131,28 +131,28 @@ const AssignedTasksScreen: React.FC<AssignedTasksScreenProps> = ({
         case 'status':
           return a.status.localeCompare(b.status);
         case 'department':
-          return a.department.localeCompare(b.department);
+          return (a.department || '').localeCompare(b.department || '');
         default:
           return 0;
       }
     });
 
     return filtered;
-  }, [assignedToMeTasks, searchQuery, sortBy, filterBy]);
+  }, [createdTasks, searchQuery, sortBy, filterBy]);
 
   // Get task status statistics
   const taskStats = useMemo(() => {
-    return assignedToMeTasks.reduce(
+    return createdTasks.reduce(
       (stats, task) => {
         stats.total += 1;
         switch (task.status) {
-          case 'Assigned':
+          case 'assigned':
             stats.assigned += 1;
             break;
-          case 'In Progress':
+          case 'progress':
             stats.inProgress += 1;
             break;
-          case 'Completed':
+          case 'completed':
             stats.completed += 1;
             break;
         }
@@ -160,7 +160,7 @@ const AssignedTasksScreen: React.FC<AssignedTasksScreenProps> = ({
       },
       { total: 0, assigned: 0, inProgress: 0, completed: 0 },
     );
-  }, [assignedToMeTasks]);
+  }, [createdTasks]);
 
   // Handle task press - navigate to editable task details (assigned tasks can be updated)
   const handleTaskPress = useCallback(
@@ -369,13 +369,18 @@ const AssignedTasksScreen: React.FC<AssignedTasksScreenProps> = ({
 
   return (
     <View style={styles.container}>
-      <Header title="Tasks I Assigned" showNotificationIcon={false} />
+      <Header
+        title="Task Created"
+        showNotificationIcon={false}
+        showHomeIcon={true}
+        onHomePress={() => navigation.navigate('Main')}
+      />
 
       <View style={styles.content}>
         {/* Description */}
         <View style={styles.descriptionContainer}>
           <Text style={styles.descriptionText}>
-            Tasks that you have assigned to other users
+            Tasks that you have created
           </Text>
         </View>
         {/* Stats Cards */}

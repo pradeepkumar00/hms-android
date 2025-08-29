@@ -95,19 +95,23 @@ class EnvironmentService {
    * Log environment information (development only)
    */
   private logEnvironmentInfo(): void {
-    if (this.config.enableDebugLogging) {
-      console.log('🌍 Environment Configuration Loaded:');
-      console.log(`   Environment: ${this.config.environment}`);
-      console.log(`   API Base URL: ${this.config.apiBaseUrl}`);
-      console.log(`   Firebase Project: ${this.config.firebaseProjectId}`);
-      console.log(`   Debug Logging: ${this.config.enableDebugLogging}`);
-      console.log(`   Dev Menu: ${this.config.enableDevMenu}`);
-      console.log(
-        `   Performance Monitoring: ${this.config.enablePerformanceMonitoring}`,
-      );
-      console.log(`   Sentry: ${this.config.sentryEnabled}`);
-      console.log(`   Analytics: ${this.config.analyticsEnabled}`);
-    }
+    // Always log environment info to help debug loading issues
+    console.log('🌍 Environment Configuration Loaded:');
+    console.log('📋 Raw Config Values from react-native-config:');
+    console.log(`   Config.ENVIRONMENT: ${Config.ENVIRONMENT}`);
+    console.log(`   Config.API_BASE_URL: ${Config.API_BASE_URL}`);
+    console.log(`   Config.FIREBASE_PROJECT_ID: ${Config.FIREBASE_PROJECT_ID}`);
+    console.log('📋 Processed Configuration:');
+    console.log(`   Environment: ${this.config.environment}`);
+    console.log(`   API Base URL: ${this.config.apiBaseUrl}`);
+    console.log(`   Firebase Project: ${this.config.firebaseProjectId}`);
+    console.log(`   Debug Logging: ${this.config.enableDebugLogging}`);
+    console.log(`   Dev Menu: ${this.config.enableDevMenu}`);
+    console.log(
+      `   Performance Monitoring: ${this.config.enablePerformanceMonitoring}`,
+    );
+    console.log(`   Sentry: ${this.config.sentryEnabled}`);
+    console.log(`   Analytics: ${this.config.analyticsEnabled}`);
   }
 
   /**
@@ -207,8 +211,8 @@ class EnvironmentService {
    */
   getAppInfo() {
     return {
-      name: Config.APP_NAME || 'Hospital Management',
-      displayName: Config.APP_DISPLAY_NAME || 'Hospital Management',
+      name: Config.APP_NAME || 'Octus AI',
+      displayName: Config.APP_DISPLAY_NAME || 'Octus AI',
       bundleId: Config.APP_BUNDLE_ID || 'com.octusai.hospital',
       versionCode: Config.APP_VERSION_CODE || '1',
       environment: this.config.environment,

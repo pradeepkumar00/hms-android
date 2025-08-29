@@ -44,6 +44,8 @@ export const selectAssignedToMeTasks = (state: AppRootState) =>
   state.tasks.assignedToMe;
 export const selectAssignedByMeTasks = (state: AppRootState) =>
   state.tasks.assignedByMe;
+export const selectCreatedByMeTasks = (state: AppRootState) =>
+  state.tasks.createdTasks;
 export const selectCurrentTask = (state: AppRootState) =>
   state.tasks.currentTask;
 export const selectTasksLoading = (state: AppRootState) =>
@@ -54,7 +56,7 @@ export const selectTasksError = (state: AppRootState) => state.tasks.error;
 export const selectAssignedTasks = (state: AppRootState) =>
   state.tasks.assignedToMe;
 export const selectCreatedTasks = (state: AppRootState) =>
-  state.tasks.assignedByMe;
+  state.tasks.createdTasks;
 
 // Computed selectors with memoization
 export const selectUnreadNotifications = createSelector(

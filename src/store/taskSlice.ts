@@ -3,6 +3,7 @@ import { TaskState, Task, Notification, TaskCreateRequest } from '../types';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { STORAGE_KEYS } from '../constants/app';
 import authService from '../services/authService';
+import realAuthService from '../services/realAuthService';
 
 // Mock data for development (will be replaced with real API calls)
 const MOCK_NOTIFICATIONS: Notification[] = [
@@ -158,7 +159,7 @@ const MOCK_TASKS: Task[] = [
     createdBy: '3', // Supervisor
     assignedTo: '1', // HR user
     department: 'HR',
-    status: 'in_progress',
+    status: 'progress',
     createdAt: '2024-12-19T09:15:00Z',
     updatedAt: '2024-12-19T14:20:00Z',
     dueDate: '2024-12-22T12:00:00Z',
@@ -200,7 +201,7 @@ const MOCK_TASKS: Task[] = [
     createdBy: '2', // Admin user
     assignedTo: '1', // HR user
     department: 'HR',
-    status: 'in_progress',
+    status: 'progress',
     createdAt: '2024-12-18T11:30:00Z',
     updatedAt: '2024-12-19T13:15:00Z',
     dueDate: '2024-12-28T17:00:00Z',
@@ -230,7 +231,7 @@ const MOCK_TASKS: Task[] = [
     createdBy: '1', // HR user
     assignedTo: '2', // Admin user
     department: 'Admin',
-    status: 'in_progress',
+    status: 'progress',
     createdAt: '2024-12-19T09:30:00Z',
     updatedAt: '2024-12-19T15:20:00Z',
     dueDate: '2024-12-24T17:00:00Z',
@@ -302,7 +303,7 @@ const MOCK_TASKS: Task[] = [
     createdBy: '2', // Admin user
     assignedTo: '3', // Supervisor
     department: 'Supervisor',
-    status: 'in_progress',
+    status: 'progress',
     createdAt: '2024-12-19T10:45:00Z',
     updatedAt: '2024-12-19T14:30:00Z',
     dueDate: '2024-12-20T17:00:00Z',
@@ -361,7 +362,7 @@ const MOCK_TASKS: Task[] = [
     createdBy: '1', // HR user (creator)
     assignedTo: '2', // Admin user (assignee)
     department: 'Admin',
-    status: 'in_progress',
+    status: 'progress',
     createdAt: '2024-12-18T16:45:00Z',
     updatedAt: '2024-12-19T11:30:00Z',
     dueDate: '2024-12-30T17:00:00Z',
@@ -403,7 +404,7 @@ const MOCK_TASKS: Task[] = [
     createdBy: '2', // Admin user (creator)
     assignedTo: '3', // Supervisor (assignee)
     department: 'Supervisor',
-    status: 'in_progress',
+    status: 'progress',
     createdAt: '2024-12-17T11:30:00Z',
     updatedAt: '2024-12-19T10:15:00Z',
     dueDate: '2024-12-25T17:00:00Z',
@@ -441,6 +442,7 @@ const MOCK_TASKS: Task[] = [
 const initialState: TaskState = {
   assignedToMe: [], // Tasks assigned TO current user
   assignedByMe: [], // Tasks assigned BY current user (History)
+  createdTasks: [], // Tasks created BY current user (new requirements)
   inbox: [], // Notifications for current user
   isLoading: false,
   error: null,
@@ -471,8 +473,15 @@ export const fetchInboxNotifications = createAsyncThunk(
           );
 
           // Merge local notifications with mock notifications
-          // Put local notifications first (newest first)
-          return [...userLocalNotifications, ...userNotifications];
+          // Combine and sort by createdAt (newest first)
+          const allNotifications = [
+            ...userLocalNotifications,
+            ...userNotifications,
+          ];
+          return allNotifications.sort(
+            (a, b) =>
+              new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+          );
         }
       } catch (storageError) {
         console.error('Failed to load local notifications:', storageError);
@@ -492,15 +501,23 @@ export const fetchInboxNotifications = createAsyncThunk(
 
 export const fetchAssignedToMeTasks = createAsyncThunk(
   'tasks/fetchAssignedToMeTasks',
-  async (userId: string, { rejectWithValue }) => {
+  async (userId: string, { rejectWithValue, getState }) => {
     try {
-      // Simulate API call delay
-      await new Promise<void>(resolve => setTimeout(resolve, 600));
+      const state = getState() as any;
+      const authState = state.auth;
+      const token = authState.token;
+      if (!token) {
+        return rejectWithValue(
+          'Authentication required to fetch assigned tasks',
+        );
+      }
+
+      const assignedTasks = await authService.assignedTasks(token);
 
       // In real implementation: const response = await api.get(`/tasks/assigned-to-me/${userId}`);
       // For now, return mock data filtered by assignedTo
-      const assignedToMeTasks = MOCK_TASKS.filter(
-        task => task.assignedTo === userId,
+      const assignedToMeTasks = assignedTasks.filter(
+        (task: any) => task.assignedTo === userId,
       );
 
       return assignedToMeTasks;
@@ -624,27 +641,92 @@ export const fetchTaskById = createAsyncThunk(
   'tasks/fetchTaskById',
   async (taskId: string, { rejectWithValue, getState }) => {
     try {
-      // Simulate API call delay
-      await new Promise<void>(resolve => setTimeout(resolve, 300));
+      console.log(`🔄 Fetching task by ID: ${taskId}`);
 
-      // In real implementation: const response = await api.get(`/tasks/${taskId}`);
-
-      // First check if the task exists in current state (locally created tasks)
+      // First check if the task exists in current state (locally cached)
       const state = getState() as any;
       const allTasks = [
-        ...state.tasks.assignedTasks,
-        ...state.tasks.createdTasks,
+        ...(state.tasks.assignedToMe || []),
+        ...(state.tasks.assignedByMe || []),
+        ...(state.tasks.createdTasks || []),
         ...MOCK_TASKS,
       ];
 
-      const task = allTasks.find(t => t.id === taskId);
+      const localTask = allTasks.find(t => t.id === taskId);
 
-      if (!task) {
+      if (localTask) {
+        console.log(`✅ Task found in local state: ${taskId}`);
+        return localTask;
+      }
+
+      // Task not found locally, fetch from API
+      console.log(`🌐 Task not found locally, fetching from API: ${taskId}`);
+
+      // Get auth token
+      const authState = state.auth;
+      const token = authState.token;
+
+      if (!token) {
+        return rejectWithValue('Authentication required to fetch task');
+      }
+
+      // Import auth service dynamically to avoid circular dependencies
+      const authService = (await import('../services/realAuthService')).default;
+
+      // Call API to fetch task
+      const response = await authService.fetchTaskById(taskId, token);
+
+      console.log('🔍 Raw API response structure:', {
+        hasResponse: !!response,
+        responseKeys: response ? Object.keys(response) : [],
+        hasTaskProperty: response && 'task' in response,
+        hasIdProperty: response && '_id' in response,
+      });
+
+      if (!response || !response._id) {
+        console.log('❌ API Response validation failed:', response);
         return rejectWithValue(`Task with ID ${taskId} not found`);
       }
 
+      // Transform API response to match our Task interface exactly
+      // API returns task object directly, not wrapped in {task: {}}
+      const task: Task = {
+        id: response._id,
+        title: response.title,
+        description: response.description,
+        assignedTo: response.assignedTo || null,
+        assignedToName: response.assignedToName || undefined,
+        department: response.department || undefined,
+        status:
+          response.status === 'new'
+            ? 'new'
+            : response.status === 'assigned'
+            ? 'assigned'
+            : response.status === 'progress'
+            ? 'progress'
+            : response.status === 'completed'
+            ? 'completed'
+            : 'new',
+        createdBy: response.createdBy || '',
+        createdByName: response.createdByName || 'Unknown',
+        createdAt: response.createdAt,
+        updatedAt: response.updatedAt,
+        dueDate: response.dueDate || undefined,
+        fileUrl: response.fileUrl || undefined,
+        assignmentHistory: response.taskHistory || undefined,
+      };
+
+      console.log('====================================');
+      console.log('====================================');
+      console.log('hello');
+      console.log('====================================');
+      console.log(
+        `✅ Task fetched from API: ${taskId}`,
+        JSON.stringify(task, null, 2),
+      );
       return task;
     } catch (error) {
+      console.error('❌ Failed to fetch task by ID:', error);
       const message =
         error instanceof Error ? error.message : 'Failed to fetch task details';
       return rejectWithValue(message);
@@ -769,11 +851,11 @@ export const createTask = createAsyncThunk(
         department: taskData.department,
         status:
           apiTaskData.status === 'progress'
-            ? 'in_progress'
+            ? 'progress'
             : (apiTaskData.status as
                 | 'new'
                 | 'assigned'
-                | 'in_progress'
+                | 'progress'
                 | 'completed'),
         createdAt: response.createdAt || new Date().toISOString(),
         updatedAt: response.updatedAt || new Date().toISOString(),
@@ -845,6 +927,129 @@ export const createTask = createAsyncThunk(
   },
 );
 
+export const fetchCreatedTasks = createAsyncThunk(
+  'tasks/fetchCreatedTasks',
+  async (
+    { status }: { status?: 'new' | 'assigned' } = {},
+    { rejectWithValue, getState },
+  ) => {
+    try {
+      console.log(`🔄 Fetching created tasks with status: ${status || 'all'}`);
+
+      const state = getState() as any;
+      const authState = state.auth;
+      const token = authState.token;
+
+      if (!token) {
+        return rejectWithValue(
+          'Authentication required to fetch created tasks',
+        );
+      }
+
+      const response = await realAuthService.fetchCreatedTasks(token, status);
+
+      // Transform API response to match our Task interface
+      const tasks = response.map((apiTask: any) => ({
+        id: apiTask._id,
+        title: apiTask.title,
+        description: apiTask.description,
+        status: apiTask.status,
+        assignedTo: apiTask.assignedTo,
+        assignedToName: apiTask.assignedToName,
+        department: apiTask.department || '',
+        createdBy: apiTask.createdBy,
+        createdByName: apiTask.createdByName,
+        createdAt: apiTask.createdAt,
+        updatedAt: apiTask.updatedAt,
+        dueDate: apiTask.dueDate,
+        priority: apiTask.priority || 'medium',
+        tenantId: apiTask.tenantId,
+      }));
+
+      console.log(
+        `✅ Created tasks fetched successfully: ${tasks.length} tasks`,
+      );
+      return tasks;
+    } catch (error) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : 'Failed to fetch created tasks';
+      console.error('❌ Failed to fetch created tasks:', message);
+      return rejectWithValue(message);
+    }
+  },
+);
+
+export const updateTaskStatusReal = createAsyncThunk(
+  'tasks/updateTaskStatusReal',
+  async (
+    {
+      taskId,
+      status,
+      assignedTo,
+      assignedToName,
+    }: {
+      taskId: string;
+      status: 'new' | 'assigned' | 'progress' | 'completed';
+      assignedTo?: string;
+      assignedToName?: string;
+    },
+    { rejectWithValue, getState },
+  ) => {
+    try {
+      console.log(`🔄 Updating task ${taskId} status to: ${status}`);
+
+      const state = getState() as any;
+      const authState = state.auth;
+      const token = authState.token;
+
+      if (!token) {
+        return rejectWithValue('Authentication required to update task');
+      }
+
+      const updateData: any = { status };
+      if (assignedTo) {
+        updateData.assignedTo = assignedTo;
+        updateData.assignedToName = assignedToName;
+      }
+
+      const response = await realAuthService.updateTaskStatus(
+        taskId,
+        token,
+        updateData,
+      );
+
+      // Transform API response to match our Task interface
+      const updatedTask = {
+        id: response._id,
+        title: response.title,
+        description: response.description,
+        status: response.status,
+        assignedTo: response.assignedTo,
+        assignedToName: response.assignedToName,
+        department: response.department || '',
+        createdBy: response.createdBy,
+        createdByName: response.createdByName,
+        createdAt: response.createdAt,
+        updatedAt: response.updatedAt,
+        dueDate: response.dueDate,
+        priority: response.priority || 'medium',
+        tenantId: response.tenantId,
+        taskHistory: response.taskHistory || [],
+      };
+
+      console.log(`✅ Task status updated successfully: ${taskId}`);
+      return updatedTask;
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : 'Failed to update task status';
+      console.error('❌ Failed to update task status:', message);
+      return rejectWithValue(message);
+    }
+  },
+);
+
 const taskSlice = createSlice({
   name: 'tasks',
   initialState,
@@ -857,7 +1062,7 @@ const taskSlice = createSlice({
       state,
       action: PayloadAction<{
         taskId: string;
-        status: 'new' | 'assigned' | 'in_progress' | 'completed';
+        status: 'new' | 'assigned' | 'progress' | 'completed';
       }>,
     ) => {
       const { taskId, status } = action.payload;
@@ -963,7 +1168,7 @@ const taskSlice = createSlice({
             task.status = status as
               | 'new'
               | 'assigned'
-              | 'in_progress'
+              | 'progress'
               | 'completed';
             task.updatedAt = updatedAt;
           } else {
@@ -973,7 +1178,7 @@ const taskSlice = createSlice({
               task.status = status as
                 | 'new'
                 | 'assigned'
-                | 'in_progress'
+                | 'progress'
                 | 'completed';
               task.updatedAt = updatedAt;
             }
@@ -1026,18 +1231,39 @@ const taskSlice = createSlice({
 
       // Fetch task by ID
       .addCase(fetchTaskById.pending, state => {
+        console.log('🔄 fetchTaskById.pending - Starting task fetch...');
         state.isLoading = true;
         state.error = null;
       })
       .addCase(
         fetchTaskById.fulfilled,
         (state, action: PayloadAction<Task>) => {
+          console.log('🎉 fetchTaskById.fulfilled - BUILDER CASE EXECUTED!');
+          console.log(
+            '📦 Action payload received:',
+            JSON.stringify(action.payload, null, 2),
+          );
+          console.log('📊 State before update:', {
+            isLoading: state.isLoading,
+            currentTask: state.currentTask?.id,
+            error: state.error,
+          });
+
           state.isLoading = false;
           state.currentTask = action.payload;
           state.error = null;
+
+          console.log('📊 State after update:', {
+            isLoading: state.isLoading,
+            currentTask: state.currentTask?.id,
+            error: state.error,
+          });
+          console.log('✅ fetchTaskById.fulfilled - BUILDER CASE COMPLETED!');
         },
       )
       .addCase(fetchTaskById.rejected, (state, action) => {
+        console.log('❌ fetchTaskById.rejected - BUILDER CASE EXECUTED!');
+        console.log('💥 Rejection payload:', action.payload);
         state.isLoading = false;
         state.error = action.payload as string;
         state.currentTask = null;
@@ -1082,6 +1308,72 @@ const taskSlice = createSlice({
         },
       )
       .addCase(reassignTask.rejected, (state, action) => {
+        state.isLoading = false;
+        state.error = action.payload as string;
+      })
+
+      // Fetch created tasks
+      .addCase(fetchCreatedTasks.pending, state => {
+        state.isLoading = true;
+        state.error = null;
+      })
+      .addCase(
+        fetchCreatedTasks.fulfilled,
+        (state, action: PayloadAction<Task[]>) => {
+          state.isLoading = false;
+          state.createdTasks = action.payload;
+          state.error = null;
+        },
+      )
+      .addCase(fetchCreatedTasks.rejected, (state, action) => {
+        state.isLoading = false;
+        state.error = action.payload as string;
+      })
+
+      // Update task status real
+      .addCase(updateTaskStatusReal.pending, state => {
+        state.isLoading = true;
+        state.error = null;
+      })
+      .addCase(
+        updateTaskStatusReal.fulfilled,
+        (state, action: PayloadAction<Task>) => {
+          state.isLoading = false;
+          const updatedTask = action.payload;
+
+          // Update in created tasks if found
+          const createdTaskIndex = state.createdTasks.findIndex(
+            task => task.id === updatedTask.id,
+          );
+          if (createdTaskIndex !== -1) {
+            state.createdTasks[createdTaskIndex] = updatedTask;
+          }
+
+          // Update in assigned to me tasks if found
+          const assignedToMeTaskIndex = state.assignedToMe.findIndex(
+            task => task.id === updatedTask.id,
+          );
+          if (assignedToMeTaskIndex !== -1) {
+            state.assignedToMe[assignedToMeTaskIndex] = updatedTask;
+          }
+
+          // Update in assigned by me tasks if found
+          const assignedByMeTaskIndex = state.assignedByMe.findIndex(
+            task => task.id === updatedTask.id,
+          );
+          if (assignedByMeTaskIndex !== -1) {
+            state.assignedByMe[assignedByMeTaskIndex] = updatedTask;
+          }
+
+          // Update current task if it's the same
+          if (state.currentTask && state.currentTask.id === updatedTask.id) {
+            state.currentTask = updatedTask;
+          }
+
+          state.error = null;
+        },
+      )
+      .addCase(updateTaskStatusReal.rejected, (state, action) => {
         state.isLoading = false;
         state.error = action.payload as string;
       });

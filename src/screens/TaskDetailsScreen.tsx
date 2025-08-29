@@ -8,12 +8,14 @@ import {
   Alert,
   ActivityIndicator,
   Linking,
+  Modal,
 } from 'react-native';
 import { Picker } from '@react-native-picker/picker';
 import {
   useAppDispatch,
   useAppSelector,
   selectCurrentUser,
+  selectAuthToken,
   selectAssignedTasks,
   selectCreatedTasks,
   selectCurrentTask,
@@ -23,16 +25,19 @@ import {
 import {
   updateTaskStatus,
   updateTaskStatusOptimistic,
+  updateTaskStatusReal,
   clearTaskError,
-  fetchAssignedTasks,
-  fetchCreatedTasks,
+  fetchAssignedToMeTasks,
+  fetchAssignedByMeTasks,
   fetchTaskById,
+  fetchCreatedTasks,
 } from '../store/taskSlice';
 import { theme } from '../constants/theme';
 import { Header } from '../components';
 import { TASK_STATUSES } from '../constants/app';
-import { Task } from '../types';
+import { Task, User } from '../types';
 import Icon from 'react-native-vector-icons/MaterialIcons';
+import authService from '../services/authService';
 import {
   formatDateDDMMYYYY,
   formatDetailedRelativeTime,
@@ -52,9 +57,36 @@ const TaskDetailsScreen: React.FC<TaskDetailsScreenProps> = ({
   navigation,
   route,
 }) => {
-  const { taskId, readonly = false } = route.params;
+  // Safely extract route params with comprehensive error handling
+  const routeParams = route?.params || {};
+  const { taskId, readonly = false } = routeParams;
+
+  // Additional validation for route params to prevent undefined errors
+  React.useEffect(() => {
+    if (!route) {
+      console.error('❌ TaskDetailsScreen: No route object provided');
+      return;
+    }
+    if (!route.params) {
+      console.error('❌ TaskDetailsScreen: No route params provided');
+      return;
+    }
+    if (!taskId || typeof taskId !== 'string') {
+      console.error('❌ TaskDetailsScreen: Invalid or missing taskId:', {
+        taskId,
+        routeParams,
+      });
+      return;
+    }
+    console.log('✅ TaskDetailsScreen: Valid route params received:', {
+      taskId,
+      readonly,
+    });
+  }, [route, routeParams, taskId, readonly]);
+
   const dispatch = useAppDispatch();
   const user = useAppSelector(selectCurrentUser);
+  const token = useAppSelector(selectAuthToken);
   const assignedTasks = useAppSelector(selectAssignedTasks);
   const createdTasks = useAppSelector(selectCreatedTasks);
   const currentTask = useAppSelector(selectCurrentTask);
@@ -64,32 +96,98 @@ const TaskDetailsScreen: React.FC<TaskDetailsScreenProps> = ({
   const [isUpdatingStatus, setIsUpdatingStatus] = useState(false);
   const [task, setTask] = useState<Task | null>(null);
 
+  // Assignment modal states
+  const [showAssignModal, setShowAssignModal] = useState(false);
+  // const [departments, setDepartments] = useState<string[]>([]);
+  const [users, setUsers] = useState<User[]>([]);
+  const [selectedDepartment, setSelectedDepartment] = useState<string>('');
+  const [selectedUser, setSelectedUser] = useState<User | null>(null);
+  const [loadingUsers, setLoadingUsers] = useState(false);
+
+  // Convert internal task status to display status for API
+  const convertToApiStatus = (
+    status: 'new' | 'assigned' | 'progress' | 'completed',
+  ): 'Assigned' | 'In Progress' | 'Completed' => {
+    switch (status) {
+      case 'assigned':
+        return 'Assigned';
+      case 'progress':
+        return 'In Progress';
+      case 'completed':
+        return 'Completed';
+      default:
+        return 'Assigned'; // Default fallback
+    }
+  };
+
+  // Early return if no taskId is provided
+  if (!taskId) {
+    return (
+      <View style={styles.container}>
+        <Header title="Task Details" />
+        <View style={styles.errorContainer}>
+          <Text style={styles.errorText}>No task ID provided</Text>
+          <TouchableOpacity
+            style={styles.backButton}
+            onPress={() => navigation.goBack()}
+          >
+            <Text style={styles.backButtonText}>Go Back</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    );
+  }
+
   // Find the task from the store or fetch it
   useEffect(() => {
+    console.log(`🔍 TaskDetailsScreen: Looking for task ${taskId}`);
+
     // First, try to find in assigned tasks
     let foundTask = assignedTasks.find(t => t.id === taskId);
+    console.log(`📋 Found in assignedTasks:`, !!foundTask);
 
     // If not found in assigned tasks, try created tasks
     if (!foundTask) {
       foundTask = createdTasks.find(t => t.id === taskId);
+      console.log(`📋 Found in createdTasks:`, !!foundTask);
     }
 
     // If not found in either, check currentTask from redux (might be from fetchTaskById)
     if (!foundTask && currentTask && currentTask.id === taskId) {
       foundTask = currentTask;
+      console.log(`📋 Found in currentTask:`, !!foundTask);
     }
 
     if (foundTask) {
+      console.log(`✅ Task found:`, foundTask.title);
       setTask(foundTask);
     } else {
+      console.log(`🔄 Task not found in store, fetching by ID: ${taskId}`);
       // If task not found anywhere, fetch it by ID (works for notifications and deep linking)
-      dispatch(fetchTaskById(taskId));
+      const fetchPromise = dispatch(fetchTaskById(taskId));
+
+      // Debug the dispatch result
+      fetchPromise
+        .then(result => {
+          console.log('🎯 fetchTaskById dispatch RESOLVED:', {
+            type: result.type,
+            payload: result.payload,
+            meta: result.meta,
+          });
+        })
+        .catch(error => {
+          console.log('💥 fetchTaskById dispatch REJECTED:', {
+            error: error,
+            message: error.message,
+          });
+        });
     }
   }, [taskId, assignedTasks, createdTasks, currentTask, dispatch]);
 
   // Update local task state when currentTask changes
   useEffect(() => {
     if (currentTask && currentTask.id === taskId) {
+      console.log(`✅ Task loaded from fetchTaskById:`, currentTask.title);
       setTask(currentTask);
     }
   }, [currentTask, taskId]);
@@ -133,31 +231,32 @@ const TaskDetailsScreen: React.FC<TaskDetailsScreenProps> = ({
         value: status.value,
       }));
 
-      // Check if current user is the task creator
-      const isCreator =
-        task && currentUser && task.createdBy === currentUser.id;
+      // Check if current user can update this task (assignee OR creator)
+      const isCreator = task && user && task.createdBy === user.id;
+      const isAssignee = task && user && task.assignedTo === user.id;
+      const canUpdateTask = isCreator || isAssignee;
 
-      // Define allowed transitions
+      // If user cannot update task, return only current status (readonly)
+      if (!canUpdateTask) {
+        return allStatuses.filter(s => s.value === currentStatus);
+      }
+
+      // Define allowed transitions for users with update permissions
       switch (currentStatus) {
         case 'new':
-          // From New status, only creator can change to assigned or keep it new
-          if (isCreator) {
-            return allStatuses.filter(
-              s => s.value === 'new' || s.value === 'assigned',
-            );
-          } else {
-            // Non-creators can only view, no status change allowed
-            return allStatuses.filter(s => s.value === 'new');
-          }
-        case 'assigned':
-          // From Assigned, can stay assigned or move to in_progress
+          // From New status, can change to assigned or keep it new
           return allStatuses.filter(
-            s => s.value === 'assigned' || s.value === 'in_progress',
+            s => s.value === 'new' || s.value === 'assigned',
           );
-        case 'in_progress':
-          // From In Progress, can stay in_progress or move to completed
+        case 'assigned':
+          // From Assigned, can stay assigned or move to progress
           return allStatuses.filter(
-            s => s.value === 'in_progress' || s.value === 'completed',
+            s => s.value === 'assigned' || s.value === 'progress',
+          );
+        case 'progress':
+          // From Progress, can stay progress or move to completed
+          return allStatuses.filter(
+            s => s.value === 'progress' || s.value === 'completed',
           );
         case 'completed':
           // From Completed, can only stay completed (no backwards flow)
@@ -166,7 +265,7 @@ const TaskDetailsScreen: React.FC<TaskDetailsScreenProps> = ({
           return allStatuses.filter(s => s.value === currentStatus);
       }
     },
-    [task, currentUser],
+    [task, user],
   );
 
   // Calculate due date status
@@ -181,7 +280,7 @@ const TaskDetailsScreen: React.FC<TaskDetailsScreenProps> = ({
       );
 
       // For completed tasks, show completion information instead of overdue
-      if (task.status === 'Completed') {
+      if (task.status === 'completed') {
         const completionDate = task.updatedAt ? new Date(task.updatedAt) : now;
         const daysSinceCompletion = Math.ceil(
           (now.getTime() - completionDate.getTime()) / (1000 * 60 * 60 * 24),
@@ -228,15 +327,91 @@ const TaskDetailsScreen: React.FC<TaskDetailsScreenProps> = ({
     [task],
   );
 
+  // Load users and departments from API
+  const loadUsersAndDepartments = useCallback(async () => {
+    if (!token) return;
+
+    setLoadingUsers(true);
+    try {
+      const { users: allUsers } = await authService.getAllUsersWithDepartments(
+        token,
+      );
+      // setDepartments(depts);
+      setUsers(allUsers);
+      // if (depts.length > 0) {
+      //   setSelectedDepartment(depts[0]);
+      // }
+    } catch (error) {
+      console.error('Failed to load users and departments:', error);
+      Alert.alert('Error', 'Failed to load users. Please try again.', [
+        { text: 'OK' },
+      ]);
+    } finally {
+      setLoadingUsers(false);
+    }
+  }, [token]);
+
+  // Handle assignment confirmation
+  const handleAssignTask = useCallback(async () => {
+    if (!task || !selectedUser) return;
+
+    setShowAssignModal(false);
+    setIsUpdatingStatus(true);
+
+    try {
+      // Convert status for real API call
+      await dispatch(
+        updateTaskStatusReal({
+          taskId: task.id,
+          status: 'assigned',
+          assignedTo: selectedUser.id,
+          assignedToName: selectedUser.name,
+        }),
+      ).unwrap();
+
+      Alert.alert(
+        'Task Assigned',
+        `Task has been assigned to ${selectedUser.name}.`,
+        [{ text: 'OK' }],
+      );
+
+      // Reset selection
+      setSelectedUser(null);
+      // setSelectedDepartment('');
+    } catch (error) {
+      console.error('Failed to assign task:', error);
+      Alert.alert(
+        'Assignment Failed',
+        'Failed to assign task. Please try again.',
+        [{ text: 'OK' }],
+      );
+    } finally {
+      setIsUpdatingStatus(false);
+    }
+  }, [task, selectedUser, dispatch]);
+
   // Handle status update
   const handleStatusUpdate = useCallback(
-    async (newStatus: 'new' | 'assigned' | 'in_progress' | 'completed') => {
+    async (newStatus: 'new' | 'assigned' | 'progress' | 'completed') => {
       if (!task || readonly) return;
+
+      // Check if current user can update this task (assignee OR creator)
+      const isCreator = user && task.createdBy === user.id;
+      const isAssignee = user && task.assignedTo === user.id;
+      const canUpdateTask = isCreator || isAssignee;
+
+      if (!canUpdateTask) {
+        Alert.alert(
+          'Access Denied',
+          'Only the task creator or assigned user can update this task.',
+          [{ text: 'OK' }],
+        );
+        return;
+      }
 
       // Special handling for changing from 'new' to 'assigned'
       if (task.status === 'new' && newStatus === 'assigned') {
-        // Check if user is creator
-        const isCreator = currentUser && task.createdBy === currentUser.id;
+        // Check if user is creator (only creator can assign new tasks)
         if (!isCreator) {
           Alert.alert(
             'Access Denied',
@@ -246,30 +421,10 @@ const TaskDetailsScreen: React.FC<TaskDetailsScreenProps> = ({
           return;
         }
 
-        // For now, we'll show an alert that assignment is needed
-        // In a full implementation, this would open a user selection modal
-        Alert.alert(
-          'Task Assignment Required',
-          'To mark this task as assigned, you need to assign it to a user. This will be implemented in the next update.',
-          [
-            { text: 'Cancel', style: 'cancel' },
-            {
-              text: 'Assign Later',
-              onPress: () => {
-                // For now, just update the status
-                setIsUpdatingStatus(true);
-                dispatch(
-                  updateTaskStatusOptimistic({
-                    taskId: task.id,
-                    status: newStatus,
-                  }),
-                );
-                // TODO: Implement user assignment modal
-                setIsUpdatingStatus(false);
-              },
-            },
-          ],
-        );
+        // Show assignment modal for new tasks
+        await loadUsersAndDepartments();
+        setShowAssignModal(true);
+        setIsUpdatingStatus(false);
         return;
       }
 
@@ -281,8 +436,16 @@ const TaskDetailsScreen: React.FC<TaskDetailsScreenProps> = ({
       );
 
       try {
+        // Convert status for API call (backend expects 'complete' instead of 'completed')
+        const apiStatus = newStatus;
+
         await dispatch(
-          updateTaskStatus({ taskId: task.id, status: newStatus }),
+          updateTaskStatusReal({
+            taskId: task.id,
+            status: apiStatus as 'new' | 'assigned' | 'progress' | 'completed',
+            assignedTo: task.assignedTo || undefined,
+            assignedToName: task.assignedToName || undefined,
+          }),
         ).unwrap();
 
         Alert.alert(
@@ -304,7 +467,7 @@ const TaskDetailsScreen: React.FC<TaskDetailsScreenProps> = ({
         setIsUpdatingStatus(false);
       }
     },
-    [task, readonly, dispatch, currentUser],
+    [task, readonly, dispatch, user],
   );
 
   // Handle file download
@@ -356,13 +519,72 @@ const TaskDetailsScreen: React.FC<TaskDetailsScreenProps> = ({
     }
   };
 
+  // Show error state if there's an error and no task
+  if (error && !task && !isLoading) {
+    return (
+      <View style={styles.container}>
+        <Header
+          title="Task Details"
+          showNotificationIcon={false}
+          showHomeIcon={true}
+          onHomePress={() => navigation.navigate('Main')}
+        />
+        <View style={styles.errorContainer}>
+          <Icon name="error" size={48} color={theme.colors.error} />
+          <Text style={styles.errorText}>Task Not Available</Text>
+          <Text style={styles.errorSubtext}>
+            {error.includes('not found')
+              ? 'This task may have been removed or you may not have permission to view it.'
+              : typeof error === 'string'
+              ? error
+              : 'Unable to load task details. Please check your connection and try again.'}
+          </Text>
+          <TouchableOpacity
+            style={styles.retryButton}
+            onPress={() => {
+              console.log(`🔄 Retrying task fetch for ID: ${taskId}`);
+              dispatch(clearTaskError());
+              if (taskId) {
+                // Try fetching both task lists first, then the specific task
+                dispatch(fetchCreatedTasks({}));
+                dispatch(fetchTaskById(taskId));
+              }
+            }}
+          >
+            <Text style={styles.retryButtonText}>Try Again</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.backButton}
+            onPress={() => navigation.goBack()}
+          >
+            <Text style={styles.backButtonText}>Go Back</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    );
+  }
+
+  // Show loading state if no task and loading is in progress
   if (!task) {
     return (
       <View style={styles.container}>
-        <Header title="Task Details" showNotificationIcon={false} />
+        <Header
+          title="Task Details"
+          showNotificationIcon={false}
+          showHomeIcon={true}
+          onHomePress={() => navigation.navigate('Main')}
+        />
         <View style={styles.loadingContainer}>
           <ActivityIndicator size="large" color={theme.colors.primary} />
-          <Text style={styles.loadingText}>Loading task details...</Text>
+          <Text style={styles.loadingText}>
+            {isLoading ? 'Loading task details...' : 'Searching for task...'}
+          </Text>
+          <TouchableOpacity
+            style={[styles.backButton, { marginTop: theme.spacing.lg }]}
+            onPress={() => navigation.goBack()}
+          >
+            <Text style={styles.backButtonText}>Go Back</Text>
+          </TouchableOpacity>
         </View>
       </View>
     );
@@ -376,11 +598,16 @@ const TaskDetailsScreen: React.FC<TaskDetailsScreenProps> = ({
 
   // Check if current user can edit task status (only assigned user or HR)
   const canEditStatus =
-    user && (user.id === task.assignedTo || user.department === 'HR');
+    user && (user.id === task.assignedTo || user.id === task.createdBy);
 
   return (
     <View style={styles.container}>
-      <Header title="Task Details" showNotificationIcon={false} />
+      <Header
+        title="Task Details"
+        showNotificationIcon={false}
+        showHomeIcon={true}
+        onHomePress={() => navigation.navigate('Main')}
+      />
 
       <ScrollView style={styles.content} showsVerticalScrollIndicator={false}>
         {/* Task Header */}
@@ -429,12 +656,10 @@ const TaskDetailsScreen: React.FC<TaskDetailsScreenProps> = ({
             <Text style={styles.detailValue}>{task.description}</Text>
           </View>
 
-          {/* Department */}
+          {/* Assigned By */}
           <View style={styles.detailRow}>
-            <Text style={styles.detailLabel}>Department</Text>
-            <View style={styles.departmentBadge}>
-              <Text style={styles.departmentText}>{task.department}</Text>
-            </View>
+            <Text style={styles.detailLabel}>Assigned By</Text>
+            <Text style={styles.detailValue}>{task.createdByName}</Text>
           </View>
 
           {/* Created */}
@@ -539,8 +764,8 @@ const TaskDetailsScreen: React.FC<TaskDetailsScreenProps> = ({
                   Status Update Restricted
                 </Text>
                 <Text style={styles.restrictionSubtitle}>
-                  Only the assigned user or HR department can update the task
-                  status.
+                  Only the assigned user or creator of the task can update the
+                  task status.
                 </Text>
               </View>
             </View>
@@ -561,6 +786,112 @@ const TaskDetailsScreen: React.FC<TaskDetailsScreenProps> = ({
           </View>
         )}
       </ScrollView>
+
+      {/* Assignment Modal */}
+      <Modal
+        visible={showAssignModal}
+        transparent={true}
+        animationType="slide"
+        onRequestClose={() => setShowAssignModal(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContainer}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Assign Task</Text>
+              <TouchableOpacity
+                onPress={() => setShowAssignModal(false)}
+                style={styles.modalCloseButton}
+              >
+                <Icon name="close" size={24} color={theme.colors.text} />
+              </TouchableOpacity>
+            </View>
+
+            {loadingUsers ? (
+              <View style={styles.modalLoading}>
+                <ActivityIndicator size="large" color={theme.colors.primary} />
+                <Text style={styles.modalLoadingText}>Loading users...</Text>
+              </View>
+            ) : (
+              <View style={styles.modalContent}>
+                {/* <Text style={styles.modalDescription}>
+                  Select a department and user to assign this task.
+                </Text>
+
+                <View style={styles.pickerContainer}>
+                  <Text style={styles.pickerLabel}>Department</Text>
+                  <View style={styles.pickerWrapper}>
+                    <Picker
+                      selectedValue={selectedDepartment}
+                      onValueChange={value => {
+                        setSelectedDepartment(value);
+                        setSelectedUser(null); // Reset user selection when department changes
+                      }}
+                      style={styles.picker}
+                    >
+                      {departments.map(dept => (
+                        <Picker.Item key={dept} label={dept} value={dept} />
+                      ))}
+                    </Picker>
+                  </View>
+                </View> */}
+
+                <View style={styles.pickerContainer}>
+                  <Text style={styles.pickerLabel}>User</Text>
+                  <View style={styles.pickerWrapper}>
+                    <Picker
+                      selectedValue={selectedUser?.id || ''}
+                      onValueChange={userId => {
+                        const user = users.find(u => u.id === userId);
+                        setSelectedUser(user || null);
+                      }}
+                      style={styles.picker}
+                      // enabled={selectedDepartment.length > 0}
+                    >
+                      <Picker.Item label="Select a user..." value="" />
+                      {users
+                        // .filter(user => user.type === selectedDepartment)
+                        .map(user => (
+                          <Picker.Item
+                            key={user.id}
+                            label={user.name}
+                            value={user.id}
+                          />
+                        ))}
+                    </Picker>
+                  </View>
+                </View>
+
+                <View style={styles.modalActions}>
+                  <TouchableOpacity
+                    onPress={() => setShowAssignModal(false)}
+                    style={[styles.modalButton, styles.modalCancelButton]}
+                  >
+                    <Text style={styles.modalCancelButtonText}>Cancel</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    onPress={handleAssignTask}
+                    style={[
+                      styles.modalButton,
+                      styles.modalAssignButton,
+                      !selectedUser && styles.modalButtonDisabled,
+                    ]}
+                    disabled={!selectedUser}
+                  >
+                    <Text
+                      style={[
+                        styles.modalAssignButtonText,
+                        !selectedUser && styles.modalButtonTextDisabled,
+                      ]}
+                    >
+                      Assign Task
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            )}
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 };
@@ -735,10 +1066,7 @@ const styles = StyleSheet.create({
     borderRadius: theme.borderRadius.md,
     backgroundColor: theme.colors.background,
     overflow: 'hidden',
-  },
-  picker: {
-    height: 50,
-    color: theme.colors.text,
+    paddingHorizontal: theme.spacing.xs,
   },
   restrictionContainer: {
     flexDirection: 'row',
@@ -760,19 +1088,143 @@ const styles = StyleSheet.create({
     color: theme.colors.textSecondary,
     lineHeight: theme.typography.lineHeights.relaxed,
   },
-  // Missing picker styles
-  pickerWrapper: {
-    backgroundColor: theme.colors.background,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    borderRadius: theme.borderRadius.md,
-    paddingHorizontal: theme.spacing.xs,
-  },
   picker: {
     height: 50,
     width: '100%',
     color: theme.colors.text,
     fontSize: theme.typography.fontSizes.md,
+  },
+  errorContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: theme.spacing.xl,
+  },
+  errorText: {
+    fontSize: theme.typography.fontSizes.lg,
+    color: theme.colors.error,
+    textAlign: 'center',
+    marginBottom: theme.spacing.md,
+    fontWeight: theme.typography.fontWeights.medium,
+  },
+  errorSubtext: {
+    fontSize: theme.typography.fontSizes.sm,
+    color: theme.colors.textSecondary,
+    textAlign: 'center',
+    marginBottom: theme.spacing.lg,
+    lineHeight: theme.typography.lineHeights.relaxed,
+  },
+  retryButton: {
+    backgroundColor: theme.colors.primary,
+    paddingHorizontal: theme.spacing.lg,
+    paddingVertical: theme.spacing.md,
+    borderRadius: theme.borderRadius.md,
+    marginBottom: theme.spacing.md,
+  },
+  retryButtonText: {
+    color: theme.colors.surface,
+    fontSize: theme.typography.fontSizes.md,
+    fontWeight: theme.typography.fontWeights.semiBold,
+  },
+  backButton: {
+    backgroundColor: theme.colors.background,
+    paddingHorizontal: theme.spacing.lg,
+    paddingVertical: theme.spacing.md,
+    borderRadius: theme.borderRadius.md,
+    borderWidth: 1,
+    borderColor: theme.colors.primary,
+  },
+  backButtonText: {
+    color: theme.colors.primary,
+    fontSize: theme.typography.fontSizes.md,
+    fontWeight: theme.typography.fontWeights.semiBold,
+  },
+  // Modal styles
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  modalContainer: {
+    backgroundColor: theme.colors.surface,
+    borderRadius: theme.borderRadius.lg,
+    margin: theme.spacing.lg,
+    maxWidth: 400,
+    width: '90%',
+    maxHeight: '80%',
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: theme.spacing.lg,
+    paddingVertical: theme.spacing.md,
+    borderBottomWidth: 1,
+    borderBottomColor: theme.colors.border,
+  },
+  modalTitle: {
+    fontSize: theme.typography.fontSizes.lg,
+    fontWeight: theme.typography.fontWeights.semiBold,
+    color: theme.colors.text,
+  },
+  modalCloseButton: {
+    padding: theme.spacing.sm,
+  },
+  modalContent: {
+    padding: theme.spacing.lg,
+  },
+  modalDescription: {
+    fontSize: theme.typography.fontSizes.sm,
+    color: theme.colors.textSecondary,
+    marginBottom: theme.spacing.lg,
+    lineHeight: theme.typography.lineHeights.relaxed,
+  },
+  modalLoading: {
+    padding: theme.spacing.xl,
+    alignItems: 'center',
+  },
+  modalLoadingText: {
+    fontSize: theme.typography.fontSizes.sm,
+    color: theme.colors.textSecondary,
+    marginTop: theme.spacing.md,
+  },
+
+  modalActions: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginTop: theme.spacing.lg,
+  },
+  modalButton: {
+    flex: 1,
+    paddingVertical: theme.spacing.md,
+    borderRadius: theme.borderRadius.md,
+    alignItems: 'center',
+    marginHorizontal: theme.spacing.xs,
+  },
+  modalCancelButton: {
+    backgroundColor: theme.colors.background,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+  },
+  modalCancelButtonText: {
+    color: theme.colors.text,
+    fontSize: theme.typography.fontSizes.md,
+    fontWeight: theme.typography.fontWeights.medium,
+  },
+  modalAssignButton: {
+    backgroundColor: theme.colors.primary,
+  },
+  modalAssignButtonText: {
+    color: theme.colors.surface,
+    fontSize: theme.typography.fontSizes.md,
+    fontWeight: theme.typography.fontWeights.semiBold,
+  },
+  modalButtonDisabled: {
+    backgroundColor: theme.colors.border,
+  },
+  modalButtonTextDisabled: {
+    color: theme.colors.textSecondary,
   },
 });
 

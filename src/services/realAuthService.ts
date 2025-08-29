@@ -105,6 +105,7 @@ class RealAuthService {
         mobileNumber: apiUser.mobileNo,
         department: this.mapRoleToOurDepartment(apiUser.role),
         role: apiUser.role,
+        type: apiUser.type,
         tenantId: apiUser.tenantId, // Required for topic subscription
         createdAt: apiUser.createdAt,
       };
@@ -113,10 +114,19 @@ class RealAuthService {
       await tokenService.storeToken(token);
       await tokenService.storeUserData(user);
 
-      // Subscribe to FCM topic using tenantId for notifications
-      await this.subscribeToNotificationTopic(user.tenantId);
-
       console.log('✅ Login successful:', user.name);
+
+      // Subscribe to FCM topic using tenantId for notifications (async - don't block login)
+      this.subscribeToNotificationTopic(user.tenantId)
+        .then(() => {
+          console.log('🔔 FCM topic subscription completed successfully');
+        })
+        .catch(error => {
+          console.error(
+            '⚠️ Topic subscription failed but login continues:',
+            error,
+          );
+        });
 
       return {
         user,
@@ -181,6 +191,7 @@ class RealAuthService {
         mobileNumber: apiUser.mobileNo,
         department: this.mapRoleToOurDepartment(apiUser.role),
         role: apiUser.role,
+        type: apiUser.type,
         tenantId: apiUser.tenantId, // Required for topic subscription
         createdAt: apiUser.createdAt,
       };
@@ -228,26 +239,41 @@ class RealAuthService {
   }
 
   /**
-   * Check if user has valid authentication
+   * Check if user has valid authentication with timeout protection
    */
   async checkAuthState(): Promise<LoginResponse> {
     try {
       console.log('🔍 Checking authentication state...');
 
-      const token = await tokenService.getToken();
-      const userData = await tokenService.getUserData();
+      // Add timeout protection
+      const timeoutPromise = new Promise((_, reject) => {
+        setTimeout(() => reject(new Error('Auth check timeout')), 10000); // 10 second timeout
+      });
 
-      if (!token || !userData) {
-        throw new Error('No stored authentication data');
-      }
+      const authCheckPromise = (async () => {
+        const token = await tokenService.getToken();
+        const userData = await tokenService.getUserData();
 
-      // Validate token with server
-      const user = await this.validateToken(token);
+        if (!token || !userData) {
+          throw new Error('No stored authentication data');
+        }
 
-      return {
-        user,
-        token,
-      };
+        // Validate token with server
+        const user = await this.validateToken(token);
+
+        return {
+          user,
+          token,
+        };
+      })();
+
+      // Race between auth check and timeout
+      const result = (await Promise.race([
+        authCheckPromise,
+        timeoutPromise,
+      ])) as LoginResponse;
+      console.log('✅ Auth state check completed successfully');
+      return result;
     } catch (error) {
       console.log('⚠️ Auth state check failed:', error);
       // Clear invalid data
@@ -316,6 +342,92 @@ class RealAuthService {
     } catch (error) {
       console.error('❌ Failed to get token info:', error);
       return null;
+    }
+  }
+
+  /**
+   * Fetch task by ID from backend
+   */
+  async fetchTaskById(taskId: string, token: string): Promise<any> {
+    try {
+      console.log(`📋 Fetching task by ID: ${taskId}`);
+
+      const response = await apiClient.get(`/task/taskId/${taskId}`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+      });
+
+      console.log('✅ Task fetched successfully:', response.data);
+      return response.data;
+    } catch (error) {
+      console.error('❌ Failed to fetch task by ID:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Fetch tasks created by current user
+   * GET /api/task/created?status={status}
+   */
+  async fetchCreatedTasks(
+    token: string,
+    status?: 'new' | 'assigned',
+  ): Promise<any> {
+    try {
+      console.log(`📋 Fetching created tasks with status: ${status || 'all'}`);
+
+      const params = status ? `?status=${status}` : '';
+      const response = await apiClient.get(`/task/created${params}`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+      });
+
+      console.log('✅ Created tasks fetched successfully:', response.data);
+      return response.data;
+    } catch (error) {
+      console.error('❌ Failed to fetch created tasks:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Update task status and assignment
+   * PUT /api/task/taskId/{taskId}/update
+   */
+  async updateTaskStatus(
+    taskId: string,
+    token: string,
+    updateData: {
+      status: 'new' | 'assigned' | 'progress' | 'completed';
+      assignedTo?: string;
+      assignedToName?: string;
+    },
+  ): Promise<any> {
+    try {
+      console.log(
+        `📋 Updating task ${taskId} with status: ${updateData.status}`,
+      );
+
+      const response = await apiClient.post(
+        `/task/taskId/${taskId}/update`,
+        updateData,
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+        },
+      );
+
+      console.log('✅ Task updated successfully:', response.data);
+      return response.data;
+    } catch (error) {
+      console.error('❌ Failed to update task:', error);
+      throw error;
     }
   }
 

@@ -71,13 +71,13 @@ const MainScreen: React.FC<MainScreenProps> = ({ navigation }) => {
     navigation.navigate('CreateTask');
   };
 
-  const handleAssignedTasksPress = () => {
-    // Navigate to Assigned Tasks screen (Phase 3 - Complete!)
+  const handleTaskCreatedPress = () => {
+    // Navigate to Task Created screen (tasks created by current user)
     navigation.navigate('AssignedTasks');
   };
 
-  const handleHistoryPress = () => {
-    // Navigate to History screen (Phase 6C - NEW!)
+  const handleTaskAssignedPress = () => {
+    // Navigate to Task Assigned screen (tasks assigned to others)
     navigation.navigate('History');
   };
 
@@ -178,16 +178,12 @@ const MainScreen: React.FC<MainScreenProps> = ({ navigation }) => {
 
           <TouchableOpacity
             style={styles.actionButton}
-            onPress={handleAssignedTasksPress}
+            onPress={handleTaskCreatedPress}
             activeOpacity={0.8}
           >
             <View style={styles.actionButtonContent}>
-              <Icon
-                name="assignment"
-                size={20}
-                color={theme.colors.secondary}
-              />
-              <Text style={styles.actionButtonTitle}>My Assigned Tasks</Text>
+              <Icon name="create" size={20} color={theme.colors.secondary} />
+              <Text style={styles.actionButtonTitle}>Task Created</Text>
               <Icon
                 name="chevron-right"
                 size={18}
@@ -198,12 +194,16 @@ const MainScreen: React.FC<MainScreenProps> = ({ navigation }) => {
 
           <TouchableOpacity
             style={styles.actionButton}
-            onPress={handleHistoryPress}
+            onPress={handleTaskAssignedPress}
             activeOpacity={0.8}
           >
             <View style={styles.actionButtonContent}>
-              <Icon name="history" size={20} color={theme.colors.primary} />
-              <Text style={styles.actionButtonTitle}>History</Text>
+              <Icon
+                name="assignment-turned-in"
+                size={20}
+                color={theme.colors.warning}
+              />
+              <Text style={styles.actionButtonTitle}>Task Assigned</Text>
               <Icon
                 name="chevron-right"
                 size={18}

@@ -11,7 +11,7 @@ import {
   Vibration,
   Platform,
 } from 'react-native';
-import Sound from 'react-native-sound';
+// Removed react-native-sound dependency
 import Icon from 'react-native-vector-icons/MaterialIcons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Header } from '../components';
@@ -35,6 +35,7 @@ import {
   redirectToNotificationSettings,
 } from '../utils/permissionUtils';
 import { notificationService } from '../services/notificationService';
+import { notificationChannelService } from '../services/notificationChannelService';
 
 type SoundItem = SystemSound | PredefinedSound | CustomRingtone;
 
@@ -58,8 +59,7 @@ const NotificationSettingsScreen: React.FC<NotificationSettingsScreenProps> = ({
   }>({ hasPermission: false, status: 'unknown' });
   const [checkingPermission, setCheckingPermission] = useState(false);
 
-  // Use ref to track all sound instances for proper cleanup
-  const soundInstancesRef = useRef<Map<string, Sound>>(new Map());
+  // Use ref to track sound timeouts for cleanup
   const systemSoundTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(
     null,
   );
@@ -98,6 +98,13 @@ const NotificationSettingsScreen: React.FC<NotificationSettingsScreenProps> = ({
       await AsyncStorage.setItem(
         STORAGE_KEYS.VIBRATION_ENABLED,
         JSON.stringify(enabled),
+      );
+
+      // Update all notification channels with new vibration setting
+      await notificationChannelService.updateChannelsForSettingsChange();
+      console.log(
+        '✅ Notification channels updated for vibration setting:',
+        enabled,
       );
 
       // Test vibration immediately when enabled
@@ -167,6 +174,26 @@ const NotificationSettingsScreen: React.FC<NotificationSettingsScreenProps> = ({
       setLoading(true);
       const sounds = await ringtoneService.getAllSounds();
       setAvailableSounds(sounds);
+
+      // Set first notification bell as default if no sound is currently selected
+      if (!selectedSoundId && sounds.length > 0) {
+        const firstSound = sounds[0];
+        console.log(
+          '🔔 Setting first notification sound as default:',
+          firstSound,
+        );
+
+        try {
+          await ringtoneService.setSelectedRingtone(firstSound.id);
+          dispatch(setNotificationSound(firstSound.id));
+
+          // Create notification channel for the default sound
+          await notificationChannelService.createChannelForSound(firstSound.id);
+          console.log('✅ Default notification sound and channel set');
+        } catch (defaultError) {
+          console.error('Error setting default sound:', defaultError);
+        }
+      }
     } catch (error) {
       console.error('Error loading available sounds:', error);
       Alert.alert('Error', 'Failed to load available sounds');
@@ -179,6 +206,10 @@ const NotificationSettingsScreen: React.FC<NotificationSettingsScreenProps> = ({
     try {
       await ringtoneService.setSelectedRingtone(sound.id);
       dispatch(setNotificationSound(sound.id === 'default' ? null : sound.id));
+
+      // Update notification channels with new sound
+      await notificationChannelService.createChannelForSound(sound.id);
+      console.log('✅ Notification channel updated for sound:', sound.id);
     } catch (error) {
       console.error('Error selecting sound:', error);
       Alert.alert('Error', 'Failed to select sound');
@@ -236,17 +267,6 @@ const NotificationSettingsScreen: React.FC<NotificationSettingsScreenProps> = ({
   };
 
   const stopAllSounds = () => {
-    // Stop all tracked sound instances
-    soundInstancesRef.current.forEach((soundInstance, soundId) => {
-      try {
-        soundInstance.stop();
-        soundInstance.release();
-      } catch (error) {
-        console.error(`Error stopping sound ${soundId}:`, error);
-      }
-    });
-    soundInstancesRef.current.clear();
-
     // Clear any system sound timeouts
     if (systemSoundTimeoutRef.current) {
       clearTimeout(systemSoundTimeoutRef.current);
@@ -258,18 +278,6 @@ const NotificationSettingsScreen: React.FC<NotificationSettingsScreenProps> = ({
 
   const stopSound = (soundId?: string) => {
     if (soundId) {
-      // Stop specific sound
-      const soundInstance = soundInstancesRef.current.get(soundId);
-      if (soundInstance) {
-        try {
-          soundInstance.stop();
-          soundInstance.release();
-          soundInstancesRef.current.delete(soundId);
-        } catch (error) {
-          console.error(`Error stopping sound ${soundId}:`, error);
-        }
-      }
-
       // Clear system sound timeout if it's the current playing sound
       if (currentlyPlaying === soundId && systemSoundTimeoutRef.current) {
         clearTimeout(systemSoundTimeoutRef.current);
@@ -341,53 +349,28 @@ const NotificationSettingsScreen: React.FC<NotificationSettingsScreenProps> = ({
           predefinedSound.fileName,
         );
 
-        const soundFile = new Sound(
-          predefinedSound.fileName,
-          Sound.MAIN_BUNDLE,
-          error => {
-            if (error) {
-              console.error('Predefined sound file not found:', error);
-              // Show preview alert as fallback
-              Alert.alert(
-                'Sound Preview',
-                `🔊 Playing: ${predefinedSound.name}\n\nThis is a preview of the selected notification sound.`,
-                [{ text: 'OK', onPress: () => setCurrentlyPlaying(null) }],
-              );
-              return;
-            }
+        try {
+          // Show preview alert
+          Alert.alert(
+            'Sound Preview',
+            `🔊 Playing: ${predefinedSound.name}\n\nThis is a preview of the selected notification sound.`,
+            [{ text: 'OK', onPress: () => setCurrentlyPlaying(null) }],
+          );
 
-            console.log(
-              'Sound file loaded successfully, attempting to play...',
-            );
+          // Use ringtone service to play predefined sound
+          await ringtoneService.playNotificationSound(sound.id);
+          console.log('Predefined sound played successfully');
 
-            // Store the sound instance for proper cleanup
-            soundInstancesRef.current.set(sound.id, soundFile);
-
-            soundFile.play(success => {
-              if (success) {
-                console.log('Predefined sound played successfully');
-              } else {
-                console.error('Predefined sound playback failed');
-              }
-
-              // Clean up this specific sound instance
-              try {
-                soundFile.release();
-                soundInstancesRef.current.delete(sound.id);
-              } catch (releaseError) {
-                console.error(
-                  'Error releasing predefined sound:',
-                  releaseError,
-                );
-              }
-
-              setCurrentlyPlaying(prevState => {
-                // Only clear if this sound is still the currently playing one
-                return prevState === sound.id ? null : prevState;
-              });
+          // Auto-clear after 3 seconds
+          setTimeout(() => {
+            setCurrentlyPlaying(prevState => {
+              return prevState === sound.id ? null : prevState;
             });
-          },
-        );
+          }, 3000);
+        } catch (error) {
+          console.error('Failed to play predefined sound:', error);
+          setCurrentlyPlaying(null);
+        }
       } else {
         // For custom sounds, use file URI
         const customSound = sound as CustomRingtone;
@@ -399,38 +382,22 @@ const NotificationSettingsScreen: React.FC<NotificationSettingsScreenProps> = ({
 
         console.log('Playing custom sound:', customSound.name);
 
-        const soundFile = new Sound(customSound.uri, '', error => {
-          if (error) {
-            console.error('Failed to load custom sound:', error);
-            Alert.alert('Error', 'Failed to play the selected custom sound.');
-            setCurrentlyPlaying(null);
-            return;
-          }
+        try {
+          // Use ringtone service to play custom sound
+          await ringtoneService.playNotificationSound(sound.id);
+          console.log('Custom sound played successfully');
 
-          // Store the sound instance for proper cleanup
-          soundInstancesRef.current.set(sound.id, soundFile);
-
-          soundFile.play(success => {
-            if (success) {
-              console.log('Custom sound played successfully');
-            } else {
-              console.error('Custom sound playback failed');
-            }
-
-            // Clean up this specific sound instance
-            try {
-              soundFile.release();
-              soundInstancesRef.current.delete(sound.id);
-            } catch (releaseError) {
-              console.error('Error releasing custom sound:', releaseError);
-            }
-
+          // Auto-clear after 3 seconds
+          setTimeout(() => {
             setCurrentlyPlaying(prevState => {
-              // Only clear if this sound is still the currently playing one
               return prevState === sound.id ? null : prevState;
             });
-          });
-        });
+          }, 3000);
+        } catch (error) {
+          console.error('Failed to play custom sound:', error);
+          Alert.alert('Error', 'Failed to play the selected custom sound.');
+          setCurrentlyPlaying(null);
+        }
       }
 
       // Add vibration if enabled
@@ -530,6 +497,8 @@ const NotificationSettingsScreen: React.FC<NotificationSettingsScreenProps> = ({
         <Header
           title="Notification Settings"
           onNotificationPress={() => navigation.navigate('Inbox')}
+          showHomeIcon={true}
+          onHomePress={() => navigation.navigate('Main')}
         />
         <View style={styles.loadingContainer}>
           <ActivityIndicator size="large" color={theme.colors.primary} />
@@ -544,6 +513,8 @@ const NotificationSettingsScreen: React.FC<NotificationSettingsScreenProps> = ({
       <Header
         title="Notification Settings"
         onNotificationPress={() => navigation.navigate('Inbox')}
+        showHomeIcon={true}
+        onHomePress={() => navigation.navigate('Main')}
       />
       <View style={styles.content}>
         {/* Permission Management Section */}

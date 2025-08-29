@@ -37,6 +37,10 @@ const createAuthApiConfig = () => ({
 
 const API_CONFIG = createApiConfig();
 const AUTH_API_CONFIG = createAuthApiConfig();
+console.log('====================================');
+console.log(API_CONFIG);
+console.log(AUTH_API_CONFIG);
+console.log('====================================');
 
 /**
  * Main API Instance for general API calls
