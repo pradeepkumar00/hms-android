@@ -226,19 +226,43 @@ class AuthService {
     }
   }
 
-  // Method to create a task using real API
+  // Method to create a task using real API with multi-user assignment
   async createTask(taskData: any, token: string): Promise<any> {
     try {
+      // Ensure users array is properly formatted for API
+      const payload = {
+        title: taskData.title,
+        description: taskData.description,
+        dueDate: taskData.dueDate,
+        status: taskData.status || 'new',
+        assignedTo:
+          taskData.assignedTo ||
+          (taskData.users && taskData.users.length > 0
+            ? taskData.users[0].id
+            : undefined),
+        users: taskData.users || [],
+        tenantId: taskData.tenantId,
+        createdBy: taskData.createdBy,
+        createdByName: taskData.createdByName,
+      };
+
+      console.log(
+        'Creating task with payload:',
+        JSON.stringify(payload, null, 2),
+      );
+
       const response = await fetch('https://app.octusai.com/api/task', {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${token}`,
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify(taskData),
+        body: JSON.stringify(payload),
       });
 
       if (!response.ok) {
+        const errorText = await response.text();
+        console.error('Task creation failed:', response.status, errorText);
         throw new Error(`HTTP error! status: ${response.status}`);
       }
 

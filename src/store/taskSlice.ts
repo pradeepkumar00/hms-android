@@ -787,9 +787,7 @@ export const createTask = createAsyncThunk(
     taskData: {
       title: string;
       description: string;
-      department: string;
-      assignedTo: string | null;
-      assignedToName?: string;
+      selectedUsers: Array<{ id: string; name: string }>;
       fileUrl?: string;
       timeline: string;
       createdBy: string;
@@ -811,28 +809,27 @@ export const createTask = createAsyncThunk(
         throw new Error('No authentication token available');
       }
 
-      // Prepare API request data according to the curl request format
+      // Prepare API request data with multi-user assignment
       const apiTaskData: any = {
         title: taskData.title,
         description: taskData.description,
         dueDate: taskData.timeline.split('T')[0], // Format as YYYY-MM-DD
-        status: 'new', // Always set status to 'new' as per requirement
+        status: taskData.selectedUsers.length > 0 ? 'assigned' : 'new',
         tenantId: taskData.tenantId,
         createdBy: taskData.createdBy,
         createdByName: taskData.createdByName,
+        assignedTo:
+          taskData.selectedUsers.length > 0
+            ? taskData.selectedUsers[0].id
+            : undefined,
+        users: taskData.selectedUsers, // Array of {id, name} objects
       };
 
-      // Add assigned user info if provided
-      if (taskData.assignedTo && taskData.assignedToName) {
-        apiTaskData.assignedTo = taskData.assignedTo;
-        apiTaskData.assignedToName = taskData.assignedToName;
-        apiTaskData.status = 'assigned';
-      }
-
       // Add notification payload for backend to send FCM topic notifications
+      const assignedNames = taskData.selectedUsers.map(u => u.name).join(', ');
       const notificationPayload = {
         title: taskData.title,
-        assignedToName: taskData.assignedToName || null,
+        assignedToName: assignedNames || null,
       };
       apiTaskData.notificationPayload = notificationPayload;
 
@@ -847,8 +844,11 @@ export const createTask = createAsyncThunk(
         description: apiTaskData.description,
         fileUrl: taskData.fileUrl,
         createdBy: taskData.createdBy,
-        assignedTo: taskData.assignedTo,
-        department: taskData.department,
+        assignedTo:
+          taskData.selectedUsers.length > 0
+            ? taskData.selectedUsers[0].id
+            : undefined,
+        assignedUsers: taskData.selectedUsers, // NEW: Multiple assignees
         status:
           apiTaskData.status === 'progress'
             ? 'progress'
@@ -862,41 +862,27 @@ export const createTask = createAsyncThunk(
         dueDate: taskData.timeline,
       };
 
-      // Create notifications for all users
-      const currentState = getState() as any;
-      const allUsers = [
-        { id: '1', name: 'John Doe', department: 'HR' },
-        { id: '2', name: 'Jane Smith', department: 'Admin' },
-        { id: '3', name: 'Mike Johnson', department: 'Supervisor' },
-      ];
+      // Create notifications for all assigned users
+      const assignedUserNames = taskData.selectedUsers
+        .map(u => u.name)
+        .join(', ');
 
-      // Find assigned user and creator names
-      const assignedUser = allUsers.find(
-        user => user.id === newTask.assignedTo,
+      const notifications: Notification[] = taskData.selectedUsers.map(
+        user => ({
+          id: `notif_${Date.now()}_${user.id}`,
+          userId: user.id,
+          taskId: newTask.id,
+          message: `New task "${newTask.title}" assigned to you by ${taskData.createdByName}`,
+          readStatus: false,
+          createdAt: new Date().toISOString(),
+          // Enhanced fields
+          taskTitle: newTask.title,
+          assignedTo: user.id,
+          assignedToName: user.name,
+          createdBy: newTask.createdBy,
+          createdByName: taskData.createdByName,
+        }),
       );
-      const creatorUser = allUsers.find(user => user.id === newTask.createdBy);
-
-      const notifications: Notification[] = allUsers.map(user => ({
-        id: `notif_${Date.now()}_${user.id}`,
-        userId: user.id,
-        taskId: newTask.id,
-        message: newTask.assignedTo
-          ? `New task "${newTask.title}" assigned to ${
-              assignedUser?.name || 'Unknown'
-            } by ${creatorUser?.name || 'Unknown'}`
-          : `New unassigned task "${newTask.title}" created by ${
-              creatorUser?.name || 'Unknown'
-            }`,
-        readStatus: false,
-        createdAt: new Date().toISOString(),
-        // Enhanced fields
-        taskTitle: newTask.title,
-        assignedTo: newTask.assignedTo ?? undefined,
-        assignedToName: assignedUser?.name,
-        createdBy: newTask.createdBy,
-        createdByName: creatorUser?.name,
-        department: newTask.department ?? undefined,
-      }));
 
       // Store notifications in AsyncStorage
       try {

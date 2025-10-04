@@ -13,7 +13,7 @@ import {
 } from 'react-native';
 import DatePicker from 'react-native-date-picker';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import DropDownPicker from 'react-native-dropdown-picker';
+import SectionedMultiSelect from 'react-native-sectioned-multi-select';
 import {
   launchImageLibrary,
   MediaType,
@@ -48,8 +48,9 @@ interface CreateTaskScreenProps {
 const CreateTaskScreen: React.FC<CreateTaskScreenProps> = ({ navigation }) => {
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
-  const [department, setDepartment] = useState<string | null>('');
-  const [assignedTo, setAssignedTo] = useState<string | null>('');
+  const [selectedUsers, setSelectedUsers] = useState<
+    Array<{ id: string; name: string }>
+  >([]);
   const [selectedFile, setSelectedFile] = useState<{
     name: string;
     uri: string;
@@ -59,22 +60,11 @@ const CreateTaskScreen: React.FC<CreateTaskScreenProps> = ({ navigation }) => {
     new Date(Date.now() + 24 * 60 * 60 * 1000),
   ); // Default to tomorrow
   const [showDatePicker, setShowDatePicker] = useState(false);
-  const [departmentUsers, setDepartmentUsers] = useState<User[]>([]);
   const [loadingUsers, setLoadingUsers] = useState(false);
   const [errors, setErrors] = useState<{ [key: string]: string }>({});
-  const [availableDepartments, setAvailableDepartments] = useState<string[]>([
-    'admin',
-    'doctor',
-    'tvscreen',
-  ]);
   const [allUsers, setAllUsers] = useState<User[]>([]);
-
-  // Dropdown states
-  const [departmentOpen, setDepartmentOpen] = useState(false);
-  const [employeeOpen, setEmployeeOpen] = useState(false);
-  const [departmentItems, setDepartmentItems] = useState<any[]>([]);
-  const [employeeItems, setEmployeeItems] = useState<
-    { label: string; value: string }[]
+  const [userItems, setUserItems] = useState<
+    Array<{ id: string; name: string }>
   >([]);
 
   // Refs for focus management
@@ -92,44 +82,37 @@ const CreateTaskScreen: React.FC<CreateTaskScreenProps> = ({ navigation }) => {
     dispatch(clearTaskError());
   }, [dispatch]);
 
-  // Fetch departments and users from real API
+  // Fetch all users from real API for multi-select dropdown
   useEffect(() => {
-    const fetchDepartmentsAndUsers = async () => {
+    const fetchAllUsers = async () => {
       if (!authToken) return;
 
       try {
-        const { departments, users } =
-          await authService.getAllUsersWithDepartments(authToken);
-        console.log('====================================');
-        console.log({ departments, users });
-        console.log('====================================');
+        setLoadingUsers(true);
+        const { users } = await authService.getAllUsersWithDepartments(
+          authToken,
+        );
+        console.log('Fetched all users for multi-select:', users.length);
 
-        setAvailableDepartments(departments);
         setAllUsers(users);
 
-        // Update department dropdown items with proper labels
-        const departmentOptions = departments.map(dept => ({
-          label: dept.charAt(0).toUpperCase() + dept.slice(1), // Capitalize first letter
-          value: dept,
+        // Format users for SectionedMultiSelect
+        const userOptions = users.map(user => ({
+          id: user.id,
+          name: `${user.name} (${user.role || user.type})`,
         }));
-        setDepartmentItems(departmentOptions as any);
-
-        console.log('Departments fetched:', departments);
-        console.log('Users fetched:', users.length);
+        setUserItems(userOptions);
+        setLoadingUsers(false);
       } catch (error) {
-        console.error('Failed to fetch departments and users:', error);
-        // Fallback to default departments if API fails
-        const defaultDepartments = ['admin', 'doctor', 'tvscreen'];
-        setAvailableDepartments(defaultDepartments);
-        setDepartmentItems([
-          { label: 'HR', value: 'HR' },
-          { label: 'Supervisor', value: 'Supervisor' },
-          { label: 'Manager', value: 'Manager' },
-        ] as any);
+        console.error('Failed to fetch users:', error);
+        setLoadingUsers(false);
+        // Fallback to empty array if API fails
+        setAllUsers([]);
+        setUserItems([]);
       }
     };
 
-    fetchDepartmentsAndUsers();
+    fetchAllUsers();
   }, [authToken]);
 
   useEffect(() => {
@@ -141,29 +124,7 @@ const CreateTaskScreen: React.FC<CreateTaskScreenProps> = ({ navigation }) => {
     }
   }, [error, dispatch]);
 
-  // Filter users when department changes
-  useEffect(() => {
-    if (department && allUsers.length > 0) {
-      setLoadingUsers(true);
-
-      // Filter users by department from already fetched data
-      const departmentUsers = allUsers.filter(user => user.type === department);
-      setDepartmentUsers(departmentUsers);
-      setAssignedTo(''); // Reset employee selection
-
-      // Update employee dropdown items
-      const items = departmentUsers.map(user => ({
-        label: `${user.name} (${user.role})`,
-        value: user.id,
-      }));
-      setEmployeeItems(items);
-      setLoadingUsers(false);
-    } else {
-      setDepartmentUsers([]);
-      setEmployeeItems([]);
-      setAssignedTo('');
-    }
-  }, [department, allUsers]);
+  // Remove department filtering - no longer needed
 
   const clearFieldError = useCallback(
     (field: string) => {
@@ -184,14 +145,25 @@ const CreateTaskScreen: React.FC<CreateTaskScreenProps> = ({ navigation }) => {
     clearFieldError('description');
   };
 
-  const handleDepartmentChange = (value: string | null) => {
-    setDepartment(value || '');
-    clearFieldError('department');
+  const handleUserSelect = (selectedIds: string[]) => {
+    // Convert selected IDs to user objects with names
+    const selected = selectedIds
+      .map(id => {
+        const user = allUsers.find(u => u.id === id);
+        return {
+          id: id,
+          name: user?.name || '',
+        };
+      })
+      .filter(user => user.name !== ''); // Filter out any invalid selections
+
+    setSelectedUsers(selected);
+    clearFieldError('users');
   };
 
-  const handleAssignedToChange = (userId: string | null) => {
-    setAssignedTo(userId || '');
-    clearFieldError('assignedTo');
+  const handleRemoveUser = (userId: string) => {
+    const updatedUsers = selectedUsers.filter(user => user.id !== userId);
+    setSelectedUsers(updatedUsers);
   };
 
   const handleTimelineChange = (date: Date) => {
@@ -265,19 +237,13 @@ const CreateTaskScreen: React.FC<CreateTaskScreenProps> = ({ navigation }) => {
     // Clear previous errors
     setErrors({});
 
-    // Validate form - department is optional, but if selected, user must be selected
+    // Validate form with multi-user selection
     const validationErrors = validateTaskForm(
       title,
       description,
-      department, // Department validation handled separately
-      assignedTo, // Assignee validation handled separately
+      selectedUsers,
       timeline,
     );
-
-    // Additional validation for department/assignee relationship
-    // Note: Tasks can now be created without assignment (unassigned state)
-    // Only validate assignee if department is selected AND user wants to assign
-    // Users can select department but leave assignee empty to create unassigned task
 
     if (validationErrors.length > 0) {
       const errorMap: { [key: string]: string } = {};
@@ -293,20 +259,11 @@ const CreateTaskScreen: React.FC<CreateTaskScreenProps> = ({ navigation }) => {
       return;
     }
 
-    // Find the assigned user's name
-    let assignedToName = '';
-    if (assignedTo && allUsers.length > 0) {
-      const assignedUser = allUsers.find(user => user.id === assignedTo);
-      assignedToName = assignedUser ? assignedUser.name : '';
-    }
-
-    // Prepare task data
+    // Prepare task data with multi-user assignment
     const taskData = {
       title: title.trim(),
       description: description.trim(),
-      department: department || '', // Convert null to empty string
-      assignedTo: assignedTo || null,
-      assignedToName: assignedToName,
+      selectedUsers: selectedUsers, // Array of {id, name} objects
       createdBy: currentUser.id,
       createdByName: currentUser.name,
       fileUrl: selectedFile
@@ -346,9 +303,11 @@ const CreateTaskScreen: React.FC<CreateTaskScreenProps> = ({ navigation }) => {
       }
 
       // Show success message and navigate back
-      const successMessage = assignedTo
-        ? `Task created and assigned to ${assignedToName}!`
-        : 'Task created successfully!';
+      const userNames = selectedUsers.map(u => u.name).join(', ');
+      const successMessage =
+        selectedUsers.length > 0
+          ? `Task created and assigned to ${userNames}!`
+          : 'Task created successfully!';
 
       Alert.alert('Success', successMessage, [
         { text: 'OK', onPress: () => navigation.goBack() },
@@ -440,81 +399,106 @@ const CreateTaskScreen: React.FC<CreateTaskScreenProps> = ({ navigation }) => {
               ) : null}
             </View>
 
-            {/* Department Selection - Optional */}
-            <View style={[styles.inputContainer, { zIndex: 3000 }]}>
-              <Text style={styles.label}>Assign to Department (Optional)</Text>
-              <DropDownPicker
-                open={departmentOpen}
-                value={department}
-                items={departmentItems}
-                setOpen={setDepartmentOpen}
-                setValue={setDepartment}
-                setItems={setDepartmentItems}
-                onChangeValue={handleDepartmentChange}
-                placeholder="Select department..."
-                disabled={isLoading}
-                style={[
-                  styles.dropdown,
-                  errors.department ? styles.inputError : null,
-                ]}
-                dropDownContainerStyle={styles.dropdownContainer}
-                textStyle={styles.dropdownText}
-                placeholderStyle={styles.dropdownPlaceholder}
-                zIndex={3000}
-                zIndexInverse={1000}
-              />
-              {errors.department ? (
-                <Text style={styles.errorText}>{errors.department}</Text>
+            {/* Multi-User Selection */}
+            <View style={styles.inputContainer}>
+              <Text style={styles.label}>
+                Assign to Users <Text style={styles.required}>*</Text>
+              </Text>
+              {loadingUsers ? (
+                <View style={styles.loadingContainer}>
+                  <ActivityIndicator
+                    size="small"
+                    color={theme.colors.primary}
+                  />
+                  <Text style={styles.loadingText}>Loading users...</Text>
+                </View>
+              ) : (
+                <>
+                  <TouchableOpacity
+                    style={[
+                      styles.multiSelectButton,
+                      errors.users ? styles.inputError : null,
+                    ]}
+                    disabled={isLoading || userItems.length === 0}
+                  >
+                    <SectionedMultiSelect
+                      items={userItems}
+                      IconRenderer={Icon}
+                      uniqueKey="id"
+                      displayKey="name"
+                      selectText="Select users to assign..."
+                      searchPlaceholderText="Search users..."
+                      confirmText="Confirm"
+                      showDropDowns={false}
+                      readOnlyHeadings={false}
+                      onSelectedItemsChange={handleUserSelect}
+                      selectedItems={selectedUsers.map(u => u.id)}
+                      hideChips={true}
+                      showChips={false}
+                      colors={{
+                        primary: theme.colors.primary,
+                        success: theme.colors.primary,
+                        cancel: theme.colors.textSecondary,
+                        text: theme.colors.text,
+                        subText: theme.colors.textSecondary,
+                        selectToggleTextColor: theme.colors.text,
+                        searchPlaceholderTextColor: theme.colors.placeholder,
+                        searchSelectionColor: theme.colors.primary,
+                        chipColor: theme.colors.primary,
+                        itemBackground: theme.colors.surface,
+                        subItemBackground: theme.colors.background,
+                      }}
+                      styles={{
+                        selectToggle: styles.selectToggle,
+                        selectToggleText: styles.selectToggleText,
+                        chipContainer: {
+                          display: 'none', // Hide chips in toggle
+                        },
+                        chipText: {
+                          display: 'none', // Hide chip text in toggle
+                        },
+                        button: {
+                          backgroundColor: theme.colors.primary,
+                        },
+                        confirmText: {
+                          color: theme.colors.surface,
+                        },
+                        searchBar: {
+                          backgroundColor: theme.colors.surface,
+                        },
+                      }}
+                      modalWithSafeAreaView
+                      hideSearch={userItems.length < 5}
+                    />
+                  </TouchableOpacity>
+
+                  {/* Display selected users as chips */}
+                  {selectedUsers.length > 0 && (
+                    <View style={styles.chipsContainer}>
+                      {selectedUsers.map(user => (
+                        <View key={user.id} style={styles.chip}>
+                          <Text style={styles.chipText}>{user.name}</Text>
+                          <TouchableOpacity
+                            onPress={() => handleRemoveUser(user.id)}
+                            style={styles.chipCloseButton}
+                            disabled={isLoading}
+                          >
+                            <Icon
+                              name="close"
+                              size={16}
+                              color={theme.colors.surface}
+                            />
+                          </TouchableOpacity>
+                        </View>
+                      ))}
+                    </View>
+                  )}
+                </>
+              )}
+              {errors.users ? (
+                <Text style={styles.errorText}>{errors.users}</Text>
               ) : null}
             </View>
-
-            {/* Employee Selection - Show if department is selected */}
-            {department && (
-              <View style={[styles.inputContainer, { zIndex: 2000 }]}>
-                <Text style={styles.label}>Assign to Employee (Optional)</Text>
-                {loadingUsers ? (
-                  <View style={styles.loadingContainer}>
-                    <ActivityIndicator
-                      size="small"
-                      color={theme.colors.primary}
-                    />
-                    <Text style={styles.loadingText}>Loading employees...</Text>
-                  </View>
-                ) : (
-                  <DropDownPicker
-                    open={employeeOpen}
-                    value={assignedTo}
-                    items={employeeItems}
-                    setOpen={setEmployeeOpen}
-                    setValue={setAssignedTo}
-                    setItems={setEmployeeItems}
-                    onChangeValue={handleAssignedToChange}
-                    placeholder={
-                      !department
-                        ? 'Select department first...'
-                        : employeeItems.length === 0
-                        ? 'No employees found'
-                        : 'Select employee...'
-                    }
-                    disabled={
-                      isLoading || !department || employeeItems.length === 0
-                    }
-                    style={[
-                      styles.dropdown,
-                      errors.assignedTo ? styles.inputError : null,
-                    ]}
-                    dropDownContainerStyle={styles.dropdownContainer}
-                    textStyle={styles.dropdownText}
-                    placeholderStyle={styles.dropdownPlaceholder}
-                    zIndex={2000}
-                    zIndexInverse={2000}
-                  />
-                )}
-                {errors.assignedTo ? (
-                  <Text style={styles.errorText}>{errors.assignedTo}</Text>
-                ) : null}
-              </View>
-            )}
 
             {/* Timeline Field (Required) */}
             <View style={styles.inputContainer}>
@@ -792,29 +776,46 @@ const styles = StyleSheet.create({
     color: theme.colors.text,
     flex: 1,
   },
-  dropdown: {
-    borderColor: theme.colors.border,
-    borderRadius: theme.borderRadius.md,
-    backgroundColor: theme.colors.surface,
+  multiSelectButton: {
     minHeight: 50,
-  },
-  dropdownContainer: {
+    borderWidth: 1,
     borderColor: theme.colors.border,
-    backgroundColor: theme.colors.surface,
     borderRadius: theme.borderRadius.md,
-    elevation: 5,
-    shadowColor: theme.colors.text,
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
+    backgroundColor: theme.colors.surface,
+    justifyContent: 'center',
   },
-  dropdownText: {
+  selectToggle: {
+    padding: theme.spacing.md,
+    minHeight: 50,
+    justifyContent: 'center',
+  },
+  selectToggleText: {
     fontSize: theme.typography.fontSizes.md,
     color: theme.colors.text,
   },
-  dropdownPlaceholder: {
-    fontSize: theme.typography.fontSizes.md,
-    color: theme.colors.placeholder,
+  chipsContainer: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    marginTop: theme.spacing.sm,
+    gap: theme.spacing.xs,
+  },
+  chip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: theme.colors.primary,
+    borderRadius: 20,
+    paddingHorizontal: theme.spacing.md,
+    paddingVertical: theme.spacing.sm,
+    marginRight: theme.spacing.xs,
+    marginBottom: theme.spacing.xs,
+  },
+  chipText: {
+    color: theme.colors.surface,
+    fontSize: theme.typography.fontSizes.sm,
+    marginRight: theme.spacing.xs,
+  },
+  chipCloseButton: {
+    marginLeft: theme.spacing.xs,
   },
 });
 

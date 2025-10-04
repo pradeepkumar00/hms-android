@@ -41,8 +41,9 @@ export interface Task {
   fileUrl?: string;
   createdBy: string;
   createdByName?: string; // Name of task creator
-  assignedTo?: string | null; // Nullable for new tasks
-  assignedToName?: string; // Name of assigned user
+  assignedTo?: string | null; // First user ID (backward compatibility)
+  assignedToName?: string; // Name of first assigned user
+  assignedUsers?: Array<{ id: string; name: string }>; // NEW: Multiple assignees
   status: 'new' | 'assigned' | 'progress' | 'completed';
   createdAt: string;
   updatedAt: string;
@@ -54,12 +55,13 @@ export interface Task {
 export interface TaskCreateRequest {
   title: string;
   description: string;
-  status: 'new' | 'assigned' | 'progress' | 'completed';
-  assignedTo?: string; // ObjectId
-  asssinedToName?: string; // Note: typo in API field name
-  assignedBy: string; // ObjectId
-  assignedByName: string;
-  dueDate: string; // ISO date string
+  status: 'new' | 'assigned';
+  assignedTo?: string; // First user ObjectId
+  users?: Array<{ id: string; name: string }>; // NEW: Multiple assignees
+  dueDate: string; // ISO date string (YYYY-MM-DD format)
+  tenantId: string;
+  createdBy: string;
+  createdByName: string;
 }
 
 export interface AssignmentHistory {

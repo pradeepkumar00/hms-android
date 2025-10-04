@@ -172,8 +172,7 @@ export const validateTimeline = (timeline: Date): ValidationError | null => {
 export const validateTaskForm = (
   title: string,
   description: string,
-  department: string | null,
-  assignedTo: string | null,
+  selectedUsers: Array<{ id: string; name: string }>,
   timeline: Date,
 ): ValidationError[] => {
   const errors: ValidationError[] = [];
@@ -184,8 +183,13 @@ export const validateTaskForm = (
   const descriptionError = validateDescription(description);
   if (descriptionError) errors.push(descriptionError);
 
-  // Department and assignedTo are now optional - tasks can be created without assignment
-  // No validation errors for empty department or assignedTo
+  // Validate at least one user is selected for multi-user assignment
+  if (!selectedUsers || selectedUsers.length === 0) {
+    errors.push({
+      field: 'users',
+      message: 'At least one user must be selected',
+    });
+  }
 
   const timelineError = validateTimeline(timeline);
   if (timelineError) errors.push(timelineError);

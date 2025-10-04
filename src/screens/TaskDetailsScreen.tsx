@@ -231,10 +231,12 @@ const TaskDetailsScreen: React.FC<TaskDetailsScreenProps> = ({
         value: status.value,
       }));
 
-      // Check if current user can update this task (assignee OR creator)
+      // Check if current user can update this task (assignee OR creator OR any assigned user)
       const isCreator = task && user && task.createdBy === user.id;
       const isAssignee = task && user && task.assignedTo === user.id;
-      const canUpdateTask = isCreator || isAssignee;
+      const isInAssignedUsers =
+        task && user && task.assignedUsers?.some(u => u.id === user.id);
+      const canUpdateTask = isCreator || isAssignee || isInAssignedUsers;
 
       // If user cannot update task, return only current status (readonly)
       if (!canUpdateTask) {
@@ -395,15 +397,17 @@ const TaskDetailsScreen: React.FC<TaskDetailsScreenProps> = ({
     async (newStatus: 'new' | 'assigned' | 'progress' | 'completed') => {
       if (!task || readonly) return;
 
-      // Check if current user can update this task (assignee OR creator)
+      // Check if current user can update this task (assignee OR creator OR any assigned user)
       const isCreator = user && task.createdBy === user.id;
       const isAssignee = user && task.assignedTo === user.id;
-      const canUpdateTask = isCreator || isAssignee;
+      const isInAssignedUsers =
+        user && task.assignedUsers?.some(u => u.id === user.id);
+      const canUpdateTask = isCreator || isAssignee || isInAssignedUsers;
 
       if (!canUpdateTask) {
         Alert.alert(
           'Access Denied',
-          'Only the task creator or assigned user can update this task.',
+          'Only the task creator or assigned users can update this task.',
           [{ text: 'OK' }],
         );
         return;
