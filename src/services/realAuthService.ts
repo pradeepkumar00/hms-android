@@ -432,6 +432,76 @@ class RealAuthService {
   }
 
   /**
+   * Fetch task with hierarchy (parent and children)
+   * GET /api/task/taskId/{taskId}
+   * Returns task with parentTask and childTask arrays (Phase 10)
+   */
+  async fetchTaskWithHierarchy(taskId: string, token: string): Promise<any> {
+    try {
+      console.log(`📋 Fetching task with hierarchy: ${taskId}`);
+
+      const response = await apiClient.get(`/task/taskId/${taskId}`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+      });
+
+      console.log('✅ Task with hierarchy fetched successfully:', {
+        taskId: response.data?.task?._id,
+        hasParent: !!response.data?.parentTask,
+        childrenCount: response.data?.childTask?.length || 0,
+      });
+
+      return response.data;
+    } catch (error) {
+      console.error('❌ Failed to fetch task with hierarchy:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Create child task with parentTaskId
+   * POST /api/task
+   * Creates a new task with parent-child relationship (Phase 10)
+   */
+  async createChildTask(
+    taskData: {
+      title: string;
+      description: string;
+      assignedTo: string;
+      assignedToName: string;
+      dueDate: string;
+      status: 'new' | 'assigned';
+      parentTaskId: string;
+    },
+    token: string,
+  ): Promise<any> {
+    try {
+      console.log(
+        `📋 Creating child task for parent: ${taskData.parentTaskId}`,
+      );
+
+      const response = await apiClient.post('/task', taskData, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+      });
+
+      console.log('✅ Child task created successfully:', {
+        taskId: response.data?.task?._id,
+        parentTaskId: taskData.parentTaskId,
+      });
+
+      return response.data;
+    } catch (error) {
+      console.error('❌ Failed to create child task:', error);
+      throw error;
+    }
+  }
+
+  /**
    * Subscribe to FCM topic using tenantId for notifications
    */
   private async subscribeToNotificationTopic(tenantId: string): Promise<void> {

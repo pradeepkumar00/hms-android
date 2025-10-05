@@ -734,6 +734,200 @@ export const fetchTaskById = createAsyncThunk(
   },
 );
 
+/**
+ * Fetch task with hierarchy (parent and children) - Phase 10
+ * GET /api/task/taskId/{taskId}
+ * Returns task with parent and child relationships
+ */
+export const fetchTaskWithHierarchy = createAsyncThunk(
+  'tasks/fetchTaskWithHierarchy',
+  async (taskId: string, { rejectWithValue, getState }) => {
+    try {
+      console.log(`🔄 Fetching task with hierarchy: ${taskId}`);
+
+      // Get auth token
+      const state = getState() as any;
+      const authState = state.auth;
+      const token = authState.token;
+
+      if (!token) {
+        return rejectWithValue(
+          'Authentication required to fetch task hierarchy',
+        );
+      }
+
+      // Import auth service dynamically to avoid circular dependencies
+      const authService = (await import('../services/realAuthService')).default;
+
+      // Call API to fetch task with hierarchy
+      const response = await authService.fetchTaskWithHierarchy(taskId, token);
+
+      console.log('✅ Task hierarchy response:', {
+        taskId: response?.task?._id,
+        hasParent: !!response?.parentTask,
+        childrenCount: response?.childTask?.length || 0,
+      });
+
+      if (!response || !response.task) {
+        return rejectWithValue(`Task with ID ${taskId} not found`);
+      }
+
+      // Transform the main task
+      const task: Task = {
+        id: response.task._id,
+        _id: response.task._id,
+        title: response.task.title,
+        description: response.task.description,
+        assignedTo: response.task.assignedTo || null,
+        assignedToName: response.task.assignedToName || undefined,
+        assignedBy: response.task.assignedBy || undefined,
+        assignedByName: response.task.assignedByName || undefined,
+        user: response.task.user || [], // Multiple assigned users from API
+        status: response.task.status || 'new',
+        createdBy: response.task.createdBy || '',
+        createdByName: response.task.createdByName || 'Unknown',
+        createdAt: response.task.createdAt,
+        updatedAt: response.task.updatedAt,
+        dueDate: response.task.dueDate || undefined,
+        fileUrl: response.task.fileUrl || undefined,
+        assignmentHistory: response.task.taskHistory || undefined,
+        parentTaskId: response.task.parentTaskId || undefined,
+        hasChildren: response.childTask && response.childTask.length > 0,
+      };
+
+      // Transform child tasks
+      const childTasks: Task[] = (response.childTask || []).map(
+        (child: any) => ({
+          id: child._id,
+          _id: child._id,
+          title: child.title,
+          description: child.description,
+          assignedTo: child.assignedTo || null,
+          assignedToName: child.assignedToName || undefined,
+          assignedBy: child.assignedBy || undefined,
+          assignedByName: child.assignedByName || undefined,
+          user: child.user || [], // Multiple assigned users
+          status: child.status || 'new',
+          createdBy: child.createdBy || '',
+          createdByName: child.createdByName || 'Unknown',
+          createdAt: child.createdAt,
+          updatedAt: child.updatedAt,
+          dueDate: child.dueDate || undefined,
+          fileUrl: child.fileUrl || undefined,
+          parentTaskId: child.parentTaskId || undefined,
+        }),
+      );
+
+      // Transform parent task if exists
+      const parentTask: Task | null = response.parentTask
+        ? {
+            id: response.parentTask._id,
+            _id: response.parentTask._id,
+            title: response.parentTask.title,
+            description: response.parentTask.description,
+            assignedTo: response.parentTask.assignedTo || null,
+            assignedToName: response.parentTask.assignedToName || undefined,
+            assignedBy: response.parentTask.assignedBy || undefined,
+            assignedByName: response.parentTask.assignedByName || undefined,
+            user: response.parentTask.user || [], // Multiple assigned users
+            status: response.parentTask.status || 'new',
+            createdBy: response.parentTask.createdBy || '',
+            createdByName: response.parentTask.createdByName || 'Unknown',
+            createdAt: response.parentTask.createdAt,
+            updatedAt: response.parentTask.updatedAt,
+            dueDate: response.parentTask.dueDate || undefined,
+            fileUrl: response.parentTask.fileUrl || undefined,
+            parentTaskId: response.parentTask.parentTaskId || undefined,
+          }
+        : null;
+
+      // Add child tasks to the main task
+      task.childTasks = childTasks;
+
+      return { task, parentTask, childTasks };
+    } catch (error) {
+      console.error('❌ Failed to fetch task hierarchy:', error);
+      const message =
+        error instanceof Error
+          ? error.message
+          : 'Failed to fetch task hierarchy';
+      return rejectWithValue(message);
+    }
+  },
+);
+
+/**
+ * Create child task - Phase 10
+ * POST /api/task with parentTaskId
+ */
+export const createChildTask = createAsyncThunk(
+  'tasks/createChildTask',
+  async (
+    taskData: {
+      title: string;
+      description: string;
+      assignedTo: string;
+      assignedToName: string;
+      dueDate: string;
+      status: 'new' | 'assigned';
+      parentTaskId: string;
+    },
+    { rejectWithValue, getState },
+  ) => {
+    try {
+      console.log(
+        `🔄 Creating child task for parent: ${taskData.parentTaskId}`,
+      );
+
+      // Get auth token
+      const state = getState() as any;
+      const authState = state.auth;
+      const token = authState.token;
+
+      if (!token) {
+        return rejectWithValue('Authentication required to create child task');
+      }
+
+      // Import auth service dynamically
+      const authService = (await import('../services/realAuthService')).default;
+
+      // Call API to create child task
+      const response = await authService.createChildTask(taskData, token);
+
+      console.log('✅ Child task created successfully');
+
+      if (!response || !response.task) {
+        return rejectWithValue('Failed to create child task');
+      }
+
+      // Transform response to Task interface
+      const newTask: Task = {
+        id: response.task._id,
+        _id: response.task._id,
+        title: response.task.title,
+        description: response.task.description,
+        assignedTo: response.task.assignedTo || null,
+        assignedToName: response.task.assignedToName || undefined,
+        status: response.task.status || 'new',
+        createdBy: response.task.createdBy || '',
+        createdByName: response.task.createdByName || 'Unknown',
+        createdAt: response.task.createdAt,
+        updatedAt: response.task.updatedAt,
+        dueDate: response.task.dueDate || undefined,
+        fileUrl: response.task.fileUrl || undefined,
+        parentTaskId: response.task.parentTaskId || taskData.parentTaskId,
+      };
+
+      return newTask;
+    } catch (error) {
+      console.error('❌ Failed to create child task:', error);
+      const message =
+        error instanceof Error ? error.message : 'Failed to create child task';
+      return rejectWithValue(message);
+    }
+  },
+);
+
 export const updateTaskStatus = createAsyncThunk(
   'tasks/updateTaskStatus',
   async (
@@ -793,6 +987,7 @@ export const createTask = createAsyncThunk(
       createdBy: string;
       createdByName: string;
       tenantId: string;
+      parentTaskId?: string; // Phase 10: Support for child task creation
     },
     { rejectWithValue, getState },
   ) => {
@@ -822,8 +1017,13 @@ export const createTask = createAsyncThunk(
           taskData.selectedUsers.length > 0
             ? taskData.selectedUsers[0].id
             : undefined,
-        users: taskData.selectedUsers, // Array of {id, name} objects
+        user: taskData.selectedUsers, // Array of {id, name} objects - FIXED: Changed from 'users' to 'user'
       };
+
+      // Phase 10: Include parentTaskId if creating child task
+      if (taskData.parentTaskId) {
+        apiTaskData.parentTaskId = taskData.parentTaskId;
+      }
 
       // Add notification payload for backend to send FCM topic notifications
       const assignedNames = taskData.selectedUsers.map(u => u.name).join(', ');
@@ -1253,6 +1453,83 @@ const taskSlice = createSlice({
         state.isLoading = false;
         state.error = action.payload as string;
         state.currentTask = null;
+      })
+
+      // Fetch task with hierarchy (Phase 10)
+      .addCase(fetchTaskWithHierarchy.pending, state => {
+        console.log(
+          '🔄 fetchTaskWithHierarchy.pending - Starting hierarchy fetch...',
+        );
+        state.isLoading = true;
+        state.error = null;
+      })
+      .addCase(
+        fetchTaskWithHierarchy.fulfilled,
+        (
+          state,
+          action: PayloadAction<{
+            task: Task;
+            parentTask: Task | null;
+            childTasks: Task[];
+          }>,
+        ) => {
+          console.log(
+            '✅ fetchTaskWithHierarchy.fulfilled - Hierarchy loaded!',
+          );
+          console.log('📊 Hierarchy data:', {
+            taskId: action.payload.task.id,
+            hasParent: !!action.payload.parentTask,
+            childrenCount: action.payload.childTasks.length,
+          });
+          state.isLoading = false;
+          state.currentTask = action.payload.task;
+          state.error = null;
+        },
+      )
+      .addCase(fetchTaskWithHierarchy.rejected, (state, action) => {
+        console.log(
+          '❌ fetchTaskWithHierarchy.rejected - Error loading hierarchy',
+        );
+        state.isLoading = false;
+        state.error = action.payload as string;
+        state.currentTask = null;
+      })
+
+      // Create child task (Phase 10)
+      .addCase(createChildTask.pending, state => {
+        console.log('🔄 createChildTask.pending - Creating child task...');
+        state.isLoading = true;
+        state.error = null;
+      })
+      .addCase(
+        createChildTask.fulfilled,
+        (state, action: PayloadAction<Task>) => {
+          console.log('✅ createChildTask.fulfilled - Child task created!');
+          console.log('📊 New child task:', {
+            id: action.payload.id,
+            parentId: action.payload.parentTaskId,
+          });
+          state.isLoading = false;
+          // Add child task to assignedByMe if current user created it
+          state.assignedByMe.push(action.payload);
+          // Update current task's child tasks if it's the parent
+          if (
+            state.currentTask &&
+            state.currentTask.id === action.payload.parentTaskId
+          ) {
+            if (!state.currentTask.childTasks) {
+              state.currentTask.childTasks = [];
+            }
+            state.currentTask.childTasks.push(action.payload);
+            state.currentTask.hasChildren = true;
+          }
+          state.error = null;
+        },
+      )
+      .addCase(createChildTask.rejected, (state, action) => {
+        console.log('❌ createChildTask.rejected - Error creating child task');
+        state.isLoading = false;
+        state.error = action.payload as string;
       })
 
       // Reassign task

@@ -9,6 +9,7 @@ import {
   ActivityIndicator,
   Linking,
   Modal,
+  FlatList,
 } from 'react-native';
 import { Picker } from '@react-native-picker/picker';
 import {
@@ -31,11 +32,14 @@ import {
   fetchAssignedByMeTasks,
   fetchTaskById,
   fetchCreatedTasks,
+  fetchTaskWithHierarchy,
+  createChildTask,
 } from '../store/taskSlice';
 import { theme } from '../constants/theme';
-import { Header } from '../components';
+import { Header, TaskTabs } from '../components';
 import { TASK_STATUSES } from '../constants/app';
 import { Task, User } from '../types';
+import type { TabType } from '../components/TaskTabs';
 import Icon from 'react-native-vector-icons/MaterialIcons';
 import authService from '../services/authService';
 import {
@@ -104,6 +108,11 @@ const TaskDetailsScreen: React.FC<TaskDetailsScreenProps> = ({
   const [selectedUser, setSelectedUser] = useState<User | null>(null);
   const [loadingUsers, setLoadingUsers] = useState(false);
 
+  // Tab and hierarchy states (Phase 10)
+  const [activeTab, setActiveTab] = useState<TabType>('details');
+  const [parentTask, setParentTask] = useState<Task | null>(null);
+  const [childTasks, setChildTasks] = useState<Task[]>([]);
+
   // Convert internal task status to display status for API
   const convertToApiStatus = (
     status: 'new' | 'assigned' | 'progress' | 'completed',
@@ -158,37 +167,52 @@ const TaskDetailsScreen: React.FC<TaskDetailsScreenProps> = ({
       console.log(`📋 Found in currentTask:`, !!foundTask);
     }
 
-    if (foundTask) {
-      console.log(`✅ Task found:`, foundTask.title);
-      setTask(foundTask);
-    } else {
-      console.log(`🔄 Task not found in store, fetching by ID: ${taskId}`);
-      // If task not found anywhere, fetch it by ID (works for notifications and deep linking)
-      const fetchPromise = dispatch(fetchTaskById(taskId));
+    // ALWAYS fetch with hierarchy to get parent/child relationships (Phase 10)
+    console.log(`🔄 Fetching task with hierarchy: ${taskId}`);
+    const fetchPromise = dispatch(fetchTaskWithHierarchy(taskId));
 
-      // Debug the dispatch result
-      fetchPromise
-        .then(result => {
-          console.log('🎯 fetchTaskById dispatch RESOLVED:', {
-            type: result.type,
-            payload: result.payload,
-            meta: result.meta,
-          });
-        })
-        .catch(error => {
-          console.log('💥 fetchTaskById dispatch REJECTED:', {
-            error: error,
-            message: error.message,
-          });
+    // Debug the dispatch result
+    fetchPromise
+      .then(result => {
+        console.log('🎯 fetchTaskWithHierarchy dispatch RESOLVED:', {
+          type: result.type,
+          hasParent: !!(result.payload as any).parentTask,
+          childrenCount: (result.payload as any).childTasks?.length || 0,
         });
-    }
-  }, [taskId, assignedTasks, createdTasks, currentTask, dispatch]);
 
-  // Update local task state when currentTask changes
+        // Update parent and child tasks from response
+        if (result.payload && typeof result.payload === 'object') {
+          const payload = result.payload as any;
+          setParentTask(payload.parentTask || null);
+          setChildTasks(payload.childTasks || []);
+
+          console.log('📊 Hierarchy state updated:', {
+            hasParent: !!payload.parentTask,
+            childrenCount: payload.childTasks?.length || 0,
+          });
+        }
+      })
+      .catch(error => {
+        console.log('💥 fetchTaskWithHierarchy dispatch REJECTED:', {
+          error: error,
+          message: error.message,
+        });
+      });
+  }, [taskId, dispatch]);
+
+  // Update local task state when currentTask changes (from fetchTaskWithHierarchy)
   useEffect(() => {
     if (currentTask && currentTask.id === taskId) {
-      console.log(`✅ Task loaded from fetchTaskById:`, currentTask.title);
+      console.log(
+        `✅ Task loaded from fetchTaskWithHierarchy:`,
+        currentTask.title,
+      );
       setTask(currentTask);
+
+      // Update parent and child tasks if available in currentTask
+      if (currentTask.childTasks) {
+        setChildTasks(currentTask.childTasks);
+      }
     }
   }, [currentTask, taskId]);
 
@@ -235,7 +259,9 @@ const TaskDetailsScreen: React.FC<TaskDetailsScreenProps> = ({
       const isCreator = task && user && task.createdBy === user.id;
       const isAssignee = task && user && task.assignedTo === user.id;
       const isInAssignedUsers =
-        task && user && task.assignedUsers?.some(u => u.id === user.id);
+        task &&
+        user &&
+        task.user?.some(u => u.id === user.id || u._id === user.id);
       const canUpdateTask = isCreator || isAssignee || isInAssignedUsers;
 
       // If user cannot update task, return only current status (readonly)
@@ -401,7 +427,7 @@ const TaskDetailsScreen: React.FC<TaskDetailsScreenProps> = ({
       const isCreator = user && task.createdBy === user.id;
       const isAssignee = user && task.assignedTo === user.id;
       const isInAssignedUsers =
-        user && task.assignedUsers?.some(u => u.id === user.id);
+        user && task.user?.some(u => u.id === user.id || u._id === user.id);
       const canUpdateTask = isCreator || isAssignee || isInAssignedUsers;
 
       if (!canUpdateTask) {
@@ -494,6 +520,38 @@ const TaskDetailsScreen: React.FC<TaskDetailsScreenProps> = ({
       ]);
     }
   }, []);
+
+  // Handle create child task button click (Phase 10)
+  const handleCreateChildTask = useCallback(() => {
+    if (!task) return;
+
+    // Check if user can create child task
+    const canCreateChild =
+      user &&
+      (task.createdBy === user.id ||
+        task.assignedTo === user.id ||
+        task.user?.some(u => u.id === user.id || u._id === user.id));
+
+    if (!canCreateChild) {
+      Alert.alert(
+        'Access Denied',
+        'Only the task creator or assigned users can create child tasks.',
+        [{ text: 'OK' }],
+      );
+      return;
+    }
+
+    // Navigate to CreateTask screen with parentTaskId
+    navigation.navigate('CreateTask', { parentTaskId: task.id });
+  }, [task, user, navigation]);
+
+  // Navigate to parent/child task
+  const handleTaskNavigation = useCallback(
+    (targetTaskId: string) => {
+      navigation.push('TaskDetails', { taskId: targetTaskId });
+    },
+    [navigation],
+  );
 
   // Get status color
   const getStatusColor = (status: string) => {
@@ -604,189 +662,515 @@ const TaskDetailsScreen: React.FC<TaskDetailsScreenProps> = ({
   const canEditStatus =
     user && (user.id === task.assignedTo || user.id === task.createdBy);
 
+  // Check if user can create child task (Phase 10)
+  const canCreateChild =
+    user &&
+    (task.createdBy === user.id ||
+      task.assignedTo === user.id ||
+      task.user?.some(u => u.id === user.id || u._id === user.id));
+
   return (
     <View style={styles.container}>
-      <Header
-        title="Task Details"
-        showNotificationIcon={false}
-        showHomeIcon={true}
-        onHomePress={() => navigation.navigate('Main')}
+      {/* Header with Create Child Task button */}
+      <View style={styles.headerContainer}>
+        <Header
+          title="Task Details"
+          showNotificationIcon={false}
+          showHomeIcon={true}
+          onHomePress={() => navigation.navigate('Main')}
+        />
+        {canCreateChild && (
+          <TouchableOpacity
+            style={styles.createChildButton}
+            onPress={handleCreateChildTask}
+            activeOpacity={0.7}
+          >
+            <Icon name="add-circle" size={20} color={theme.colors.surface} />
+            <Text style={styles.createChildButtonText}>Create Child Task</Text>
+          </TouchableOpacity>
+        )}
+      </View>
+
+      {/* Tab Navigation (Phase 10) */}
+      <TaskTabs
+        activeTab={activeTab}
+        onTabChange={setActiveTab}
+        hasParent={!!parentTask}
+        childrenCount={childTasks.length}
       />
 
       <ScrollView style={styles.content} showsVerticalScrollIndicator={false}>
-        {/* Task Header */}
-        <View style={styles.taskHeader}>
-          <Text style={styles.taskTitle}>{task.title}</Text>
+        {/* Details Tab Content */}
+        {activeTab === 'details' && (
+          <>
+            {/* Task Header */}
+            <View style={styles.taskHeader}>
+              <Text style={styles.taskTitle}>{task.title}</Text>
 
-          <View style={styles.statusContainer}>
-            <Icon
-              name={getStatusIcon(task.status)}
-              size={20}
-              color={getStatusColor(task.status)}
-            />
-            <Text
-              style={[
-                styles.statusText,
-                { color: getStatusColor(task.status) },
-              ]}
-            >
-              {task.status}
-            </Text>
-          </View>
-        </View>
-
-        {/* Due Date Warning */}
-        {dueDateStatus && (
-          <View
-            style={[
-              styles.dueDateContainer,
-              { backgroundColor: dueDateStatus.color + '15' },
-            ]}
-          >
-            <Icon name="schedule" size={16} color={dueDateStatus.color} />
-            <Text style={[styles.dueDateText, { color: dueDateStatus.color }]}>
-              {dueDateStatus.text}
-            </Text>
-          </View>
-        )}
-
-        {/* Task Details Card */}
-        <View style={styles.detailsCard}>
-          <Text style={styles.sectionTitle}>Task Information</Text>
-
-          {/* Description */}
-          <View style={styles.detailRow}>
-            <Text style={styles.detailLabel}>Description</Text>
-            <Text style={styles.detailValue}>{task.description}</Text>
-          </View>
-
-          {/* Assigned By */}
-          <View style={styles.detailRow}>
-            <Text style={styles.detailLabel}>Assigned By</Text>
-            <Text style={styles.detailValue}>{task.createdByName}</Text>
-          </View>
-
-          {/* Created */}
-          <View style={styles.detailRow}>
-            <Text style={styles.detailLabel}>Created</Text>
-            <Text style={styles.detailValue}>{createdText}</Text>
-          </View>
-
-          {/* Last Updated */}
-          <View style={styles.detailRow}>
-            <Text style={styles.detailLabel}>Last Updated</Text>
-            <Text style={styles.detailValue}>{updatedText}</Text>
-          </View>
-
-          {/* Due Date */}
-          {task.dueDate && (
-            <View style={styles.detailRow}>
-              <Text style={styles.detailLabel}>Due Date</Text>
-              <Text style={styles.detailValue}>
-                {new Date(task.dueDate).toLocaleDateString('en-US', {
-                  weekday: 'short',
-                  year: 'numeric',
-                  month: 'short',
-                  day: 'numeric',
-                  hour: '2-digit',
-                  minute: '2-digit',
-                })}
-              </Text>
-            </View>
-          )}
-
-          {/* File Attachment */}
-          {task.fileUrl && (
-            <View style={styles.detailRow}>
-              <Text style={styles.detailLabel}>Attachment</Text>
-              <TouchableOpacity
-                style={styles.fileButton}
-                onPress={() => handleFileDownload(task.fileUrl!)}
-                activeOpacity={0.7}
-              >
+              <View style={styles.statusContainer}>
                 <Icon
-                  name="attach-file"
-                  size={16}
-                  color={theme.colors.primary}
+                  name={getStatusIcon(task.status)}
+                  size={20}
+                  color={getStatusColor(task.status)}
                 />
-                <Text style={styles.fileButtonText}>View File</Text>
-                <Icon
-                  name="open-in-new"
-                  size={14}
-                  color={theme.colors.primary}
-                />
-              </TouchableOpacity>
-            </View>
-          )}
-        </View>
-
-        {/* Status Update Section - Only for authorized users in non-readonly mode */}
-        {!readonly && canEditStatus && (
-          <View style={styles.statusUpdateCard}>
-            <Text style={styles.sectionTitle}>Update Status</Text>
-            <Text style={styles.statusUpdateSubtitle}>
-              Change the status to reflect your progress on this task.
-            </Text>
-
-            <View style={styles.pickerContainer}>
-              <Text style={styles.pickerLabel}>Current Status</Text>
-              <View style={styles.pickerWrapper}>
-                <Picker
-                  selectedValue={task.status}
-                  onValueChange={handleStatusUpdate}
-                  enabled={!isUpdatingStatus}
-                  style={styles.picker}
-                  mode="dropdown"
+                <Text
+                  style={[
+                    styles.statusText,
+                    { color: getStatusColor(task.status) },
+                  ]}
                 >
-                  {getAllowedStatusOptions(task.status).map(option => (
-                    <Picker.Item
-                      key={option.value}
-                      label={option.label}
-                      value={option.value}
-                    />
-                  ))}
-                </Picker>
+                  {task.status}
+                </Text>
               </View>
             </View>
 
-            {isUpdatingStatus && (
-              <View style={styles.updatingContainer}>
-                <ActivityIndicator size="small" color={theme.colors.primary} />
-                <Text style={styles.updatingText}>Updating status...</Text>
+            {/* Due Date Warning */}
+            {dueDateStatus && (
+              <View
+                style={[
+                  styles.dueDateContainer,
+                  { backgroundColor: dueDateStatus.color + '15' },
+                ]}
+              >
+                <Icon name="schedule" size={16} color={dueDateStatus.color} />
+                <Text
+                  style={[styles.dueDateText, { color: dueDateStatus.color }]}
+                >
+                  {dueDateStatus.text}
+                </Text>
               </View>
             )}
-          </View>
-        )}
 
-        {/* Access Restriction Notice for unauthorized users */}
-        {!readonly && !canEditStatus && (
-          <View style={styles.statusUpdateCard}>
-            <View style={styles.restrictionContainer}>
-              <Icon name="lock" size={24} color={theme.colors.warning} />
-              <View style={styles.restrictionTextContainer}>
-                <Text style={styles.restrictionTitle}>
-                  Status Update Restricted
-                </Text>
-                <Text style={styles.restrictionSubtitle}>
-                  Only the assigned user or creator of the task can update the
-                  task status.
+            {/* Task Details Card */}
+            <View style={styles.detailsCard}>
+              <Text style={styles.sectionTitle}>Task Information</Text>
+
+              {/* Description */}
+              <View style={styles.detailRow}>
+                <Text style={styles.detailLabel}>Description</Text>
+                <Text style={styles.detailValue}>{task.description}</Text>
+              </View>
+
+              {/* Assigned To - Show all assigned users */}
+              {(task.assignedToName || (task.user && task.user.length > 0)) && (
+                <View style={styles.detailRow}>
+                  <Text style={styles.detailLabel}>Assigned To</Text>
+                  <View style={styles.assignedUsersContainer}>
+                    {task.assignedToName && (
+                      <Text style={styles.detailValue}>
+                        {task.assignedToName}
+                      </Text>
+                    )}
+                    {task.user && task.user.length > 0 && (
+                      <View style={styles.multipleUsersContainer}>
+                        {task.user.map((user, index) => (
+                          <View
+                            key={user._id || user.id || index}
+                            style={styles.userChip}
+                          >
+                            <Icon
+                              name="person"
+                              size={14}
+                              color={theme.colors.primary}
+                            />
+                            <Text style={styles.userChipText}>
+                              {user.name || 'Unknown'}
+                            </Text>
+                          </View>
+                        ))}
+                      </View>
+                    )}
+                  </View>
+                </View>
+              )}
+
+              {/* Assigned By */}
+              <View style={styles.detailRow}>
+                <Text style={styles.detailLabel}>Assigned By</Text>
+                <Text style={styles.detailValue}>
+                  {task.assignedByName || task.createdByName || 'Unknown'}
                 </Text>
               </View>
+
+              {/* Created */}
+              <View style={styles.detailRow}>
+                <Text style={styles.detailLabel}>Created</Text>
+                <Text style={styles.detailValue}>{createdText}</Text>
+              </View>
+
+              {/* Last Updated */}
+              <View style={styles.detailRow}>
+                <Text style={styles.detailLabel}>Last Updated</Text>
+                <Text style={styles.detailValue}>{updatedText}</Text>
+              </View>
+
+              {/* Due Date */}
+              {task.dueDate && (
+                <View style={styles.detailRow}>
+                  <Text style={styles.detailLabel}>Due Date</Text>
+                  <Text style={styles.detailValue}>
+                    {new Date(task.dueDate).toLocaleDateString('en-US', {
+                      weekday: 'short',
+                      year: 'numeric',
+                      month: 'short',
+                      day: 'numeric',
+                      hour: '2-digit',
+                      minute: '2-digit',
+                    })}
+                  </Text>
+                </View>
+              )}
+
+              {/* File Attachment */}
+              {task.fileUrl && (
+                <View style={styles.detailRow}>
+                  <Text style={styles.detailLabel}>Attachment</Text>
+                  <TouchableOpacity
+                    style={styles.fileButton}
+                    onPress={() => handleFileDownload(task.fileUrl!)}
+                    activeOpacity={0.7}
+                  >
+                    <Icon
+                      name="attach-file"
+                      size={16}
+                      color={theme.colors.primary}
+                    />
+                    <Text style={styles.fileButtonText}>View File</Text>
+                    <Icon
+                      name="open-in-new"
+                      size={14}
+                      color={theme.colors.primary}
+                    />
+                  </TouchableOpacity>
+                </View>
+              )}
             </View>
+
+            {/* Status Update Section - Only for authorized users in non-readonly mode */}
+            {!readonly && canEditStatus && (
+              <View style={styles.statusUpdateCard}>
+                <Text style={styles.sectionTitle}>Update Status</Text>
+                <Text style={styles.statusUpdateSubtitle}>
+                  Change the status to reflect your progress on this task.
+                </Text>
+
+                <View style={styles.pickerContainer}>
+                  <Text style={styles.pickerLabel}>Current Status</Text>
+                  <View style={styles.pickerWrapper}>
+                    <Picker
+                      selectedValue={task.status}
+                      onValueChange={handleStatusUpdate}
+                      enabled={!isUpdatingStatus}
+                      style={styles.picker}
+                      mode="dropdown"
+                    >
+                      {getAllowedStatusOptions(task.status).map(option => (
+                        <Picker.Item
+                          key={option.value}
+                          label={option.label}
+                          value={option.value}
+                        />
+                      ))}
+                    </Picker>
+                  </View>
+                </View>
+
+                {isUpdatingStatus && (
+                  <View style={styles.updatingContainer}>
+                    <ActivityIndicator
+                      size="small"
+                      color={theme.colors.primary}
+                    />
+                    <Text style={styles.updatingText}>Updating status...</Text>
+                  </View>
+                )}
+              </View>
+            )}
+
+            {/* Access Restriction Notice for unauthorized users */}
+            {!readonly && !canEditStatus && (
+              <View style={styles.statusUpdateCard}>
+                <View style={styles.restrictionContainer}>
+                  <Icon name="lock" size={24} color={theme.colors.warning} />
+                  <View style={styles.restrictionTextContainer}>
+                    <Text style={styles.restrictionTitle}>
+                      Status Update Restricted
+                    </Text>
+                    <Text style={styles.restrictionSubtitle}>
+                      Only the assigned user or creator of the task can update
+                      the task status.
+                    </Text>
+                  </View>
+                </View>
+              </View>
+            )}
+
+            {/* Readonly Notice */}
+            {readonly && (
+              <View style={styles.readonlyNotice}>
+                <Icon
+                  name="visibility"
+                  size={16}
+                  color={theme.colors.textSecondary}
+                />
+                <Text style={styles.readonlyText}>
+                  This task is in read-only mode. You cannot modify the status.
+                </Text>
+              </View>
+            )}
+          </>
+        )}
+
+        {/* History Tab Content (Placeholder) */}
+        {activeTab === 'history' && (
+          <View style={styles.tabPlaceholder}>
+            <Icon name="history" size={48} color={theme.colors.textSecondary} />
+            <Text style={styles.placeholderText}>
+              Task history will be displayed here
+            </Text>
+            <Text style={styles.placeholderSubtext}>
+              This feature will be implemented in a future update
+            </Text>
           </View>
         )}
 
-        {/* Readonly Notice */}
-        {readonly && (
-          <View style={styles.readonlyNotice}>
-            <Icon
-              name="visibility"
-              size={16}
-              color={theme.colors.textSecondary}
-            />
-            <Text style={styles.readonlyText}>
-              This task is in read-only mode. You cannot modify the status.
-            </Text>
+        {/* Parent Task Tab Content (Phase 10) */}
+        {activeTab === 'parent' && (
+          <>
+            {parentTask ? (
+              <View style={styles.parentTaskContainer}>
+                <TouchableOpacity
+                  style={styles.parentTaskCard}
+                  onPress={() => handleTaskNavigation(parentTask.id)}
+                  activeOpacity={0.7}
+                >
+                  <View style={styles.parentTaskHeader}>
+                    <Icon
+                      name="arrow-upward"
+                      size={24}
+                      color={theme.colors.primary}
+                    />
+                    <Text style={styles.parentTaskLabel}>Parent Task</Text>
+                  </View>
+
+                  <Text style={styles.parentTaskTitle}>{parentTask.title}</Text>
+
+                  <View style={styles.parentTaskDetails}>
+                    <View style={styles.parentTaskDetailRow}>
+                      <Icon
+                        name="label"
+                        size={16}
+                        color={theme.colors.textSecondary}
+                      />
+                      <Text style={styles.parentTaskDetailText}>
+                        Status:{' '}
+                        <Text
+                          style={[
+                            styles.parentTaskStatus,
+                            { color: getStatusColor(parentTask.status) },
+                          ]}
+                        >
+                          {parentTask.status}
+                        </Text>
+                      </Text>
+                    </View>
+
+                    {parentTask.assignedToName && (
+                      <View style={styles.parentTaskDetailRow}>
+                        <Icon
+                          name="person"
+                          size={16}
+                          color={theme.colors.textSecondary}
+                        />
+                        <Text style={styles.parentTaskDetailText}>
+                          Assigned to: {parentTask.assignedToName}
+                        </Text>
+                      </View>
+                    )}
+
+                    {parentTask.dueDate && (
+                      <View style={styles.parentTaskDetailRow}>
+                        <Icon
+                          name="event"
+                          size={16}
+                          color={theme.colors.textSecondary}
+                        />
+                        <Text style={styles.parentTaskDetailText}>
+                          Due:{' '}
+                          {new Date(parentTask.dueDate).toLocaleDateString()}
+                        </Text>
+                      </View>
+                    )}
+
+                    <View style={styles.parentTaskDetailRow}>
+                      <Icon
+                        name="person-outline"
+                        size={16}
+                        color={theme.colors.textSecondary}
+                      />
+                      <Text style={styles.parentTaskDetailText}>
+                        Created by: {parentTask.createdByName || 'Unknown'}
+                      </Text>
+                    </View>
+                  </View>
+
+                  <View style={styles.parentTaskFooter}>
+                    <Text style={styles.parentTaskLink}>
+                      Tap to view parent task
+                    </Text>
+                    <Icon
+                      name="arrow-forward"
+                      size={20}
+                      color={theme.colors.primary}
+                    />
+                  </View>
+                </TouchableOpacity>
+              </View>
+            ) : (
+              <View style={styles.emptyState}>
+                <Icon
+                  name="layers"
+                  size={64}
+                  color={theme.colors.textSecondary}
+                />
+                <Text style={styles.emptyStateText}>No parent task</Text>
+                <Text style={styles.emptyStateSubtext}>
+                  This is a top-level task with no parent
+                </Text>
+              </View>
+            )}
+          </>
+        )}
+
+        {/* Child Tasks Tab Content (Phase 10) */}
+        {activeTab === 'children' && (
+          <View style={styles.childTasksContainer}>
+            {childTasks.length === 0 ? (
+              <View style={styles.emptyState}>
+                <Icon
+                  name="folder-open"
+                  size={64}
+                  color={theme.colors.textSecondary}
+                />
+                <Text style={styles.emptyStateText}>No child tasks yet</Text>
+                <Text style={styles.emptyStateSubtext}>
+                  Create a child task to break down this task into smaller parts
+                </Text>
+                {canCreateChild && (
+                  <TouchableOpacity
+                    style={styles.emptyStateButton}
+                    onPress={handleCreateChildTask}
+                  >
+                    <Icon name="add" size={20} color={theme.colors.surface} />
+                    <Text style={styles.emptyStateButtonText}>
+                      Create Child Task
+                    </Text>
+                  </TouchableOpacity>
+                )}
+              </View>
+            ) : (
+              <FlatList
+                data={childTasks}
+                keyExtractor={item => item.id}
+                renderItem={({ item }) => (
+                  <TouchableOpacity
+                    style={styles.childTaskCard}
+                    onPress={() => handleTaskNavigation(item.id)}
+                    activeOpacity={0.7}
+                  >
+                    <View style={styles.childTaskHeader}>
+                      <View style={styles.childTaskTitleContainer}>
+                        <Icon
+                          name="subdirectory-arrow-right"
+                          size={20}
+                          color={theme.colors.textSecondary}
+                        />
+                        <Text style={styles.childTaskTitle} numberOfLines={2}>
+                          {item.title}
+                        </Text>
+                      </View>
+                      <Icon
+                        name="chevron-right"
+                        size={24}
+                        color={theme.colors.textSecondary}
+                      />
+                    </View>
+
+                    <View style={styles.childTaskMeta}>
+                      <View
+                        style={[
+                          styles.childTaskStatus,
+                          {
+                            backgroundColor: getStatusColor(item.status) + '20',
+                          },
+                        ]}
+                      >
+                        <Icon
+                          name={getStatusIcon(item.status)}
+                          size={14}
+                          color={getStatusColor(item.status)}
+                        />
+                        <Text
+                          style={[
+                            styles.childTaskStatusText,
+                            { color: getStatusColor(item.status) },
+                          ]}
+                        >
+                          {item.status}
+                        </Text>
+                      </View>
+
+                      {item.assignedToName && (
+                        <View style={styles.childTaskAssignee}>
+                          <Icon
+                            name="person-outline"
+                            size={14}
+                            color={theme.colors.textSecondary}
+                          />
+                          <Text style={styles.childTaskAssigneeText}>
+                            {item.assignedToName}
+                          </Text>
+                        </View>
+                      )}
+                    </View>
+
+                    {item.dueDate && (
+                      <View style={styles.childTaskDueDate}>
+                        <Icon
+                          name="event"
+                          size={14}
+                          color={theme.colors.textSecondary}
+                        />
+                        <Text style={styles.childTaskDueDateText}>
+                          Due: {new Date(item.dueDate).toLocaleDateString()}
+                        </Text>
+                      </View>
+                    )}
+                  </TouchableOpacity>
+                )}
+                contentContainerStyle={styles.childTasksList}
+                ListFooterComponent={
+                  canCreateChild ? (
+                    <View style={styles.addChildFooterContainer}>
+                      <TouchableOpacity
+                        style={styles.emptyStateButton}
+                        onPress={handleCreateChildTask}
+                        activeOpacity={0.7}
+                      >
+                        <Icon
+                          name="add"
+                          size={20}
+                          color={theme.colors.surface}
+                        />
+                        <Text style={styles.emptyStateButtonText}>
+                          Create Child Task
+                        </Text>
+                      </TouchableOpacity>
+                    </View>
+                  ) : null
+                }
+              />
+            )}
           </View>
         )}
       </ScrollView>
@@ -1229,6 +1613,243 @@ const styles = StyleSheet.create({
   },
   modalButtonTextDisabled: {
     color: theme.colors.textSecondary,
+  },
+  // Assigned Users Styles
+  assignedUsersContainer: {
+    flex: 1,
+  },
+  multipleUsersContainer: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    marginTop: theme.spacing.xs,
+    gap: theme.spacing.xs,
+  },
+  userChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: theme.colors.primary + '15',
+    borderRadius: 16,
+    paddingHorizontal: theme.spacing.sm,
+    paddingVertical: theme.spacing.xs,
+    marginRight: theme.spacing.xs,
+    marginBottom: theme.spacing.xs,
+  },
+  userChipText: {
+    fontSize: theme.typography.fontSizes.sm,
+    color: theme.colors.primary,
+    fontWeight: theme.typography.fontWeights.medium,
+    marginLeft: theme.spacing.xs,
+  },
+  // Phase 10: Parent-Child Task Styles
+  headerContainer: {
+    position: 'relative',
+  },
+  createChildButton: {
+    position: 'absolute',
+    top: 0,
+    right: theme.spacing.md,
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: theme.colors.primary,
+    paddingHorizontal: theme.spacing.md,
+    paddingVertical: theme.spacing.sm,
+    borderRadius: theme.borderRadius.md,
+    ...theme.shadows.sm,
+  },
+  createChildButtonText: {
+    color: theme.colors.surface,
+    fontSize: theme.typography.fontSizes.sm,
+    fontWeight: theme.typography.fontWeights.semiBold,
+    marginLeft: theme.spacing.xs,
+  },
+  tabPlaceholder: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: theme.spacing.xl,
+  },
+  placeholderText: {
+    fontSize: theme.typography.fontSizes.lg,
+    fontWeight: theme.typography.fontWeights.medium,
+    color: theme.colors.text,
+    marginTop: theme.spacing.md,
+    textAlign: 'center',
+  },
+  placeholderSubtext: {
+    fontSize: theme.typography.fontSizes.sm,
+    color: theme.colors.textSecondary,
+    marginTop: theme.spacing.sm,
+    textAlign: 'center',
+  },
+  // Parent Task Styles
+  parentTaskContainer: {
+    padding: theme.spacing.md,
+  },
+  parentTaskCard: {
+    backgroundColor: theme.colors.surface,
+    borderRadius: theme.borderRadius.lg,
+    padding: theme.spacing.lg,
+    ...theme.shadows.md,
+    borderWidth: 2,
+    borderColor: theme.colors.primary + '30',
+  },
+  parentTaskHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: theme.spacing.md,
+  },
+  parentTaskLabel: {
+    fontSize: theme.typography.fontSizes.md,
+    fontWeight: theme.typography.fontWeights.semiBold,
+    color: theme.colors.primary,
+    marginLeft: theme.spacing.sm,
+  },
+  parentTaskTitle: {
+    fontSize: theme.typography.fontSizes.lg,
+    fontWeight: theme.typography.fontWeights.bold,
+    color: theme.colors.text,
+    marginBottom: theme.spacing.md,
+  },
+  parentTaskDetails: {
+    marginBottom: theme.spacing.md,
+  },
+  parentTaskDetailRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: theme.spacing.sm,
+  },
+  parentTaskDetailText: {
+    fontSize: theme.typography.fontSizes.sm,
+    color: theme.colors.text,
+    marginLeft: theme.spacing.sm,
+  },
+  parentTaskStatus: {
+    fontWeight: theme.typography.fontWeights.semiBold,
+  },
+  parentTaskFooter: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: theme.spacing.sm,
+    paddingTop: theme.spacing.sm,
+    borderTopWidth: 1,
+    borderTopColor: theme.colors.border,
+  },
+  parentTaskLink: {
+    fontSize: theme.typography.fontSizes.sm,
+    color: theme.colors.primary,
+    fontWeight: theme.typography.fontWeights.medium,
+  },
+  // Child Tasks Styles
+  childTasksContainer: {
+    flex: 1,
+  },
+  childTasksList: {
+    padding: theme.spacing.md,
+  },
+  addChildFooterContainer: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: theme.spacing.lg,
+    marginBottom: theme.spacing.md,
+  },
+  childTaskCard: {
+    backgroundColor: theme.colors.surface,
+    borderRadius: theme.borderRadius.md,
+    padding: theme.spacing.md,
+    marginBottom: theme.spacing.sm,
+    ...theme.shadows.sm,
+    borderLeftWidth: 3,
+    borderLeftColor: theme.colors.primary,
+  },
+  childTaskHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: theme.spacing.sm,
+  },
+  childTaskTitleContainer: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  childTaskTitle: {
+    flex: 1,
+    fontSize: theme.typography.fontSizes.md,
+    fontWeight: theme.typography.fontWeights.semiBold,
+    color: theme.colors.text,
+    marginLeft: theme.spacing.sm,
+  },
+  childTaskMeta: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: theme.spacing.xs,
+  },
+  childTaskStatus: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: theme.spacing.sm,
+    paddingVertical: theme.spacing.xs,
+    borderRadius: theme.borderRadius.sm,
+    marginRight: theme.spacing.sm,
+  },
+  childTaskStatusText: {
+    fontSize: theme.typography.fontSizes.xs,
+    fontWeight: theme.typography.fontWeights.medium,
+    marginLeft: theme.spacing.xs,
+  },
+  childTaskAssignee: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  childTaskAssigneeText: {
+    fontSize: theme.typography.fontSizes.xs,
+    color: theme.colors.textSecondary,
+    marginLeft: theme.spacing.xs,
+  },
+  childTaskDueDate: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  childTaskDueDateText: {
+    fontSize: theme.typography.fontSizes.xs,
+    color: theme.colors.textSecondary,
+    marginLeft: theme.spacing.xs,
+  },
+  // Empty State Styles
+  emptyState: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: theme.spacing.xl,
+  },
+  emptyStateText: {
+    fontSize: theme.typography.fontSizes.lg,
+    fontWeight: theme.typography.fontWeights.semiBold,
+    color: theme.colors.text,
+    marginTop: theme.spacing.md,
+    textAlign: 'center',
+  },
+  emptyStateSubtext: {
+    fontSize: theme.typography.fontSizes.sm,
+    color: theme.colors.textSecondary,
+    marginTop: theme.spacing.sm,
+    textAlign: 'center',
+    marginBottom: theme.spacing.lg,
+  },
+  emptyStateButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: theme.colors.primary,
+    paddingHorizontal: theme.spacing.lg,
+    paddingVertical: theme.spacing.md,
+    borderRadius: theme.borderRadius.md,
+  },
+  emptyStateButtonText: {
+    color: theme.colors.surface,
+    fontSize: theme.typography.fontSizes.md,
+    fontWeight: theme.typography.fontWeights.semiBold,
+    marginLeft: theme.spacing.sm,
   },
 });
 

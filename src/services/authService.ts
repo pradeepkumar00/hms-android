@@ -240,10 +240,11 @@ class AuthService {
           (taskData.users && taskData.users.length > 0
             ? taskData.users[0].id
             : undefined),
-        users: taskData.users || [],
+        user: taskData.user || [],
         tenantId: taskData.tenantId,
         createdBy: taskData.createdBy,
         createdByName: taskData.createdByName,
+        parentTaskId: taskData.parentTaskId ?? null,
       };
 
       console.log(

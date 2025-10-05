@@ -36,6 +36,7 @@ export interface LoginResponse {
 // Task Types
 export interface Task {
   id: string;
+  _id?: string; // API uses _id
   title: string;
   description: string;
   fileUrl?: string;
@@ -43,12 +44,19 @@ export interface Task {
   createdByName?: string; // Name of task creator
   assignedTo?: string | null; // First user ID (backward compatibility)
   assignedToName?: string; // Name of first assigned user
+  assignedBy?: string; // User ID who assigned the task
+  assignedByName?: string; // Name of user who assigned the task
+  user?: Array<{ id?: string; name?: string; _id?: string }>; // Multiple assigned users from API
   assignedUsers?: Array<{ id: string; name: string }>; // NEW: Multiple assignees
   status: 'new' | 'assigned' | 'progress' | 'completed';
   createdAt: string;
   updatedAt: string;
   dueDate?: string;
   assignmentHistory?: AssignmentHistory[];
+  // Parent-Child Task Hierarchy (Phase 10)
+  parentTaskId?: string; // ID of parent task if this is a child task
+  childTasks?: Task[]; // Array of immediate child tasks
+  hasChildren?: boolean; // Flag indicating if task has children
 }
 
 // Task Creation API Request
@@ -57,11 +65,13 @@ export interface TaskCreateRequest {
   description: string;
   status: 'new' | 'assigned';
   assignedTo?: string; // First user ObjectId
+  assignedToName?: string; // Name of assigned user
   users?: Array<{ id: string; name: string }>; // NEW: Multiple assignees
   dueDate: string; // ISO date string (YYYY-MM-DD format)
-  tenantId: string;
-  createdBy: string;
-  createdByName: string;
+  tenantId?: string;
+  createdBy?: string;
+  createdByName?: string;
+  parentTaskId?: string; // Parent task ID for child tasks (Phase 10)
 }
 
 export interface AssignmentHistory {
@@ -107,7 +117,7 @@ export type RootStackParamList = {
   Inbox: undefined;
   AssignedTasks: undefined; // Tasks created BY current user
   History: undefined; // Tasks assigned to others BY current user
-  CreateTask: undefined;
+  CreateTask: { parentTaskId?: string }; // Optional parentTaskId for creating child tasks (Phase 10)
   NotificationSettings: undefined;
 };
 
@@ -144,6 +154,13 @@ export interface ApiResponse<T = any> {
   data?: T;
   error?: string;
   message?: string;
+}
+
+// Task Hierarchy API Response (Phase 10)
+export interface TaskHierarchyResponse {
+  task: Task;
+  childTask: Task[]; // Array of immediate child tasks
+  parentTask: Task | null; // Parent task or null
 }
 
 // Form Validation Types

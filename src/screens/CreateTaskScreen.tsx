@@ -43,9 +43,19 @@ import Header from '../components/Header';
 
 interface CreateTaskScreenProps {
   navigation: any;
+  route?: {
+    params?: {
+      parentTaskId?: string;
+    };
+  };
 }
 
-const CreateTaskScreen: React.FC<CreateTaskScreenProps> = ({ navigation }) => {
+const CreateTaskScreen: React.FC<CreateTaskScreenProps> = ({
+  navigation,
+  route,
+}) => {
+  // Extract parentTaskId from route params (Phase 10)
+  const parentTaskId = route?.params?.parentTaskId;
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [selectedUsers, setSelectedUsers] = useState<
@@ -271,6 +281,7 @@ const CreateTaskScreen: React.FC<CreateTaskScreenProps> = ({ navigation }) => {
         : undefined,
       timeline: timeline.toISOString(),
       tenantId: currentUser.tenantId,
+      parentTaskId: parentTaskId || undefined, // Phase 10: Include parent task ID if creating child task
     };
 
     try {
@@ -279,14 +290,15 @@ const CreateTaskScreen: React.FC<CreateTaskScreenProps> = ({ navigation }) => {
 
       // Send FCM notification payload to backend (enhanced reliability)
       try {
+        const assignedNames = selectedUsers.map(u => u.name).join(', ');
         await notificationService.sendTaskNotificationToBackend({
           title: taskData.title,
-          assignedToName: taskData.assignedToName,
+          assignedToName: selectedUsers.length > 0 ? assignedNames : undefined,
           taskId: createdTask.task?.id || `task_${Date.now()}`,
           tenantId: currentUser.tenantId,
           createdBy: currentUser.id,
           createdByName: currentUser.name,
-          type: assignedTo ? 'task_assigned' : 'task_created',
+          type: selectedUsers.length > 0 ? 'task_assigned' : 'task_created',
         });
         console.log('📨 FCM notification payload processed');
       } catch (notificationError) {
@@ -302,16 +314,29 @@ const CreateTaskScreen: React.FC<CreateTaskScreenProps> = ({ navigation }) => {
         dispatch(fetchInboxNotifications(currentUser.id));
       }
 
-      // Show success message and navigate back
+      // Show success message and navigate appropriately
       const userNames = selectedUsers.map(u => u.name).join(', ');
       const successMessage =
         selectedUsers.length > 0
           ? `Task created and assigned to ${userNames}!`
           : 'Task created successfully!';
 
-      Alert.alert('Success', successMessage, [
-        { text: 'OK', onPress: () => navigation.goBack() },
-      ]);
+      // Phase 10: If creating child task, navigate to the created task details
+      if (parentTaskId && createdTask.task?.id) {
+        Alert.alert('Success', successMessage, [
+          {
+            text: 'View Task',
+            onPress: () =>
+              navigation.replace('TaskDetails', {
+                taskId: createdTask.task.id,
+              }),
+          },
+        ]);
+      } else {
+        Alert.alert('Success', successMessage, [
+          { text: 'OK', onPress: () => navigation.goBack() },
+        ]);
+      }
     } catch (error) {
       // Error is handled in useEffect above
       console.error('Task creation error:', error);
@@ -331,7 +356,7 @@ const CreateTaskScreen: React.FC<CreateTaskScreenProps> = ({ navigation }) => {
   return (
     <SafeAreaView style={styles.container}>
       <Header
-        title="Create Task"
+        title={parentTaskId ? 'Create Child Task' : 'Create Task'}
         showNotificationIcon={false}
         showHomeIcon={true}
         onHomePress={() => navigation.navigate('Main')}
@@ -346,6 +371,20 @@ const CreateTaskScreen: React.FC<CreateTaskScreenProps> = ({ navigation }) => {
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
         >
+          {/* Parent Task Info (Phase 10) */}
+          {parentTaskId && (
+            <View style={styles.parentTaskInfo}>
+              <Icon
+                name="info-outline"
+                size={20}
+                color={theme.colors.primary}
+              />
+              <Text style={styles.parentTaskInfoText}>
+                Creating a child task
+              </Text>
+            </View>
+          )}
+
           <View style={styles.form}>
             {/* Title Field */}
             <View style={styles.inputContainer}>
@@ -816,6 +855,25 @@ const styles = StyleSheet.create({
   },
   chipCloseButton: {
     marginLeft: theme.spacing.xs,
+  },
+  // Phase 10: Parent Task Info
+  parentTaskInfo: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: theme.colors.primary + '15',
+    borderLeftWidth: 4,
+    borderLeftColor: theme.colors.primary,
+    padding: theme.spacing.md,
+    marginHorizontal: theme.spacing.md,
+    marginTop: theme.spacing.sm,
+    marginBottom: theme.spacing.md,
+    borderRadius: theme.borderRadius.md,
+  },
+  parentTaskInfoText: {
+    fontSize: theme.typography.fontSizes.md,
+    fontWeight: theme.typography.fontWeights.medium,
+    color: theme.colors.primary,
+    marginLeft: theme.spacing.sm,
   },
 });
 
