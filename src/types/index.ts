@@ -37,6 +37,7 @@ export interface LoginResponse {
 export interface Task {
   id: string;
   _id?: string; // API uses _id
+  tenantId: string;
   title: string;
   description: string;
   fileUrl?: string;
@@ -57,6 +58,19 @@ export interface Task {
   parentTaskId?: string; // ID of parent task if this is a child task
   childTasks?: Task[]; // Array of immediate child tasks
   hasChildren?: boolean; // Flag indicating if task has children
+  // Task History (Phase 10 - History Tab)
+  taskHistory?: TaskHistoryEntry[]; // Array of status change history entries
+  priority?: string;
+  parentTask?: Task | null;
+}
+
+// Task History Entry Type (Phase 10 - History Tab)
+export interface TaskHistoryEntry {
+  status?: string; // Status value ('new', 'assigned', 'progress', 'completed')
+  changedBy: string; // User ID who made the change
+  changedByName: string; // Name of user who made the change
+  changedAt: string; // ISO timestamp of when change occurred
+  _id: string; // Unique identifier for history entry
 }
 
 // Task Creation API Request

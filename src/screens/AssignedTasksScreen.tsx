@@ -410,7 +410,7 @@ const AssignedTasksScreen: React.FC<AssignedTasksScreenProps> = ({
         </View>
 
         {/* Search Bar */}
-        <View style={styles.searchContainer}>
+        {/* <View style={styles.searchContainer}>
           <Icon name="search" size={20} color={theme.colors.textSecondary} />
           <TextInput
             style={styles.searchInput}
@@ -430,13 +430,13 @@ const AssignedTasksScreen: React.FC<AssignedTasksScreenProps> = ({
               color={theme.colors.primary}
             />
           </TouchableOpacity>
-        </View>
+        </View> */}
 
         {/* Filters */}
-        {showFilters && (
-          <View style={styles.filtersContainer}>
+        {/* {showFilters && ( 
+          // <View style={styles.filtersContainer}>
             {/* Status Filters */}
-            <Text style={styles.filterSectionTitle}>Status</Text>
+        {/* <Text style={styles.filterSectionTitle}>Status</Text>
             <View style={styles.filterChipsContainer}>
               {renderFilterChip('All', 'all', taskStats.total)}
               {renderFilterChip('Assigned', 'assigned', taskStats.assigned)}
@@ -446,16 +446,16 @@ const AssignedTasksScreen: React.FC<AssignedTasksScreenProps> = ({
                 taskStats.inProgress,
               )}
               {renderFilterChip('Completed', 'completed', taskStats.completed)}
-            </View>
+            </View> */}
 
-            {/* Sort Options */}
-            <Text style={styles.filterSectionTitle}>Sort By</Text>
+        {/* Sort Options */}
+        {/* <Text style={styles.filterSectionTitle}>Sort By</Text>
             <View style={styles.sortOptionsContainer}>
               {renderSortOption('Newest First', 'newest')}
               {renderSortOption('Oldest First', 'oldest')}
             </View>
-          </View>
-        )}
+          </View> */}
+        {/* )} */}
 
         {/* Results Summary */}
         <View style={styles.resultsHeader}>

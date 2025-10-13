@@ -1,16 +1,19 @@
 export const COLORS = {
-  primary: '#2196F3', // Blue for header
-  secondary: '#FFC107',
+  primary: '#8091F2', // Purple for interactive elements
+  secondary: '#5FDCFF', // Cyan for headers
+  accent: '#7E57C2', // Purple accent for buttons
   background: '#F5F5F5',
   surface: '#FFFFFF',
   text: '#333333',
   textSecondary: '#666666',
+  textInverse: '#FFFFFF', // White text for dark backgrounds
   error: '#F44336',
   success: '#4CAF50',
   warning: '#FF9800',
   disabled: '#CCCCCC',
   border: '#E0E0E0',
   placeholder: '#999999',
+  fileIcon: '#F44336', // Red accent for file icons
 } as const;
 
 export const SPACING = {

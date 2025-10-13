@@ -73,7 +73,7 @@ const TaskTabs: React.FC<TaskTabsProps> = ({
                 index === 0 && styles.firstTab,
               ]}
               onPress={() => onTabChange(tab.id)}
-              activeOpacity={0.7}
+              // activeOpacity={0.7}
             >
               <View style={styles.tabContent}>
                 <Text
@@ -90,7 +90,6 @@ const TaskTabs: React.FC<TaskTabsProps> = ({
                   </View>
                 )}
               </View>
-              {activeTab === tab.id && <View style={styles.activeIndicator} />}
             </TouchableOpacity>
           ))}
       </ScrollView>
@@ -100,27 +99,36 @@ const TaskTabs: React.FC<TaskTabsProps> = ({
 
 const styles = StyleSheet.create({
   container: {
-    borderBottomWidth: 1,
-    borderBottomColor: theme.colors.border,
-    backgroundColor: theme.colors.surface,
+    backgroundColor: theme.colors.secondary, // Cyan background (#5FDCFF)
+    paddingTop: theme.spacing.sm, // Gap between top and tabs
+    alignContent: 'center',
   },
   scrollView: {
     flexGrow: 0,
   },
   scrollContent: {
-    paddingHorizontal: theme.spacing.sm,
+    flex: 1,
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: theme.spacing.xs,
+    paddingBottom: 0, // No padding at bottom so active tab touches the bottom
   },
   tab: {
     paddingHorizontal: theme.spacing.md,
-    paddingVertical: theme.spacing.md,
+    // paddingVertical: theme.spacing.xs,
     marginRight: theme.spacing.xs,
     position: 'relative',
+    minHeight: 40,
+    justifyContent: 'center',
   },
   firstTab: {
     marginLeft: theme.spacing.xs,
   },
   activeTab: {
-    // Active tab styling handled by indicator
+    backgroundColor: theme.colors.surface, // White background
+    borderTopLeftRadius: 12, // Rounded top corners
+    borderTopRightRadius: 12, // Rounded top corners
+    borderBottomWidth: 0, // No bottom border to "touch" the content below
   },
   tabContent: {
     flexDirection: 'row',
@@ -129,21 +137,11 @@ const styles = StyleSheet.create({
   tabText: {
     fontSize: theme.typography.fontSizes.md,
     fontWeight: theme.typography.fontWeights.medium,
-    color: theme.colors.textSecondary,
+    color: theme.colors.text,
   },
   activeTabText: {
-    color: theme.colors.primary,
-    fontWeight: theme.typography.fontWeights.semiBold,
-  },
-  activeIndicator: {
-    position: 'absolute',
-    bottom: 0,
-    left: 0,
-    right: 0,
-    height: 3,
-    backgroundColor: theme.colors.primary,
-    borderTopLeftRadius: 3,
-    borderTopRightRadius: 3,
+    color: theme.colors.text, // Black text for active tab
+    fontWeight: theme.typography.fontWeights.bold,
   },
   badge: {
     marginLeft: theme.spacing.xs,

@@ -10,8 +10,16 @@ import {
   Linking,
   Modal,
   FlatList,
+  TextInput,
+  StatusBar,
+  Image,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { Picker } from '@react-native-picker/picker';
+
+// Import images for Assigned To and Status
+const UserIcon = require('../../assets/images/User.png');
+const StatusIcon = require('../../assets/images/Status.png');
 import {
   useAppDispatch,
   useAppSelector,
@@ -38,13 +46,14 @@ import {
 import { theme } from '../constants/theme';
 import { Header, TaskTabs } from '../components';
 import { TASK_STATUSES } from '../constants/app';
-import { Task, User } from '../types';
+import { Task, User, TaskHistoryEntry } from '../types';
 import type { TabType } from '../components/TaskTabs';
 import Icon from 'react-native-vector-icons/MaterialIcons';
 import authService from '../services/authService';
 import {
   formatDateDDMMYYYY,
   formatDetailedRelativeTime,
+  formatDateTime,
 } from '../utils/helpers';
 
 interface TaskDetailsScreenProps {
@@ -112,6 +121,19 @@ const TaskDetailsScreen: React.FC<TaskDetailsScreenProps> = ({
   const [activeTab, setActiveTab] = useState<TabType>('details');
   const [parentTask, setParentTask] = useState<Task | null>(null);
   const [childTasks, setChildTasks] = useState<Task[]>([]);
+
+  // Editable fields state
+  const [selectedUsers, setSelectedUsers] = useState<
+    Array<{ id: string; name: string }>
+  >([]);
+  const [selectedStatus, setSelectedStatus] = useState<string>('assigned');
+  const [editableDescription, setEditableDescription] = useState<string>('');
+  const [isSaving, setIsSaving] = useState(false);
+  const [allAvailableUsers, setAllAvailableUsers] = useState<User[]>([]);
+
+  // Multi-select user modal state
+  const [showUserSelectModal, setShowUserSelectModal] = useState(false);
+  const [tempSelectedUserIds, setTempSelectedUserIds] = useState<string[]>([]);
 
   // Convert internal task status to display status for API
   const convertToApiStatus = (
@@ -209,12 +231,130 @@ const TaskDetailsScreen: React.FC<TaskDetailsScreenProps> = ({
       );
       setTask(currentTask);
 
+      // Initialize editable fields
+      if (currentTask.user && currentTask.user.length > 0) {
+        setSelectedUsers(
+          currentTask.user.map(u => ({
+            id: u.id || u._id || '',
+            name: u.name || 'no-name',
+          })),
+        );
+      } else {
+        // If no users, show placeholder
+        setSelectedUsers([{ id: '', name: 'no-name' }]);
+      }
+
+      setSelectedStatus(currentTask.status || 'assigned');
+      setEditableDescription(currentTask.description || '');
+
       // Update parent and child tasks if available in currentTask
       if (currentTask.childTasks) {
         setChildTasks(currentTask.childTasks);
       }
     }
   }, [currentTask, taskId]);
+
+  // Fetch all users for dropdown selection
+  useEffect(() => {
+    const fetchUsers = async () => {
+      if (!token) return;
+
+      try {
+        const { users: allUsers } =
+          await authService.getAllUsersWithDepartments(token);
+        setAllAvailableUsers(allUsers);
+      } catch (error) {
+        console.error('Failed to fetch users:', error);
+      }
+    };
+
+    fetchUsers();
+  }, [token]);
+
+  // Handle opening user selection modal
+  const handleOpenUserSelect = useCallback(() => {
+    setTempSelectedUserIds(selectedUsers.map(u => u.id).filter(id => id));
+    setShowUserSelectModal(true);
+  }, [selectedUsers]);
+
+  // Handle user selection confirmation
+  const handleConfirmUserSelection = useCallback(() => {
+    const selected = allAvailableUsers
+      .filter(u => tempSelectedUserIds.includes(u.id))
+      .map(u => ({ id: u.id, name: u.name }));
+    setSelectedUsers(
+      selected.length > 0 ? selected : [{ id: '', name: 'no-name' }],
+    );
+    setShowUserSelectModal(false);
+  }, [tempSelectedUserIds, allAvailableUsers]);
+
+  // Toggle user selection
+  const toggleUserSelection = useCallback((userId: string) => {
+    setTempSelectedUserIds(prev => {
+      if (prev.includes(userId)) {
+        return prev.filter(id => id !== userId);
+      } else {
+        return [...prev, userId];
+      }
+    });
+  }, []);
+
+  // Save task updates (users, status, description)
+  const handleSaveTask = useCallback(async () => {
+    if (!task || !token) return;
+
+    setIsSaving(true);
+    try {
+      // Prepare update payload matching the API format from curl
+      const updatePayload: any = {
+        user: selectedUsers
+          .filter(u => u.id)
+          .map(u => ({ id: u.id, name: u.name })),
+        status: selectedStatus,
+      };
+
+      console.log('🔄 Updating task:', task.id, updatePayload);
+
+      // Make API call to update task (using the exact endpoint format from curl)
+      const response = await fetch(
+        `https://app.octusai.com/api/task/taskId/${task.id}/update`,
+        {
+          method: 'POST',
+          headers: {
+            Accept: 'application/json, text/plain, */*',
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify(updatePayload),
+        },
+      );
+
+      if (!response.ok) {
+        throw new Error(`API Error: ${response.status}`);
+      }
+
+      const updatedTask = await response.json();
+      console.log('✅ Task updated successfully:', updatedTask);
+
+      // Update local task state
+      setTask(updatedTask);
+
+      // Show success message
+      Alert.alert('Success', 'Task updated successfully!', [{ text: 'OK' }]);
+
+      // Refresh task data
+      dispatch(fetchTaskWithHierarchy(task.id));
+    } catch (error) {
+      console.error('Failed to save task:', error);
+      Alert.alert(
+        'Save Failed',
+        'Failed to save task updates. Please try again.',
+        [{ text: 'OK' }],
+      );
+    } finally {
+      setIsSaving(false);
+    }
+  }, [task, token, selectedUsers, selectedStatus, dispatch]);
 
   // Clear error when component unmounts
   useEffect(() => {
@@ -671,27 +811,122 @@ const TaskDetailsScreen: React.FC<TaskDetailsScreenProps> = ({
 
   return (
     <View style={styles.container}>
-      {/* Header with Create Child Task button */}
-      <View style={styles.headerContainer}>
-        <Header
-          title="Task Details"
-          showNotificationIcon={false}
-          showHomeIcon={true}
-          onHomePress={() => navigation.navigate('Main')}
-        />
+      {/* Status Bar Configuration */}
+      <StatusBar
+        barStyle="light-content"
+        backgroundColor={theme.colors.secondary}
+        translucent={false}
+      />
+
+      {/* 1. Purple Header with App Icon and "Task" Title */}
+      <SafeAreaView style={styles.cyanHeaderSafeArea} edges={['top']}>
+        <View style={styles.cyanHeader}>
+          <View style={styles.headerContent}>
+            <View style={styles.appIconContainer}>
+              <View style={styles.imageContainer}>
+                <Image
+                  source={require('../../assets/images/app-logo.jpeg')}
+                  style={styles.imageIcon}
+                  resizeMode="contain"
+                />
+              </View>
+            </View>
+            <Text style={styles.headerTitle}>Task</Text>
+          </View>
+        </View>
+      </SafeAreaView>
+
+      {/* 2. Cyan Navigation Bar with Title and Create Child Task Button */}
+      <View style={styles.cyanNavBar}>
+        <View style={styles.navBarContent}>
+          <Icon
+            name="arrow-back"
+            size={24}
+            color={theme.colors.text}
+            onPress={() => navigation.goBack()}
+          />
+          <Text style={styles.navBarTitle}>Title: {task.title}</Text>
+        </View>
         {canCreateChild && (
           <TouchableOpacity
-            style={styles.createChildButton}
+            style={styles.createChildTaskButton}
             onPress={handleCreateChildTask}
             activeOpacity={0.7}
           >
-            <Icon name="add-circle" size={20} color={theme.colors.surface} />
-            <Text style={styles.createChildButtonText}>Create Child Task</Text>
+            <Text style={styles.createChildTaskButtonText}>
+              Create Child Task
+            </Text>
           </TouchableOpacity>
         )}
       </View>
 
-      {/* Tab Navigation (Phase 10) */}
+      {/* 3. Editable Fields Section: 2 Column Layout */}
+      <View style={styles.editableFieldsSection}>
+        <View style={styles.twoColumnContainer}>
+          {/* Column 1: User Selector and Status stacked vertically */}
+          <View style={styles.fieldsColumn}>
+            {/* User Selector - Clickable */}
+            <TouchableOpacity
+              style={styles.fieldRow}
+              onPress={handleOpenUserSelect}
+              activeOpacity={0.7}
+            >
+              <Image source={UserIcon} style={styles.fieldIcon} />
+              <View style={styles.fieldContent}>
+                <Text style={styles.fieldValue} numberOfLines={1}>
+                  {selectedUsers.length > 0
+                    ? selectedUsers.map(u => u.name).join(', ')
+                    : 'Select Users'}
+                </Text>
+                <Icon
+                  name="arrow-drop-down"
+                  size={18}
+                  color={theme.colors.text}
+                  style={styles.dropdownIcon}
+                />
+              </View>
+            </TouchableOpacity>
+
+            {/* Status Dropdown */}
+            <View style={styles.fieldRow}>
+              <Image source={StatusIcon} style={styles.fieldIcon} />
+              <View style={styles.fieldContent}>
+                <Picker
+                  selectedValue={selectedStatus}
+                  style={styles.statusPickerCompact}
+                  onValueChange={value => setSelectedStatus(value)}
+                >
+                  <Picker.Item label="New" value="new" />
+                  <Picker.Item label="Assigned" value="assigned" />
+                  <Picker.Item label="In Progress" value="progress" />
+                  <Picker.Item label="Completed" value="completed" />
+                </Picker>
+              </View>
+            </View>
+          </View>
+
+          {/* Column 2: Save Button */}
+          <View style={styles.saveButtonColumn}>
+            <TouchableOpacity
+              style={[styles.saveButton, isSaving && styles.saveButtonDisabled]}
+              onPress={handleSaveTask}
+              disabled={isSaving}
+              activeOpacity={0.7}
+            >
+              {isSaving ? (
+                <ActivityIndicator
+                  size="small"
+                  color={theme.colors.textInverse}
+                />
+              ) : (
+                <Text style={styles.saveButtonText}>Save</Text>
+              )}
+            </TouchableOpacity>
+          </View>
+        </View>
+      </View>
+
+      {/* 4. Tab Navigation */}
       <TaskTabs
         activeTab={activeTab}
         onTabChange={setActiveTab}
@@ -700,56 +935,43 @@ const TaskDetailsScreen: React.FC<TaskDetailsScreenProps> = ({
       />
 
       <ScrollView style={styles.content} showsVerticalScrollIndicator={false}>
-        {/* Details Tab Content */}
+        {/* 5. Details Tab Content */}
         {activeTab === 'details' && (
           <>
-            {/* Task Header */}
-            <View style={styles.taskHeader}>
-              <Text style={styles.taskTitle}>{task.title}</Text>
-
-              <View style={styles.statusContainer}>
-                <Icon
-                  name={getStatusIcon(task.status)}
-                  size={20}
-                  color={getStatusColor(task.status)}
-                />
-                <Text
-                  style={[
-                    styles.statusText,
-                    { color: getStatusColor(task.status) },
-                  ]}
-                >
-                  {task.status}
+            {/* Description Section - Read-only */}
+            <View style={styles.descriptionSection}>
+              <Text style={styles.descriptionLabel}>description</Text>
+              <View style={styles.descriptionTextArea}>
+                <Text style={styles.descriptionReadOnlyText}>
+                  {editableDescription || 'No description provided'}
                 </Text>
               </View>
             </View>
 
-            {/* Due Date Warning */}
-            {dueDateStatus && (
-              <View
-                style={[
-                  styles.dueDateContainer,
-                  { backgroundColor: dueDateStatus.color + '15' },
-                ]}
-              >
-                <Icon name="schedule" size={16} color={dueDateStatus.color} />
-                <Text
-                  style={[styles.dueDateText, { color: dueDateStatus.color }]}
-                >
-                  {dueDateStatus.text}
-                </Text>
-              </View>
-            )}
+            {/* Attached Files Section */}
+            <View style={styles.attachedFileSection}>
+              <Text style={styles.attachedFileTitle}>Attached File</Text>
 
-            {/* Task Details Card */}
+              {task.fileUrl ? (
+                <View style={styles.fileItemRow}>
+                  <Icon
+                    name="insert-drive-file"
+                    size={32}
+                    color={theme.colors.fileIcon}
+                  />
+                  <View style={styles.fileInfo}>
+                    <Text style={styles.fileAttachedBy}>attached by</Text>
+                    <Text style={styles.fileTimestamp}>18-05-2025 10:00pm</Text>
+                  </View>
+                </View>
+              ) : (
+                <Text style={styles.noFilesText}>No files attached</Text>
+              )}
+            </View>
+
+            {/* Task Details Card (Optional - for additional info) */}
             <View style={styles.detailsCard}>
               <Text style={styles.sectionTitle}>Task Information</Text>
-
-              {/* Description */}
-              <View style={styles.detailRow}>
-                <Text style={styles.detailLabel}>Description</Text>
-                <Text style={styles.detailValue}>{task.description}</Text>
-              </View>
 
               {/* Assigned To - Show all assigned users */}
               {(task.assignedToName || (task.user && task.user.length > 0)) && (
@@ -846,47 +1068,6 @@ const TaskDetailsScreen: React.FC<TaskDetailsScreenProps> = ({
               )}
             </View>
 
-            {/* Status Update Section - Only for authorized users in non-readonly mode */}
-            {!readonly && canEditStatus && (
-              <View style={styles.statusUpdateCard}>
-                <Text style={styles.sectionTitle}>Update Status</Text>
-                <Text style={styles.statusUpdateSubtitle}>
-                  Change the status to reflect your progress on this task.
-                </Text>
-
-                <View style={styles.pickerContainer}>
-                  <Text style={styles.pickerLabel}>Current Status</Text>
-                  <View style={styles.pickerWrapper}>
-                    <Picker
-                      selectedValue={task.status}
-                      onValueChange={handleStatusUpdate}
-                      enabled={!isUpdatingStatus}
-                      style={styles.picker}
-                      mode="dropdown"
-                    >
-                      {getAllowedStatusOptions(task.status).map(option => (
-                        <Picker.Item
-                          key={option.value}
-                          label={option.label}
-                          value={option.value}
-                        />
-                      ))}
-                    </Picker>
-                  </View>
-                </View>
-
-                {isUpdatingStatus && (
-                  <View style={styles.updatingContainer}>
-                    <ActivityIndicator
-                      size="small"
-                      color={theme.colors.primary}
-                    />
-                    <Text style={styles.updatingText}>Updating status...</Text>
-                  </View>
-                )}
-              </View>
-            )}
-
             {/* Access Restriction Notice for unauthorized users */}
             {!readonly && !canEditStatus && (
               <View style={styles.statusUpdateCard}>
@@ -921,17 +1102,141 @@ const TaskDetailsScreen: React.FC<TaskDetailsScreenProps> = ({
           </>
         )}
 
-        {/* History Tab Content (Placeholder) */}
+        {/* History Tab Content (Phase 10) */}
         {activeTab === 'history' && (
-          <View style={styles.tabPlaceholder}>
-            <Icon name="history" size={48} color={theme.colors.textSecondary} />
-            <Text style={styles.placeholderText}>
-              Task history will be displayed here
-            </Text>
-            <Text style={styles.placeholderSubtext}>
-              This feature will be implemented in a future update
-            </Text>
-          </View>
+          <>
+            {(() => {
+              // Get status label from value
+              const getStatusLabel = (statusValue?: string): string => {
+                if (!statusValue) return 'New'; // Default to 'New' if status missing
+                const status = TASK_STATUSES.find(s => s.value === statusValue);
+                return status ? status.label : 'Unknown';
+              };
+
+              // Format time as DD-MM-YYYY HH:MMAM/PM
+              const formatHistoryTime = (dateString: string): string => {
+                try {
+                  const date = new Date(dateString);
+                  const day = date.getDate().toString().padStart(2, '0');
+                  const month = (date.getMonth() + 1)
+                    .toString()
+                    .padStart(2, '0');
+                  const year = date.getFullYear();
+                  let hours = date.getHours();
+                  const minutes = date.getMinutes().toString().padStart(2, '0');
+                  const ampm = hours >= 12 ? 'PM' : 'AM';
+                  hours = hours % 12 || 12;
+                  return `${day}-${month}-${year} ${hours}:${minutes}${ampm}`;
+                } catch {
+                  return 'Invalid Date';
+                }
+              };
+
+              // Prepare history entries (combine taskHistory + creation entry)
+              const historyEntries: Array<TaskHistoryEntry> = [];
+              // Add taskHistory entries (reverse chronological order)
+              if (task?.taskHistory && task.taskHistory.length > 0) {
+                historyEntries.push(...task.taskHistory);
+              }
+
+              // Add creation entry at the end (oldest)
+              if (task?.createdAt && task?.createdByName) {
+                historyEntries.push({
+                  status:
+                    task.taskHistory?.[task.taskHistory.length - 1]?.status ||
+                    task?.status ||
+                    'new',
+                  changedBy: task.createdBy,
+                  changedByName: task.createdByName,
+                  changedAt: task.createdAt,
+                  _id: 'creation-entry',
+                });
+              }
+
+              // Reverse to show newest first
+              // const historyEntries = [...historyEntries].reverse();
+
+              return historyEntries.length > 0 ? (
+                <FlatList
+                  data={historyEntries}
+                  keyExtractor={(item, index) => item._id || `history-${index}`}
+                  contentContainerStyle={styles.historyListContainer}
+                  renderItem={({ item, index }) => {
+                    const isLast = index === historyEntries.length - 1;
+                    const statusLabel = getStatusLabel(item.status);
+
+                    // Get assigned user names for this history entry
+                    const assignedUserNames =
+                      task?.user?.map(u => u.name).join(', ') || 'Unknown User';
+
+                    return (
+                      <View style={styles.historyEntry}>
+                        {/* Timeline dot and line */}
+                        <View style={styles.timelineContainer}>
+                          <View
+                            style={[
+                              styles.timelineDot,
+                              index === 0 && styles.timelineDotCreation,
+                            ]}
+                          />
+                          {!isLast && <View style={styles.timelineLine} />}
+                        </View>
+
+                        {/* History entry content */}
+                        <View style={styles.historyContent}>
+                          {/* User names with icon */}
+                          <View style={styles.historyUserRow}>
+                            <Icon
+                              name="account-circle"
+                              size={20}
+                              color={theme.colors.primary}
+                              style={styles.historyUserIcon}
+                            />
+                            <Text style={styles.historyUserNames}>
+                              {assignedUserNames}
+                            </Text>
+                          </View>
+
+                          {/* Status */}
+                          <Text style={styles.historyStatusLine}>
+                            status: {statusLabel}
+                          </Text>
+
+                          {/* Separator line */}
+                          <View style={styles.historySeparator} />
+
+                          {/* Changed By / Created By */}
+                          <Text style={styles.historyChangedBy}>
+                            {index === 0 ? 'Created' : 'Changed'} By:{' '}
+                            {item.changedByName}
+                          </Text>
+
+                          {/* Time */}
+                          <Text style={styles.historyTime}>
+                            Time: {formatHistoryTime(item.changedAt)}
+                          </Text>
+                        </View>
+                      </View>
+                    );
+                  }}
+                />
+              ) : (
+                <View style={styles.tabPlaceholder}>
+                  <Icon
+                    name="history"
+                    size={48}
+                    color={theme.colors.textSecondary}
+                  />
+                  <Text style={styles.placeholderText}>
+                    No history available
+                  </Text>
+                  <Text style={styles.placeholderSubtext}>
+                    Task history will appear here once changes are made
+                  </Text>
+                </View>
+              );
+            })()}
+          </>
         )}
 
         {/* Parent Task Tab Content (Phase 10) */}
@@ -1054,19 +1359,9 @@ const TaskDetailsScreen: React.FC<TaskDetailsScreenProps> = ({
                 />
                 <Text style={styles.emptyStateText}>No child tasks yet</Text>
                 <Text style={styles.emptyStateSubtext}>
-                  Create a child task to break down this task into smaller parts
+                  Use the "Create Child Task" button above to break down this
+                  task into smaller parts
                 </Text>
-                {canCreateChild && (
-                  <TouchableOpacity
-                    style={styles.emptyStateButton}
-                    onPress={handleCreateChildTask}
-                  >
-                    <Icon name="add" size={20} color={theme.colors.surface} />
-                    <Text style={styles.emptyStateButtonText}>
-                      Create Child Task
-                    </Text>
-                  </TouchableOpacity>
-                )}
               </View>
             ) : (
               <FlatList
@@ -1149,26 +1444,6 @@ const TaskDetailsScreen: React.FC<TaskDetailsScreenProps> = ({
                   </TouchableOpacity>
                 )}
                 contentContainerStyle={styles.childTasksList}
-                ListFooterComponent={
-                  canCreateChild ? (
-                    <View style={styles.addChildFooterContainer}>
-                      <TouchableOpacity
-                        style={styles.emptyStateButton}
-                        onPress={handleCreateChildTask}
-                        activeOpacity={0.7}
-                      >
-                        <Icon
-                          name="add"
-                          size={20}
-                          color={theme.colors.surface}
-                        />
-                        <Text style={styles.emptyStateButtonText}>
-                          Create Child Task
-                        </Text>
-                      </TouchableOpacity>
-                    </View>
-                  ) : null
-                }
               />
             )}
           </View>
@@ -1201,31 +1476,9 @@ const TaskDetailsScreen: React.FC<TaskDetailsScreenProps> = ({
               </View>
             ) : (
               <View style={styles.modalContent}>
-                {/* <Text style={styles.modalDescription}>
-                  Select a department and user to assign this task.
-                </Text>
-
-                <View style={styles.pickerContainer}>
-                  <Text style={styles.pickerLabel}>Department</Text>
-                  <View style={styles.pickerWrapper}>
-                    <Picker
-                      selectedValue={selectedDepartment}
-                      onValueChange={value => {
-                        setSelectedDepartment(value);
-                        setSelectedUser(null); // Reset user selection when department changes
-                      }}
-                      style={styles.picker}
-                    >
-                      {departments.map(dept => (
-                        <Picker.Item key={dept} label={dept} value={dept} />
-                      ))}
-                    </Picker>
-                  </View>
-                </View> */}
-
                 <View style={styles.pickerContainer}>
                   <Text style={styles.pickerLabel}>User</Text>
-                  <View style={styles.pickerWrapper}>
+                  <View style={styles.statusPickerContainer}>
                     <Picker
                       selectedValue={selectedUser?.id || ''}
                       onValueChange={userId => {
@@ -1233,18 +1486,15 @@ const TaskDetailsScreen: React.FC<TaskDetailsScreenProps> = ({
                         setSelectedUser(user || null);
                       }}
                       style={styles.picker}
-                      // enabled={selectedDepartment.length > 0}
                     >
                       <Picker.Item label="Select a user..." value="" />
-                      {users
-                        // .filter(user => user.type === selectedDepartment)
-                        .map(user => (
-                          <Picker.Item
-                            key={user.id}
-                            label={user.name}
-                            value={user.id}
-                          />
-                        ))}
+                      {users.map(user => (
+                        <Picker.Item
+                          key={user.id}
+                          label={user.name}
+                          value={user.id}
+                        />
+                      ))}
                     </Picker>
                   </View>
                 </View>
@@ -1280,6 +1530,107 @@ const TaskDetailsScreen: React.FC<TaskDetailsScreenProps> = ({
           </View>
         </View>
       </Modal>
+
+      {/* Multi-Select User Modal */}
+      <Modal
+        visible={showUserSelectModal}
+        transparent={true}
+        animationType="slide"
+        onRequestClose={() => setShowUserSelectModal(false)}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalContainer}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Select Users</Text>
+              <TouchableOpacity
+                onPress={() => setShowUserSelectModal(false)}
+                style={styles.modalCloseButton}
+              >
+                <Icon name="close" size={24} color={theme.colors.text} />
+              </TouchableOpacity>
+            </View>
+
+            <View style={styles.modalContent}>
+              <Text style={styles.modalDescription}>
+                Select one or more users to assign this task.
+              </Text>
+
+              <ScrollView style={styles.userListContainer}>
+                {allAvailableUsers.map(user => {
+                  const isSelected = tempSelectedUserIds.includes(user.id);
+                  return (
+                    <TouchableOpacity
+                      key={user.id}
+                      style={[
+                        styles.userListItem,
+                        isSelected && styles.userListItemSelected,
+                      ]}
+                      onPress={() => toggleUserSelection(user.id)}
+                      activeOpacity={0.7}
+                    >
+                      <View style={styles.userListItemContent}>
+                        <Icon
+                          name="person"
+                          size={20}
+                          color={
+                            isSelected
+                              ? theme.colors.primary
+                              : theme.colors.textSecondary
+                          }
+                        />
+                        <Text
+                          style={[
+                            styles.userListItemText,
+                            isSelected && styles.userListItemTextSelected,
+                          ]}
+                        >
+                          {user.name}
+                        </Text>
+                      </View>
+                      {isSelected && (
+                        <Icon
+                          name="check-circle"
+                          size={20}
+                          color={theme.colors.primary}
+                        />
+                      )}
+                    </TouchableOpacity>
+                  );
+                })}
+              </ScrollView>
+
+              <View style={styles.modalActions}>
+                <TouchableOpacity
+                  onPress={() => setShowUserSelectModal(false)}
+                  style={[styles.modalButton, styles.modalCancelButton]}
+                >
+                  <Text style={styles.modalCancelButtonText}>Cancel</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  onPress={handleConfirmUserSelection}
+                  style={[
+                    styles.modalButton,
+                    styles.modalAssignButton,
+                    tempSelectedUserIds.length === 0 &&
+                      styles.modalButtonDisabled,
+                  ]}
+                  disabled={tempSelectedUserIds.length === 0}
+                >
+                  <Text
+                    style={[
+                      styles.modalAssignButtonText,
+                      tempSelectedUserIds.length === 0 &&
+                        styles.modalButtonTextDisabled,
+                    ]}
+                  >
+                    Confirm ({tempSelectedUserIds.length})
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 };
@@ -1289,9 +1640,212 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: theme.colors.background,
   },
+  // 1. Purple Header Styles
+  cyanHeaderSafeArea: {
+    backgroundColor: theme.colors.primary, // #8091F2
+  },
+  cyanHeader: {
+    backgroundColor: theme.colors.primary, // #8091F2
+    paddingVertical: theme.spacing.sm,
+    paddingHorizontal: theme.spacing.md,
+    ...theme.shadows.sm,
+  },
+  headerContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  appIconContainer: {
+    marginRight: theme.spacing.md,
+  },
+  headerTitle: {
+    fontSize: theme.typography.fontSizes.xl,
+    fontWeight: theme.typography.fontWeights.bold,
+    color: theme.colors.textInverse,
+  },
+  // 2. Cyan Navigation Bar Styles
+  cyanNavBar: {
+    backgroundColor: theme.colors.secondary, // #00BCD4
+    paddingVertical: theme.spacing.sm,
+    paddingHorizontal: theme.spacing.sm,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  navBarContent: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  navBarTitle: {
+    fontSize: theme.typography.fontSizes.lg,
+    fontWeight: theme.typography.fontWeights.bold,
+    color: theme.colors.text,
+    marginLeft: theme.spacing.xs,
+    flex: 1,
+  },
+  createChildTaskButton: {
+    backgroundColor: theme.colors.primary, // Purple button
+    paddingHorizontal: theme.spacing.lg,
+    paddingVertical: theme.spacing.sm,
+    borderRadius: theme.borderRadius.md,
+    ...theme.shadows.sm,
+  },
+  createChildTaskButtonText: {
+    fontSize: theme.typography.fontSizes.sm,
+    fontWeight: theme.typography.fontWeights.semiBold,
+    color: theme.colors.textInverse,
+  },
+  // 3. Editable Fields Section Styles - 2 Column Layout
+  editableFieldsSection: {
+    backgroundColor: theme.colors.surface,
+    paddingVertical: theme.spacing.sm,
+    paddingHorizontal: theme.spacing.md,
+    borderBottomWidth: 1,
+    borderBottomColor: theme.colors.border,
+  },
+  twoColumnContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.md,
+  },
+  fieldsColumn: {
+    flex: 1,
+    gap: theme.spacing.xs,
+  },
+  fieldRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: theme.colors.surface,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    borderRadius: theme.borderRadius.md,
+    paddingHorizontal: theme.spacing.sm,
+    height: 40, // Fixed height instead of minHeight
+    overflow: 'hidden', // Prevent content from expanding beyond fixed height
+  },
+  fieldIcon: {
+    width: 20,
+    height: 20,
+    marginRight: theme.spacing.sm,
+    resizeMode: 'contain',
+  },
+  fieldContent: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    height: 40, // Match parent height
+  },
+  fieldValue: {
+    flex: 1,
+    fontSize: theme.typography.fontSizes.sm,
+    color: theme.colors.text,
+    lineHeight: 18, // Consistent line height
+  },
+  dropdownIcon: {
+    marginLeft: theme.spacing.xs,
+  },
+  statusPickerCompact: {
+    flex: 1,
+    height: 40, // Match fieldRow height exactly
+    color: theme.colors.text,
+    fontSize: theme.typography.fontSizes.sm,
+  },
+  statusPickerContainer: {
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    borderRadius: theme.borderRadius.md,
+    backgroundColor: theme.colors.surface,
+    overflow: 'hidden',
+    justifyContent: 'center',
+    minHeight: 40,
+  },
+  saveButtonColumn: {
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  saveButton: {
+    backgroundColor: theme.colors.primary, // Purple
+    paddingHorizontal: theme.spacing.xl,
+    paddingVertical: theme.spacing.md,
+    borderRadius: theme.borderRadius.md,
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 40,
+    minWidth: 100,
+    ...theme.shadows.md,
+  },
+  saveButtonDisabled: {
+    opacity: 0.6,
+  },
+  saveButtonText: {
+    fontSize: theme.typography.fontSizes.lg,
+    fontWeight: theme.typography.fontWeights.semiBold,
+    color: theme.colors.textInverse,
+  },
+  // 5. Description & Files Sections
+  descriptionSection: {
+    padding: theme.spacing.lg,
+  },
+  descriptionLabel: {
+    fontSize: theme.typography.fontSizes.md,
+    fontWeight: theme.typography.fontWeights.medium,
+    color: theme.colors.text,
+    marginBottom: theme.spacing.sm,
+    textTransform: 'lowercase',
+  },
+  descriptionTextArea: {
+    minHeight: 200,
+    borderWidth: 2,
+    borderColor: theme.colors.primary, // Purple border
+    borderRadius: theme.borderRadius.md,
+    paddingHorizontal: theme.spacing.md,
+    paddingVertical: theme.spacing.md,
+    backgroundColor: theme.colors.surface,
+  },
+  descriptionReadOnlyText: {
+    fontSize: theme.typography.fontSizes.md,
+    color: theme.colors.text,
+    lineHeight: theme.typography.lineHeights.relaxed * 1.5,
+  },
+  attachedFileSection: {
+    paddingHorizontal: theme.spacing.lg,
+    paddingBottom: theme.spacing.lg,
+  },
+  attachedFileTitle: {
+    fontSize: theme.typography.fontSizes.lg,
+    fontWeight: theme.typography.fontWeights.bold,
+    color: theme.colors.text,
+    marginBottom: theme.spacing.md,
+  },
+  fileItemRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: theme.spacing.md,
+    borderBottomWidth: 1,
+    borderBottomColor: theme.colors.border,
+  },
+  fileInfo: {
+    marginLeft: theme.spacing.md,
+    flex: 1,
+  },
+  fileAttachedBy: {
+    fontSize: theme.typography.fontSizes.sm,
+    color: theme.colors.text,
+    marginBottom: theme.spacing.xs,
+  },
+  fileTimestamp: {
+    fontSize: theme.typography.fontSizes.sm,
+    color: theme.colors.textSecondary,
+  },
+  noFilesText: {
+    fontSize: theme.typography.fontSizes.sm,
+    color: theme.colors.textSecondary,
+    fontStyle: 'italic',
+  },
   content: {
     flex: 1,
-    padding: theme.spacing.md,
+    padding: 0,
   },
   loadingContainer: {
     flex: 1,
@@ -1447,14 +2001,6 @@ const styles = StyleSheet.create({
     fontSize: theme.typography.fontSizes.sm,
     color: theme.colors.textSecondary,
     marginLeft: theme.spacing.sm,
-  },
-  pickerWrapper: {
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    borderRadius: theme.borderRadius.md,
-    backgroundColor: theme.colors.background,
-    overflow: 'hidden',
-    paddingHorizontal: theme.spacing.xs,
   },
   restrictionContainer: {
     flexDirection: 'row',
@@ -1850,6 +2396,126 @@ const styles = StyleSheet.create({
     fontSize: theme.typography.fontSizes.md,
     fontWeight: theme.typography.fontWeights.semiBold,
     marginLeft: theme.spacing.sm,
+  },
+  // History Tab Styles (Phase 10) - Redesigned to match UI image
+  historyListContainer: {
+    padding: theme.spacing.md,
+  },
+  historyEntry: {
+    flexDirection: 'row',
+    marginBottom: theme.spacing.lg,
+  },
+  timelineContainer: {
+    width: 24,
+    alignItems: 'center',
+    marginRight: theme.spacing.sm,
+    marginTop: 2,
+  },
+  timelineDot: {
+    width: 14,
+    height: 14,
+    borderRadius: 7,
+    backgroundColor: '#7C4DFF', // Purple color matching the image
+    borderWidth: 3,
+    borderColor: '#FFFFFF',
+  },
+  timelineDotCreation: {
+    backgroundColor: '#7C4DFF', // Same purple for creation
+  },
+  timelineLine: {
+    width: 3,
+    flex: 1,
+    backgroundColor: '#7C4DFF', // Purple line matching the image
+    marginTop: 4,
+  },
+  historyContent: {
+    flex: 1,
+    backgroundColor: theme.colors.surface,
+    borderRadius: theme.borderRadius.md,
+    padding: theme.spacing.md,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+  },
+  historyUserRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: theme.spacing.xs,
+  },
+  historyUserIcon: {
+    marginRight: theme.spacing.xs,
+  },
+  historyUserNames: {
+    fontSize: theme.typography.fontSizes.md,
+    fontWeight: theme.typography.fontWeights.semiBold,
+    color: theme.colors.text,
+    flex: 1,
+  },
+  historyStatusLine: {
+    fontSize: theme.typography.fontSizes.md,
+    color: theme.colors.text,
+    marginBottom: theme.spacing.sm,
+    marginTop: 2,
+  },
+  historySeparator: {
+    height: 1,
+    backgroundColor: '#D0D0D0',
+    marginVertical: theme.spacing.sm,
+  },
+  historyChangedBy: {
+    fontSize: theme.typography.fontSizes.sm,
+    color: theme.colors.text,
+    marginBottom: theme.spacing.xs,
+  },
+  historyTime: {
+    fontSize: theme.typography.fontSizes.sm,
+    color: theme.colors.text,
+  },
+  imageIcon: {
+    width: 38,
+    height: 38,
+  },
+  imageContainer: {
+    width: 44,
+    height: 44,
+    backgroundColor: theme.colors.surface,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 4,
+  },
+  // User Selection Modal Styles
+  userListContainer: {
+    maxHeight: 400,
+    marginVertical: theme.spacing.md,
+  },
+  userListItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: theme.spacing.md,
+    paddingHorizontal: theme.spacing.md,
+    borderRadius: theme.borderRadius.md,
+    marginBottom: theme.spacing.xs,
+    backgroundColor: theme.colors.background,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+  },
+  userListItemSelected: {
+    backgroundColor: theme.colors.primary + '15',
+    borderColor: theme.colors.primary,
+  },
+  userListItemContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 1,
+  },
+  userListItemText: {
+    fontSize: theme.typography.fontSizes.md,
+    color: theme.colors.text,
+    marginLeft: theme.spacing.sm,
+  },
+  userListItemTextSelected: {
+    fontWeight: theme.typography.fontWeights.semiBold,
+    color: theme.colors.primary,
   },
 });
 

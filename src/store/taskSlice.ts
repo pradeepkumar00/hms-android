@@ -649,7 +649,6 @@ export const fetchTaskById = createAsyncThunk(
         ...(state.tasks.assignedToMe || []),
         ...(state.tasks.assignedByMe || []),
         ...(state.tasks.createdTasks || []),
-        ...MOCK_TASKS,
       ];
 
       const localTask = allTasks.find(t => t.id === taskId);
@@ -692,11 +691,11 @@ export const fetchTaskById = createAsyncThunk(
       // API returns task object directly, not wrapped in {task: {}}
       const task: Task = {
         id: response._id,
+        tenantId: response.tenantId,
         title: response.title,
         description: response.description,
         assignedTo: response.assignedTo || null,
         assignedToName: response.assignedToName || undefined,
-        department: response.department || undefined,
         status:
           response.status === 'new'
             ? 'new'
@@ -708,18 +707,14 @@ export const fetchTaskById = createAsyncThunk(
             ? 'completed'
             : 'new',
         createdBy: response.createdBy || '',
+        user: response.user || [],
         createdByName: response.createdByName || 'Unknown',
         createdAt: response.createdAt,
         updatedAt: response.updatedAt,
         dueDate: response.dueDate || undefined,
         fileUrl: response.fileUrl || undefined,
-        assignmentHistory: response.taskHistory || undefined,
+        taskHistory: response.taskHistory || undefined,
       };
-
-      console.log('====================================');
-      console.log('====================================');
-      console.log('hello');
-      console.log('====================================');
       console.log(
         `✅ Task fetched from API: ${taskId}`,
         JSON.stringify(task, null, 2),
@@ -776,6 +771,7 @@ export const fetchTaskWithHierarchy = createAsyncThunk(
       const task: Task = {
         id: response.task._id,
         _id: response.task._id,
+        tenantId: response.task.tenantId,
         title: response.task.title,
         description: response.task.description,
         assignedTo: response.task.assignedTo || null,
@@ -790,9 +786,12 @@ export const fetchTaskWithHierarchy = createAsyncThunk(
         updatedAt: response.task.updatedAt,
         dueDate: response.task.dueDate || undefined,
         fileUrl: response.task.fileUrl || undefined,
-        assignmentHistory: response.task.taskHistory || undefined,
+        taskHistory: response.task.taskHistory || undefined,
         parentTaskId: response.task.parentTaskId || undefined,
         hasChildren: response.childTask && response.childTask.length > 0,
+        priority: response.task.priority || 'low',
+        childTasks: response.childTask || [],
+        parentTask: response.parentTask || null,
       };
 
       // Transform child tasks
