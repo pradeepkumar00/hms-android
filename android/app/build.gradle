@@ -112,15 +112,22 @@ android {
             v1SigningEnabled true
             v2SigningEnabled true
         }
+        release {
+            storeFile file('app-release.keystore')
+            storePassword 'android123'
+            keyAlias 'app-release-key'
+            keyPassword 'android123'
+            v1SigningEnabled true
+            v2SigningEnabled true
+        }
     }
     buildTypes {
         debug {
             signingConfig signingConfigs.debug
         }
         release {
-            // Caution! In production, you need to generate your own keystore file.
-            // see https://reactnative.dev/docs/signed-apk-android.
-            signingConfig signingConfigs.debug
+            // Production keystore configuration
+            signingConfig signingConfigs.release
             minifyEnabled enableProguardInReleaseBuilds
             proguardFiles getDefaultProguardFile("proguard-android.txt"), "proguard-rules.pro"
             

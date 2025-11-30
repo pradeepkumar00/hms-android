@@ -75,7 +75,7 @@
           tools:replace="android:resource" />
       <meta-data
           android:name="com.google.firebase.messaging.default_notification_channel_id"
-          android:value="default_notifications"
+          android:value="default_notifications_v2"
           tools:replace="android:value" />
     </application>
 </manifest>
