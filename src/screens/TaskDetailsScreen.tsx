@@ -131,6 +131,10 @@ const TaskDetailsScreen: React.FC<TaskDetailsScreenProps> = ({
   const [isSaving, setIsSaving] = useState(false);
   const [allAvailableUsers, setAllAvailableUsers] = useState<User[]>([]);
 
+  // Comment state
+  const [commentText, setCommentText] = useState<string>('');
+  const [isSubmittingComment, setIsSubmittingComment] = useState(false);
+
   // Multi-select user modal state
   const [showUserSelectModal, setShowUserSelectModal] = useState(false);
   const [tempSelectedUserIds, setTempSelectedUserIds] = useState<string[]>([]);
@@ -229,6 +233,7 @@ const TaskDetailsScreen: React.FC<TaskDetailsScreenProps> = ({
         `✅ Task loaded from fetchTaskWithHierarchy:`,
         currentTask.title,
       );
+      console.log('📝 Comments count:', currentTask.comment?.length || 0);
       setTask(currentTask);
 
       // Initialize editable fields
@@ -356,6 +361,56 @@ const TaskDetailsScreen: React.FC<TaskDetailsScreenProps> = ({
     }
   }, [task, token, selectedUsers, selectedStatus, dispatch]);
 
+  // Submit comment
+  const handleSubmitComment = useCallback(async () => {
+    if (!task || !token || !commentText.trim()) return;
+
+    setIsSubmittingComment(true);
+    try {
+      console.log('💬 Submitting comment for task:', task.id);
+
+      // Make API call to add comment
+      const response = await fetch(
+        `https://app.octusai.com/api/task/taskId/${task.id}/comment`,
+        {
+          method: 'POST',
+          headers: {
+            Accept: 'application/json, text/plain, */*',
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({ comment: commentText.trim() }),
+        },
+      );
+
+      if (!response.ok) {
+        throw new Error(`API Error: ${response.status}`);
+      }
+
+      const result = await response.json();
+      console.log('✅ Comment added successfully:', result);
+
+      // Clear comment input
+      setCommentText('');
+
+      // Refresh task data to get updated comments - WAIT for completion
+      const refreshResult = await dispatch(
+        fetchTaskWithHierarchy(task.id),
+      ).unwrap();
+      console.log('🔄 Task refreshed with new comment:', refreshResult);
+
+      // Show success message after state is updated
+      Alert.alert('Success', 'Comment added successfully!', [{ text: 'OK' }]);
+    } catch (error) {
+      console.error('Failed to add comment:', error);
+      Alert.alert('Failed', 'Failed to add comment. Please try again.', [
+        { text: 'OK' },
+      ]);
+    } finally {
+      setIsSubmittingComment(false);
+    }
+  }, [task, token, commentText, dispatch]);
+
   // Clear error when component unmounts
   useEffect(() => {
     return () => {
@@ -364,6 +419,37 @@ const TaskDetailsScreen: React.FC<TaskDetailsScreenProps> = ({
       }
     };
   }, [dispatch, error]);
+
+  // Format comment timestamp (DD MMM YYYY, HH:MM AM/PM)
+  const formatCommentTime = useCallback((dateString: string) => {
+    try {
+      const date = new Date(dateString);
+      const day = date.getDate();
+      const monthNames = [
+        'Jan',
+        'Feb',
+        'Mar',
+        'Apr',
+        'May',
+        'Jun',
+        'Jul',
+        'Aug',
+        'Sep',
+        'Oct',
+        'Nov',
+        'Dec',
+      ];
+      const month = monthNames[date.getMonth()];
+      const year = date.getFullYear();
+      let hours = date.getHours();
+      const minutes = date.getMinutes().toString().padStart(2, '0');
+      const ampm = hours >= 12 ? 'PM' : 'AM';
+      hours = hours % 12 || 12;
+      return `${day} ${month} ${year}, ${hours}:${minutes} ${ampm}`;
+    } catch {
+      return 'Invalid Date';
+    }
+  }, []);
 
   // Format dates to match Due Date format (consistent formatting)
   const formatTaskDates = useCallback(
@@ -967,6 +1053,69 @@ const TaskDetailsScreen: React.FC<TaskDetailsScreenProps> = ({
                 </View>
               ) : (
                 <Text style={styles.noFilesText}>No files attached</Text>
+              )}
+            </View>
+
+            {/* Comment Section */}
+            <View style={styles.commentSection}>
+              <Text style={styles.commentSectionTitle}>Comments</Text>
+
+              {/* Comment Input */}
+              <View style={styles.commentInputContainer}>
+                <TextInput
+                  style={styles.commentInput}
+                  placeholder="Add a comment"
+                  placeholderTextColor={theme.colors.placeholder}
+                  value={commentText}
+                  onChangeText={setCommentText}
+                  multiline
+                  numberOfLines={4}
+                  textAlignVertical="top"
+                />
+                <TouchableOpacity
+                  style={[
+                    styles.commentSubmitButton,
+                    (!commentText.trim() || isSubmittingComment) &&
+                      styles.commentSubmitButtonDisabled,
+                  ]}
+                  onPress={handleSubmitComment}
+                  disabled={!commentText.trim() || isSubmittingComment}
+                  activeOpacity={0.7}
+                >
+                  {isSubmittingComment ? (
+                    <ActivityIndicator
+                      size="small"
+                      color={theme.colors.textInverse}
+                    />
+                  ) : (
+                    <Text style={styles.commentSubmitButtonText}>Submit</Text>
+                  )}
+                </TouchableOpacity>
+              </View>
+
+              {/* Comments List - Only show if comments exist */}
+              {task.comment && task.comment.length > 0 && (
+                <View style={styles.commentsListContainer}>
+                  {/* Show comments in reverse order (newest first) */}
+                  {[...task.comment].reverse().map((comment, index) => (
+                    <View key={comment._id || index} style={styles.commentItem}>
+                      <View style={styles.commentHeader}>
+                        <Text style={styles.commentText}>
+                          {comment.comment}
+                        </Text>
+                      </View>
+                      <View style={styles.commentMeta}>
+                        <Text style={styles.commentUser}>
+                          User: {comment.commentedByName}
+                        </Text>
+                        <Text style={styles.commentSeparator}>|</Text>
+                        <Text style={styles.commentDate}>
+                          {formatCommentTime(comment.commentedAt)}
+                        </Text>
+                      </View>
+                    </View>
+                  ))}
+                </View>
               )}
             </View>
 
@@ -2517,6 +2666,111 @@ const styles = StyleSheet.create({
   userListItemTextSelected: {
     fontWeight: theme.typography.fontWeights.semiBold,
     color: theme.colors.primary,
+  },
+  // Comment Section Styles
+  commentSection: {
+    paddingHorizontal: theme.spacing.lg,
+    paddingBottom: theme.spacing.xl,
+    marginTop: theme.spacing.md,
+  },
+  commentSectionTitle: {
+    fontSize: theme.typography.fontSizes.lg,
+    fontWeight: theme.typography.fontWeights.bold,
+    color: theme.colors.text,
+    marginBottom: theme.spacing.md,
+  },
+  commentInputContainer: {
+    backgroundColor: theme.colors.surface,
+    borderRadius: theme.borderRadius.md,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    padding: theme.spacing.md,
+    marginBottom: theme.spacing.lg,
+  },
+  commentInput: {
+    fontSize: theme.typography.fontSizes.md,
+    color: theme.colors.text,
+    minHeight: 80,
+    maxHeight: 120,
+    textAlignVertical: 'top',
+    marginBottom: theme.spacing.sm,
+    padding: 0, // Remove default padding
+  },
+  commentSubmitButton: {
+    backgroundColor: theme.colors.primary, // Purple button
+    paddingVertical: theme.spacing.sm,
+    paddingHorizontal: theme.spacing.lg,
+    borderRadius: theme.borderRadius.md,
+    alignItems: 'center',
+    justifyContent: 'center',
+    alignSelf: 'flex-end',
+    minWidth: 100,
+    ...theme.shadows.sm,
+  },
+  commentSubmitButtonDisabled: {
+    backgroundColor: theme.colors.disabled,
+    opacity: 0.6,
+  },
+  commentSubmitButtonText: {
+    fontSize: theme.typography.fontSizes.md,
+    fontWeight: theme.typography.fontWeights.semiBold,
+    color: theme.colors.textInverse,
+  },
+  commentsListContainer: {
+    marginTop: theme.spacing.md,
+  },
+  commentItem: {
+    backgroundColor: theme.colors.surface,
+    borderRadius: theme.borderRadius.md,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    padding: theme.spacing.md,
+    marginBottom: theme.spacing.md,
+    ...theme.shadows.sm,
+  },
+  commentHeader: {
+    marginBottom: theme.spacing.sm,
+  },
+  commentText: {
+    fontSize: theme.typography.fontSizes.md,
+    color: theme.colors.text,
+    fontWeight: theme.typography.fontWeights.semiBold,
+    lineHeight: theme.typography.lineHeights.relaxed * 1.5,
+  },
+  commentMeta: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: theme.spacing.xs,
+  },
+  commentUser: {
+    fontSize: theme.typography.fontSizes.sm,
+    color: theme.colors.textSecondary,
+  },
+  commentSeparator: {
+    fontSize: theme.typography.fontSizes.sm,
+    color: theme.colors.textSecondary,
+    marginHorizontal: theme.spacing.xs,
+  },
+  commentDate: {
+    fontSize: theme.typography.fontSizes.sm,
+    color: theme.colors.textSecondary,
+  },
+  noCommentsContainer: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: theme.spacing.xl,
+    marginTop: theme.spacing.md,
+  },
+  noCommentsText: {
+    fontSize: theme.typography.fontSizes.md,
+    color: theme.colors.textSecondary,
+    marginTop: theme.spacing.sm,
+    fontWeight: theme.typography.fontWeights.medium,
+  },
+  noCommentsSubtext: {
+    fontSize: theme.typography.fontSizes.sm,
+    color: theme.colors.textSecondary,
+    marginTop: theme.spacing.xs,
   },
 });
 

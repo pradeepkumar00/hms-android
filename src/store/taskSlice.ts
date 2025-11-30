@@ -820,6 +820,7 @@ export const fetchTaskWithHierarchy = createAsyncThunk(
         priority: response.task.priority || 'low',
         childTasks: response.childTask || [],
         parentTask: response.parentTask || null,
+        comment: response.task.comment || [], // ✅ ADD COMMENTS FIELD
       };
 
       // Transform child tasks

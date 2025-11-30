@@ -75,6 +75,8 @@ export interface Task {
   taskHistory?: TaskHistoryEntry[]; // Array of status change history entries
   priority?: string;
   parentTask?: Task | null;
+  // Comments
+  comment?: TaskComment[]; // Array of comments on the task
 }
 
 // Task History Entry Type (Phase 10 - History Tab)
@@ -84,6 +86,15 @@ export interface TaskHistoryEntry {
   changedByName: string; // Name of user who made the change
   changedAt: string; // ISO timestamp of when change occurred
   _id: string; // Unique identifier for history entry
+}
+
+// Comment Type (for task comments)
+export interface TaskComment {
+  _id: string; // Unique identifier for the comment
+  comment: string; // The comment text
+  commentedBy: string; // User ID who made the comment
+  commentedByName: string; // Name of user who made the comment
+  commentedAt: string; // ISO timestamp of when comment was created
 }
 
 // Task Creation API Request
