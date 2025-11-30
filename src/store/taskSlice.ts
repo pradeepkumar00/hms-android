@@ -512,15 +512,43 @@ export const fetchAssignedToMeTasks = createAsyncThunk(
         );
       }
 
-      const assignedTasks = await authService.assignedTasks(token);
+      // Use realAuthService for production API, fallback to mock authService
+      try {
+        const realAuthService = (await import('../services/realAuthService'))
+          .default;
+        const assignedTasks = await realAuthService.fetchAssignedTasks(token);
 
-      // In real implementation: const response = await api.get(`/tasks/assigned-to-me/${userId}`);
-      // For now, return mock data filtered by assignedTo
-      const assignedToMeTasks = assignedTasks.filter(
-        (task: any) => task.assignedTo === userId,
-      );
+        // Filter tasks assigned to current user (handle both single assignedTo and multi-user arrays)
+        const assignedToMeTasks = assignedTasks.filter((task: any) => {
+          // Check if task is assigned to current user
+          if (task.assignedTo === userId) {
+            return true;
+          }
+          // Check if user is in the user array (multi-user assignment)
+          if (task.user && Array.isArray(task.user)) {
+            return task.user.some(
+              (u: any) => u.id === userId || u._id === userId,
+            );
+          }
+          return false;
+        });
 
-      return assignedToMeTasks;
+        console.log(
+          `✅ Fetched ${assignedToMeTasks.length} tasks assigned to user ${userId}`,
+        );
+        return assignedToMeTasks;
+      } catch (realApiError) {
+        console.warn(
+          '⚠️ Real API failed, falling back to mock service:',
+          realApiError,
+        );
+        // Fallback to mock service
+        const assignedTasks = await authService.assignedTasks(token);
+        const assignedToMeTasks = assignedTasks.filter(
+          (task: any) => task.assignedTo === userId,
+        );
+        return assignedToMeTasks;
+      }
     } catch (error) {
       const message =
         error instanceof Error
@@ -1035,6 +1063,11 @@ export const createTask = createAsyncThunk(
       // Call real API
       const response = await authService.createTask(apiTaskData, token);
       console.log('Task created successfully:', response);
+      console.log('📋 Task creation payload sent to backend:', {
+        tenantId: apiTaskData.tenantId,
+        hasNotificationPayload: !!apiTaskData.notificationPayload,
+        notificationTitle: apiTaskData.notificationPayload?.title,
+      });
 
       // Map API response to our Task interface
       const newTask: Task = {

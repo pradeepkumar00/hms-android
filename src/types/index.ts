@@ -7,11 +7,24 @@ export interface User {
   mobileNumber?: string;
   mobileNo?: string; // API uses mobileNo
   department: 'HR' | 'Admin' | 'Supervisor'; // Internal department mapping
-  role: string; // Editor, Viewer, etc. - from API
+  role?: string; // Editor, Viewer, etc. - from API (optional)
   createdAt: string;
   tenantId: string; // Required for topic subscriptions
   status?: string;
   type: string;
+  departmentId?: string; // Department ID from API
+  doctorCode?: string | null; // Doctor code from API (can be null)
+  isTokenAssignable?: boolean; // Token assignability flag
+  subCategory?: string; // User subcategory
+  currentToken?: string; // Current token value
+  child?: {
+    totalChild: number;
+  };
+  route?: string[]; // User routes/permissions
+  consultFees?: number; // Consultation fees
+  isSlot?: boolean; // Slot availability
+  updatedAt?: string; // Last update timestamp
+  __v?: number; // Version key
 }
 
 export interface AuthState {

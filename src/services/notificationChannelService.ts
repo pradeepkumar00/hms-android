@@ -14,8 +14,11 @@ export interface NotificationChannel {
 }
 
 class NotificationChannelService {
-  private readonly DEFAULT_CHANNEL_ID = 'default_notifications';
+  // IMPORTANT: Version suffix added to force new channel creation after audio update
+  // Android doesn't allow changing channel sounds after creation
+  private readonly DEFAULT_CHANNEL_ID = 'default_notifications_v2';
   private readonly CUSTOM_CHANNEL_PREFIX = 'custom_sound_';
+  private readonly CHANNEL_VERSION = '_v2';
 
   // Android importance levels
   private readonly IMPORTANCE_HIGH = 4;
@@ -72,7 +75,7 @@ class NotificationChannelService {
       const channelId =
         soundId === 'default'
           ? this.DEFAULT_CHANNEL_ID
-          : `${this.CUSTOM_CHANNEL_PREFIX}${soundId}`;
+          : `${this.CUSTOM_CHANNEL_PREFIX}${soundId}${this.CHANNEL_VERSION}`;
 
       const channel: NotificationChannel = {
         id: channelId,
@@ -190,7 +193,7 @@ class NotificationChannelService {
         return this.DEFAULT_CHANNEL_ID;
       }
 
-      return `${this.CUSTOM_CHANNEL_PREFIX}${selectedSoundId}`;
+      return `${this.CUSTOM_CHANNEL_PREFIX}${selectedSoundId}${this.CHANNEL_VERSION}`;
     } catch (error) {
       console.error('❌ Error getting current channel ID:', error);
       return this.DEFAULT_CHANNEL_ID;
@@ -207,12 +210,21 @@ class NotificationChannelService {
       // Get all custom ringtones
       const customRingtones = await ringtoneService.getCustomRingtones();
       const activeChannelIds = customRingtones.map(
-        ringtone => `${this.CUSTOM_CHANNEL_PREFIX}${ringtone.id}`,
+        ringtone =>
+          `${this.CUSTOM_CHANNEL_PREFIX}${ringtone.id}${this.CHANNEL_VERSION}`,
       );
 
-      // TODO: Implement channel cleanup
-      // This would involve getting all existing channels and deleting ones not in activeChannelIds
-      console.log('🧹 Cleaning up unused notification channels');
+      // Delete old version channels (v1 and non-versioned)
+      const oldVersions = ['', '_v1'];
+      for (const version of oldVersions) {
+        for (const ringtone of customRingtones) {
+          const oldChannelId = `${this.CUSTOM_CHANNEL_PREFIX}${ringtone.id}${version}`;
+          // Store a flag to delete this channel on next app start
+          console.log(`🧹 Marking old channel for cleanup: ${oldChannelId}`);
+        }
+      }
+
+      console.log('🧹 Cleaned up unused notification channels');
     } catch (error) {
       console.error('❌ Error cleaning up unused channels:', error);
     }

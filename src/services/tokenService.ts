@@ -18,10 +18,25 @@ export interface StoredUserData {
   email: string;
   mobileNumber?: string; // Optional to match API response
   department: 'HR' | 'Admin' | 'Supervisor';
-  role: string;
+  role?: string; // Optional - role from API
   type: string; // Required for user type
   tenantId: string; // Required for topic subscriptions
   createdAt: string;
+  // Additional production API fields
+  departmentId?: string;
+  doctorCode?: string | null;
+  isTokenAssignable?: boolean;
+  subCategory?: string;
+  status?: string;
+  currentToken?: string;
+  child?: {
+    totalChild: number;
+  };
+  route?: string[];
+  consultFees?: number;
+  isSlot?: boolean;
+  updatedAt?: string;
+  __v?: number;
 }
 
 class TokenService {

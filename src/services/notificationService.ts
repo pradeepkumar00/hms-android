@@ -63,27 +63,63 @@ class NotificationService {
 
         // Check if Firebase is available
         if (!messagingInstance.isDeviceRegisteredForRemoteMessages) {
+          console.log('📱 Registering device for remote messages...');
           await messagingInstance.registerDeviceForRemoteMessages();
+          console.log('✅ Device registered for remote messages');
         }
 
         // Request notification permissions
-        await this.requestPermissions();
+        const hasPermission = await this.requestPermissions();
+        if (!hasPermission) {
+          console.warn(
+            '⚠️ Notification permissions not granted - notifications may not work',
+          );
+        }
+
+        // CRITICAL: Get FCM token early to verify Firebase is working
+        try {
+          const token = await messagingInstance.getToken();
+          if (token) {
+            console.log(
+              `📱 FCM Token obtained during initialization: ${token.substring(
+                0,
+                30,
+              )}...`,
+            );
+          } else {
+            console.warn('⚠️ FCM token is null during initialization');
+          }
+        } catch (tokenError: any) {
+          console.warn(
+            '⚠️ Could not get FCM token during initialization:',
+            tokenError.message,
+          );
+          // Continue anyway - token might be available later
+        }
 
         // Setup message handlers with improved stability
         this.setupMessageHandlers();
 
         this.isInitialized = true;
         console.log('✅ Firebase Cloud Messaging initialized successfully');
-      } catch (firebaseError) {
+      } catch (firebaseError: any) {
         console.warn(
           '⚠️ Firebase not properly configured, running in mock mode:',
-          firebaseError,
+          firebaseError.message || firebaseError,
         );
+        console.error('Firebase error details:', {
+          code: firebaseError.code,
+          message: firebaseError.message,
+        });
         this.isInitialized = false;
         // Don't throw error, allow app to continue without Firebase
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error('❌ Error initializing Firebase Cloud Messaging:', error);
+      console.error('Error details:', {
+        message: error.message,
+        stack: error.stack,
+      });
       this.isInitialized = false;
       // Don't throw error, allow app to continue
     }
@@ -130,22 +166,81 @@ class NotificationService {
     try {
       console.log(`🔔 Subscribing to topic: ${tenantId}`);
 
+      // CRITICAL: Ensure FCM is initialized before subscription
+      if (!this.isInitialized) {
+        console.warn('⚠️ FCM not initialized, initializing now...');
+        await this.initialize();
+
+        // Wait a bit for initialization to complete
+        await new Promise<void>(resolve => setTimeout(() => resolve(), 500));
+
+        if (!this.isInitialized) {
+          console.error(
+            '❌ FCM initialization failed, cannot subscribe to topic',
+          );
+          return false;
+        }
+      }
+
+      // CRITICAL: Get FCM token before subscription (topic subscription requires valid token)
+      let fcmToken: string | null = null;
+      try {
+        fcmToken = await messaging().getToken();
+        if (fcmToken) {
+          console.log(`📱 FCM Token obtained: ${fcmToken.substring(0, 30)}...`);
+        } else {
+          console.warn('⚠️ FCM token is null, subscription may fail');
+        }
+      } catch (tokenError: any) {
+        console.error(
+          '❌ Error getting FCM token before subscription:',
+          tokenError,
+        );
+        // Continue anyway - subscription might still work
+      }
+
       // Unsubscribe from previous topic if exists
       if (this.currentTenantId && this.currentTenantId !== tenantId) {
+        console.log(
+          `🔄 Unsubscribing from previous topic: ${this.currentTenantId}`,
+        );
         await this.unsubscribeFromTopic(this.currentTenantId);
       }
 
       // Subscribe to new topic
+      console.log(`📡 Attempting to subscribe to topic: ${tenantId}`);
       await messaging().subscribeToTopic(tenantId);
       this.currentTenantId = tenantId;
 
       // Store current tenantId locally
       await AsyncStorage.setItem(STORAGE_KEYS.CURRENT_TENANT_ID, tenantId);
 
+      // Verify subscription by checking if we can get token (indicates FCM is working)
+      try {
+        const verifyToken = await messaging().getToken();
+        if (verifyToken) {
+          console.log(`✅ Successfully subscribed to topic: ${tenantId}`);
+          console.log(
+            `✅ FCM is active with token: ${verifyToken.substring(0, 30)}...`,
+          );
+          return true;
+        }
+      } catch (verifyError) {
+        console.warn(
+          '⚠️ Subscription completed but token verification failed:',
+          verifyError,
+        );
+      }
+
       console.log(`✅ Successfully subscribed to topic: ${tenantId}`);
       return true;
-    } catch (error) {
+    } catch (error: any) {
       console.error(`❌ Error subscribing to topic ${tenantId}:`, error);
+      console.error('Error details:', {
+        message: error.message,
+        code: error.code,
+        stack: error.stack,
+      });
       return false;
     }
   }
@@ -591,15 +686,29 @@ class NotificationService {
   async getFCMToken(): Promise<string | null> {
     try {
       if (!this.isInitialized) {
-        console.warn('⚠️ FCM not initialized, cannot get token');
-        return null;
+        console.warn('⚠️ FCM not initialized, attempting to initialize...');
+        await this.initialize();
+        if (!this.isInitialized) {
+          console.error('❌ FCM initialization failed, cannot get token');
+          return null;
+        }
       }
 
       const token = await messaging().getToken();
-      console.log('📱 FCM Token obtained:', token.substring(0, 20) + '...');
+      if (token) {
+        console.log('📱 FCM Token obtained:', token.substring(0, 30) + '...');
+        // Store token for debugging
+        await AsyncStorage.setItem('@fcm_token_debug', token);
+      } else {
+        console.warn('⚠️ FCM token is null or empty');
+      }
       return token;
-    } catch (error) {
+    } catch (error: any) {
       console.error('❌ Error getting FCM token:', error);
+      console.error('Error details:', {
+        message: error.message,
+        code: error.code,
+      });
       return null;
     }
   }
@@ -735,6 +844,108 @@ class NotificationService {
    */
   isServiceInitialized(): boolean {
     return this.isInitialized;
+  }
+
+  /**
+   * Diagnostic method to check FCM topic subscription status
+   * Call this after login to verify everything is working
+   */
+  async diagnoseTopicSubscription(tenantId: string): Promise<{
+    fcmInitialized: boolean;
+    hasPermission: boolean;
+    hasToken: boolean;
+    token: string | null;
+    subscribedToTopic: boolean;
+    currentTopic: string | null;
+    issues: string[];
+    recommendations: string[];
+  }> {
+    const issues: string[] = [];
+    const recommendations: string[] = [];
+
+    // Check initialization
+    if (!this.isInitialized) {
+      issues.push('FCM not initialized');
+      recommendations.push('Call notificationService.initialize() first');
+    }
+
+    // Check permissions
+    const { hasPermission, status } = await this.checkPermissionStatus();
+    if (!hasPermission) {
+      issues.push(`Notification permissions not granted (status: ${status})`);
+      recommendations.push('Request notification permissions');
+    }
+
+    // Check token
+    const token = await this.getFCMToken();
+    if (!token) {
+      issues.push('FCM token not available');
+      recommendations.push(
+        'Ensure Firebase is properly configured and google-services.json is correct',
+      );
+    }
+
+    // Check topic subscription
+    const currentTopic = await this.getCurrentTenantId();
+    const subscribedToTopic = currentTopic === tenantId;
+
+    if (!subscribedToTopic) {
+      issues.push(
+        `Not subscribed to topic ${tenantId}. Current topic: ${
+          currentTopic || 'none'
+        }`,
+      );
+      recommendations.push(
+        `Call notificationService.subscribeToTopic('${tenantId}')`,
+      );
+    }
+
+    // Log diagnostic information
+    console.log('📊 FCM Diagnostic Results:');
+    console.log(`  - FCM Initialized: ${this.isInitialized}`);
+    console.log(`  - Has Permission: ${hasPermission}`);
+    console.log(`  - Has Token: ${!!token}`);
+    console.log(`  - Token: ${token ? token.substring(0, 30) + '...' : 'N/A'}`);
+    console.log(`  - Subscribed to Topic: ${subscribedToTopic}`);
+    console.log(`  - Current Topic: ${currentTopic || 'none'}`);
+    console.log(`  - Expected Topic: ${tenantId}`);
+    if (issues.length > 0) {
+      console.log('  - Issues:', issues);
+      console.log('  - Recommendations:', recommendations);
+    }
+
+    return {
+      fcmInitialized: this.isInitialized,
+      hasPermission,
+      hasToken: !!token,
+      token,
+      subscribedToTopic,
+      currentTopic,
+      issues,
+      recommendations,
+    };
+  }
+
+  /**
+   * Log FCM status for debugging - call this after task creation
+   */
+  async logFCMStatus(): Promise<void> {
+    const tenantId = await this.getCurrentTenantId();
+    const token = await this.getFCMToken();
+    const { hasPermission } = await this.checkPermissionStatus();
+
+    console.log('🔍 FCM Status Check:');
+    console.log(`  ✅ Initialized: ${this.isInitialized}`);
+    console.log(`  ✅ Permissions: ${hasPermission ? 'Granted' : 'Denied'}`);
+    console.log(
+      `  ✅ Token: ${token ? token.substring(0, 30) + '...' : 'NOT AVAILABLE'}`,
+    );
+    console.log(`  ✅ Topic Subscription: ${tenantId || 'NOT SUBSCRIBED'}`);
+    console.log(`  📡 Expected Topic: ${tenantId || 'N/A'}`);
+    console.log('  💡 If notifications not received, check:');
+    console.log('     1. Backend is sending to topic:', tenantId);
+    console.log('     2. Backend Firebase Admin SDK is configured');
+    console.log('     3. Backend logs show notification sent successfully');
   }
 }
 

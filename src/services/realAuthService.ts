@@ -22,12 +22,14 @@ interface LoginApiResponse {
     name: string;
     email: string;
     mobileNo: string;
-    role: string;
+    role?: string; // Role can be optional in some cases
     isTokenAssignable: boolean;
     subCategory: string;
     type: string;
+    departmentId?: string; // Department ID from production API
     status: string;
     currentToken: string;
+    doctorCode?: string | null; // Doctor code (can be null)
     child: {
       totalChild: number;
     };
@@ -108,6 +110,19 @@ class RealAuthService {
         type: apiUser.type,
         tenantId: apiUser.tenantId, // Required for topic subscription
         createdAt: apiUser.createdAt,
+        // Additional fields from production API
+        departmentId: apiUser.departmentId,
+        doctorCode: apiUser.doctorCode,
+        isTokenAssignable: apiUser.isTokenAssignable,
+        subCategory: apiUser.subCategory,
+        status: apiUser.status,
+        currentToken: apiUser.currentToken,
+        child: apiUser.child,
+        route: apiUser.route,
+        consultFees: apiUser.consultFees,
+        isSlot: apiUser.isSlot,
+        updatedAt: apiUser.updatedAt,
+        __v: apiUser.__v,
       };
 
       // Store token and user data securely
@@ -194,12 +209,56 @@ class RealAuthService {
         type: apiUser.type,
         tenantId: apiUser.tenantId, // Required for topic subscription
         createdAt: apiUser.createdAt,
+        // Additional fields from production API
+        departmentId: apiUser.departmentId,
+        doctorCode: apiUser.doctorCode,
+        isTokenAssignable: apiUser.isTokenAssignable,
+        subCategory: apiUser.subCategory,
+        status: apiUser.status,
+        currentToken: apiUser.currentToken,
+        child: apiUser.child,
+        route: apiUser.route,
+        consultFees: apiUser.consultFees,
+        isSlot: apiUser.isSlot,
+        updatedAt: apiUser.updatedAt,
+        __v: apiUser.__v,
       };
 
       // Update stored user data
       await tokenService.storeUserData(user);
 
       console.log('✅ Token validation successful:', user.name);
+      console.log('📋 User tenantId from validation:', user.tenantId);
+
+      // CRITICAL: Subscribe to FCM topic using tenantId for notifications
+      // This ensures notifications work even when user logged in via web/other device
+      if (user.tenantId) {
+        console.log(
+          `🔔 Attempting to subscribe to FCM topic: ${user.tenantId}`,
+        );
+        this.subscribeToNotificationTopic(user.tenantId)
+          .then(() => {
+            console.log(
+              '🔔 FCM topic subscription completed successfully after token validation',
+            );
+          })
+          .catch(error => {
+            console.error(
+              '❌ Topic subscription failed after token validation:',
+              error,
+            );
+            console.error('Error details:', {
+              message: error?.message,
+              stack: error?.stack,
+            });
+          });
+      } else {
+        console.error(
+          '❌ CRITICAL: No tenantId found in user data, cannot subscribe to FCM topic',
+        );
+        console.error('User object:', JSON.stringify(user, null, 2));
+      }
+
       return user;
     } catch (error: any) {
       console.error('❌ Token validation failed:', error);
@@ -314,8 +373,14 @@ class RealAuthService {
    * This might need adjustment based on actual API role values
    */
   private mapRoleToOurDepartment(
-    apiRole: string,
+    apiRole?: string,
   ): 'HR' | 'Admin' | 'Supervisor' {
+    // Handle undefined, null, or empty role values
+    if (!apiRole || typeof apiRole !== 'string') {
+      console.warn('⚠️ Role is undefined or invalid, defaulting to Admin');
+      return 'Admin';
+    }
+
     const role = apiRole.toLowerCase();
 
     if (role.includes('hr') || role.includes('human')) {
@@ -390,6 +455,75 @@ class RealAuthService {
       return response.data;
     } catch (error) {
       console.error('❌ Failed to fetch created tasks:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Fetch tasks assigned to current user
+   * GET /api/tasks (returns assignedToMe array)
+   * Or GET /api/task/assigned if endpoint exists
+   */
+  async fetchAssignedTasks(token: string): Promise<any> {
+    try {
+      console.log('📋 Fetching tasks assigned to current user...');
+
+      // Try the /api/tasks endpoint first (returns assignedToMe and createdByMe)
+      try {
+        const response = await apiClient.get('/tasks', {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+        });
+
+        // If response has assignedToMe array, return it
+        if (response.data?.data?.assignedToMe) {
+          console.log(
+            `✅ Assigned tasks fetched successfully: ${response.data.data.assignedToMe.length} tasks`,
+          );
+          return response.data.data.assignedToMe;
+        }
+
+        // If response is an array directly, return it
+        if (Array.isArray(response.data)) {
+          console.log(
+            `✅ Assigned tasks fetched successfully: ${response.data.length} tasks`,
+          );
+          return response.data;
+        }
+
+        // Fallback: return empty array if structure is unexpected
+        console.warn('⚠️ Unexpected response structure, returning empty array');
+        return [];
+      } catch (tasksError: any) {
+        // If /api/tasks fails, try /api/task/assigned endpoint
+        console.log(
+          '⚠️ /api/tasks endpoint failed, trying /api/task/assigned...',
+        );
+        const assignedResponse = await apiClient.get('/task/assigned', {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+        });
+
+        if (Array.isArray(assignedResponse.data)) {
+          console.log(
+            `✅ Assigned tasks fetched successfully: ${assignedResponse.data.length} tasks`,
+          );
+          return assignedResponse.data;
+        }
+
+        // If response has a data property, return it
+        if (assignedResponse.data?.data) {
+          return assignedResponse.data.data;
+        }
+
+        return assignedResponse.data || [];
+      }
+    } catch (error) {
+      console.error('❌ Failed to fetch assigned tasks:', error);
       throw error;
     }
   }
@@ -507,19 +641,36 @@ class RealAuthService {
   private async subscribeToNotificationTopic(tenantId: string): Promise<void> {
     try {
       console.log('📲 Subscribing to notification topic...');
+      console.log(`📲 Topic to subscribe: ${tenantId}`);
+
+      if (!tenantId || tenantId.trim() === '') {
+        console.error(
+          '❌ Invalid tenantId provided for subscription:',
+          tenantId,
+        );
+        throw new Error('Invalid tenantId: empty or null');
+      }
 
       // Import notification service dynamically to avoid circular dependencies
       const { notificationService } = await import('./notificationService');
 
+      console.log('📲 Calling notificationService.subscribeToTopic...');
       const subscribed = await notificationService.subscribeToTopic(tenantId);
 
       if (subscribed) {
         console.log(`✅ Successfully subscribed to topic: ${tenantId}`);
       } else {
-        console.warn(`⚠️ Failed to subscribe to topic: ${tenantId}`);
+        console.error(`❌ Failed to subscribe to topic: ${tenantId}`);
+        throw new Error(`Subscription returned false for topic: ${tenantId}`);
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error('❌ Failed to subscribe to notification topic:', error);
+      console.error('Error details:', {
+        message: error?.message,
+        stack: error?.stack,
+        tenantId,
+      });
+      throw error; // Re-throw to be caught by caller
     }
   }
 

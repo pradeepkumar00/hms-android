@@ -17,12 +17,12 @@ import {
   useAppDispatch,
   useAppSelector,
   selectCurrentUser,
-  selectCreatedByMeTasks,
+  selectAssignedToMeTasks,
   selectTasksLoading,
   selectTasksError,
 } from '../store';
 import {
-  fetchCreatedTasks,
+  fetchAssignedToMeTasks,
   clearTaskError,
   reassignTask,
   updateTaskStatusOptimistic,
@@ -37,13 +37,13 @@ interface HistoryScreenProps {
   navigation: any;
 }
 
-type SortOption = 'newest' | 'oldest' | 'status' | 'assignee';
+type SortOption = 'newest' | 'oldest' | 'status' | 'creator';
 type FilterOption = 'all' | 'new' | 'assigned' | 'in-progress' | 'completed';
 
 const HistoryScreen: React.FC<HistoryScreenProps> = ({ navigation }) => {
   const dispatch = useAppDispatch();
   const user = useAppSelector(selectCurrentUser);
-  const createdTasks = useAppSelector(selectCreatedByMeTasks);
+  const assignedToMeTasks = useAppSelector(selectAssignedToMeTasks);
   const isLoading = useAppSelector(selectTasksLoading);
   const error = useAppSelector(selectTasksError);
 
@@ -55,11 +55,11 @@ const HistoryScreen: React.FC<HistoryScreenProps> = ({ navigation }) => {
   const [showReassignModal, setShowReassignModal] = useState(false);
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
 
-  // Fetch created tasks (assigned to others) on screen load and when screen comes into focus
+  // Fetch tasks assigned to current user on screen load and when screen comes into focus
   useFocusEffect(
     useCallback(() => {
       if (user?.id) {
-        dispatch(fetchCreatedTasks({ status: 'assigned' }));
+        dispatch(fetchAssignedToMeTasks(user.id));
       }
     }, [dispatch, user?.id]),
   );
@@ -81,7 +81,7 @@ const HistoryScreen: React.FC<HistoryScreenProps> = ({ navigation }) => {
 
     setRefreshing(true);
     try {
-      await dispatch(fetchCreatedTasks({ status: 'assigned' })).unwrap();
+      await dispatch(fetchAssignedToMeTasks(user.id)).unwrap();
     } catch (error) {
       console.error('Failed to refresh tasks:', error);
     } finally {
@@ -90,17 +90,24 @@ const HistoryScreen: React.FC<HistoryScreenProps> = ({ navigation }) => {
   }, [dispatch, user?.id]);
 
   const filteredAndSortedTasks = useMemo(() => {
-    // Filter to show only tasks assigned to others (status = assigned and assignedTo exists)
-    let filtered = createdTasks
-      .filter(task => task.status === 'assigned' && task.assignedTo)
-      .filter(task => {
-        const matchesSearch =
-          task.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-          task.description.toLowerCase().includes(searchQuery.toLowerCase());
+    // Filter tasks assigned to current user
+    let filtered = assignedToMeTasks.filter(task => {
+      const matchesSearch =
+        task.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        task.description.toLowerCase().includes(searchQuery.toLowerCase());
 
-        if (filterBy === 'all') return matchesSearch;
-        return matchesSearch && task.status === filterBy;
-      });
+      if (filterBy === 'all') return matchesSearch;
+      // Map filterBy to actual status values
+      const statusMap: Record<FilterOption, string> = {
+        all: '',
+        new: 'new',
+        assigned: 'assigned',
+        'in-progress': 'progress',
+        completed: 'completed',
+      };
+      const targetStatus = statusMap[filterBy];
+      return matchesSearch && task.status === targetStatus;
+    });
 
     // Sort tasks
     filtered.sort((a, b) => {
@@ -115,17 +122,17 @@ const HistoryScreen: React.FC<HistoryScreenProps> = ({ navigation }) => {
           );
         case 'status':
           return a.status.localeCompare(b.status);
-        case 'assignee':
-          const aAssignee = a.assignedTo || 'Unassigned';
-          const bAssignee = b.assignedTo || 'Unassigned';
-          return aAssignee.localeCompare(bAssignee);
+        case 'creator':
+          const aCreator = a.createdByName || a.createdBy || 'Unknown';
+          const bCreator = b.createdByName || b.createdBy || 'Unknown';
+          return aCreator.localeCompare(bCreator);
         default:
           return 0;
       }
     });
 
     return filtered;
-  }, [createdTasks, searchQuery, sortBy, filterBy]);
+  }, [assignedToMeTasks, searchQuery, sortBy, filterBy]);
 
   const getStatusColor = (status: string) => {
     switch (status) {
@@ -170,14 +177,20 @@ const HistoryScreen: React.FC<HistoryScreenProps> = ({ navigation }) => {
     return `${Math.floor(diffInDays / 30)} months ago`;
   };
 
-  const handleTaskPress = (task: Task) => {
-    navigation.navigate('TaskDetails', { taskId: task.id, fromHistory: true });
-  };
+  const handleTaskPress = useCallback(
+    (task: Task) => {
+      navigation.navigate('TaskDetails', {
+        taskId: task.id,
+        fromHistory: true,
+      });
+    },
+    [navigation],
+  );
 
-  const handleReassignPress = (task: Task) => {
+  const handleReassignPress = useCallback((task: Task) => {
     setSelectedTask(task);
     setShowReassignModal(true);
-  };
+  }, []);
 
   const handleStatusUpdate = (task: Task, newStatus: string) => {
     // Optimistic update
@@ -204,62 +217,70 @@ const HistoryScreen: React.FC<HistoryScreenProps> = ({ navigation }) => {
     setSelectedTask(null);
   };
 
-  const renderTaskCard = ({ item: task }: { item: Task }) => (
-    <TouchableOpacity
-      style={styles.taskCard}
-      onPress={() => handleTaskPress(task)}
-      activeOpacity={0.8}
-    >
-      <View style={styles.taskHeader}>
-        <Text style={styles.taskTitle} numberOfLines={2}>
-          {task.title}
-        </Text>
-        <View style={styles.taskActions}>
-          <TouchableOpacity
-            onPress={() => handleReassignPress(task)}
-            style={styles.reassignButton}
-          >
-            <Icon name="swap-horiz" size={20} color={theme.colors.primary} />
-          </TouchableOpacity>
+  const renderTaskCard = useCallback(
+    ({ item: task }: { item: Task }) => (
+      <TouchableOpacity
+        style={styles.taskCard}
+        onPress={() => handleTaskPress(task)}
+        activeOpacity={0.8}
+      >
+        <View style={styles.taskHeader}>
+          <Text style={styles.taskTitle} numberOfLines={2}>
+            {task.title}
+          </Text>
+          <View style={styles.taskActions}>
+            <TouchableOpacity
+              onPress={() => handleReassignPress(task)}
+              style={styles.reassignButton}
+            >
+              <Icon name="swap-horiz" size={20} color={theme.colors.primary} />
+            </TouchableOpacity>
+          </View>
         </View>
-      </View>
 
-      <Text style={styles.taskDescription} numberOfLines={3}>
-        {task.description}
-      </Text>
+        <Text style={styles.taskDescription} numberOfLines={3}>
+          {task.description}
+        </Text>
 
-      <View style={styles.taskMeta}>
-        <View style={styles.statusContainer}>
-          <Icon
-            name={getStatusIcon(task.status)}
-            size={16}
-            color={getStatusColor(task.status)}
-          />
-          <Text
-            style={[styles.statusText, { color: getStatusColor(task.status) }]}
-          >
-            {task.status.replace('_', ' ').toUpperCase()}
+        <View style={styles.taskMeta}>
+          <View style={styles.statusContainer}>
+            <Icon
+              name={getStatusIcon(task.status)}
+              size={16}
+              color={getStatusColor(task.status)}
+            />
+            <Text
+              style={[
+                styles.statusText,
+                { color: getStatusColor(task.status) },
+              ]}
+            >
+              {task.status.replace('_', ' ').toUpperCase()}
+            </Text>
+          </View>
+
+          <Text style={styles.assigneeText}>
+            {task.createdByName
+              ? `Created by: ${task.createdByName}`
+              : task.createdBy
+              ? `Created by: User ${task.createdBy}`
+              : 'Task'}
           </Text>
         </View>
 
-        <Text style={styles.assigneeText}>
-          {task.assignedTo
-            ? `Assigned to: User ${task.assignedTo}`
-            : 'New Task'}
-        </Text>
-      </View>
-
-      <View style={styles.taskFooter}>
-        <Text style={styles.timeText}>
-          Created {formatRelativeTime(task.createdAt)}
-        </Text>
-        {task.dueDate && (
-          <Text style={styles.dueDateText}>
-            Due: {new Date(task.dueDate).toLocaleDateString()}
+        <View style={styles.taskFooter}>
+          <Text style={styles.timeText}>
+            Created {formatRelativeTime(task.createdAt)}
           </Text>
-        )}
-      </View>
-    </TouchableOpacity>
+          {task.dueDate && (
+            <Text style={styles.dueDateText}>
+              Due: {new Date(task.dueDate).toLocaleDateString()}
+            </Text>
+          )}
+        </View>
+      </TouchableOpacity>
+    ),
+    [handleTaskPress, handleReassignPress],
   );
 
   const renderFilterModal = () => (
@@ -278,7 +299,7 @@ const HistoryScreen: React.FC<HistoryScreenProps> = ({ navigation }) => {
           <Text style={styles.modalTitle}>Filter & Sort</Text>
 
           <Text style={styles.sectionTitle}>Sort By</Text>
-          {(['newest', 'oldest', 'status', 'assignee'] as SortOption[]).map(
+          {(['newest', 'oldest', 'status', 'creator'] as SortOption[]).map(
             option => (
               <TouchableOpacity
                 key={option}
@@ -413,13 +434,17 @@ const HistoryScreen: React.FC<HistoryScreenProps> = ({ navigation }) => {
 
   const renderEmptyState = () => (
     <View style={styles.emptyContainer}>
-      <Icon name="history" size={64} color={theme.colors.textSecondary} />
-      <Text style={styles.emptyTitle}>No Assigned Tasks</Text>
+      <Icon name="assignment" size={64} color={theme.colors.textSecondary} />
+      <Text style={styles.emptyTitle}>No Tasks Assigned to You</Text>
       <Text style={styles.emptyDescription}>
-        Tasks you create and assign to others will appear here
+        Tasks assigned to you will appear here. Pull down to refresh.
       </Text>
     </View>
   );
+
+  const renderFooter = useCallback(() => {
+    return <View style={styles.footerSpacing} />;
+  }, []);
 
   const renderHeader = () => (
     <View style={styles.headerContainer}>
@@ -443,13 +468,7 @@ const HistoryScreen: React.FC<HistoryScreenProps> = ({ navigation }) => {
 
       <View style={styles.statsContainer}>
         <Text style={styles.statsText}>
-          {filteredAndSortedTasks.length} of{' '}
-          {
-            createdTasks.filter(
-              task => task.status === 'assigned' && task.assignedTo,
-            ).length
-          }{' '}
-          tasks
+          {filteredAndSortedTasks.length} of {assignedToMeTasks.length} tasks
         </Text>
       </View>
     </View>
@@ -459,7 +478,7 @@ const HistoryScreen: React.FC<HistoryScreenProps> = ({ navigation }) => {
     return (
       <View style={styles.container}>
         <Header
-          title="Task Assigned"
+          title="Tasks Assigned to Me"
           showHomeIcon={true}
           onHomePress={() => navigation.navigate('Main')}
         />
@@ -477,7 +496,7 @@ const HistoryScreen: React.FC<HistoryScreenProps> = ({ navigation }) => {
   return (
     <View style={styles.container}>
       <Header
-        title="Task Assigned"
+        title="Tasks Assigned to Me"
         showHomeIcon={true}
         onHomePress={() => navigation.navigate('Main')}
       />
@@ -487,7 +506,7 @@ const HistoryScreen: React.FC<HistoryScreenProps> = ({ navigation }) => {
       <FlatList
         data={filteredAndSortedTasks}
         renderItem={renderTaskCard}
-        keyExtractor={item => item.id}
+        keyExtractor={(item, index) => item.id || `task-${index}`}
         contentContainerStyle={[
           styles.listContainer,
           filteredAndSortedTasks.length === 0 && styles.emptyListContainer,
@@ -497,7 +516,7 @@ const HistoryScreen: React.FC<HistoryScreenProps> = ({ navigation }) => {
           <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
         }
         ListEmptyComponent={!isLoading ? renderEmptyState : null}
-        ListFooterComponent={() => <View style={styles.footerSpacing} />}
+        ListFooterComponent={renderFooter}
       />
 
       {isLoading && !refreshing && (

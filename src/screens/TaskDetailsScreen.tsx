@@ -900,6 +900,7 @@ const TaskDetailsScreen: React.FC<TaskDetailsScreenProps> = ({
                   <Picker.Item label="Assigned" value="assigned" />
                   <Picker.Item label="In Progress" value="progress" />
                   <Picker.Item label="Completed" value="completed" />
+                  <Picker.Item label="Withdraw" value="withdrawn" />
                 </Picker>
               </View>
             </View>
@@ -2471,12 +2472,12 @@ const styles = StyleSheet.create({
     color: theme.colors.text,
   },
   imageIcon: {
-    width: 38,
-    height: 38,
+    width: 25,
+    height: 25,
   },
   imageContainer: {
-    width: 44,
-    height: 44,
+    width: 30,
+    height: 30,
     backgroundColor: theme.colors.surface,
     alignItems: 'center',
     justifyContent: 'center',

@@ -230,7 +230,7 @@ class AuthService {
   async createTask(taskData: any, token: string): Promise<any> {
     try {
       // Ensure users array is properly formatted for API
-      const payload = {
+      const payload: any = {
         title: taskData.title,
         description: taskData.description,
         dueDate: taskData.dueDate,
@@ -246,6 +246,19 @@ class AuthService {
         createdByName: taskData.createdByName,
         parentTaskId: taskData.parentTaskId ?? null,
       };
+
+      // CRITICAL: Include notificationPayload if present (required for FCM notifications)
+      if (taskData.notificationPayload) {
+        payload.notificationPayload = taskData.notificationPayload;
+        console.log('📨 Including notificationPayload in task creation:', {
+          title: taskData.notificationPayload.title,
+          assignedToName: taskData.notificationPayload.assignedToName,
+        });
+      } else {
+        console.warn(
+          '⚠️ notificationPayload not found in taskData - FCM notifications may not be sent',
+        );
+      }
 
       console.log(
         'Creating task with payload:',

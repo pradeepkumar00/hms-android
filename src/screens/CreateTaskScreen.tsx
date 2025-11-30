@@ -288,6 +288,9 @@ const CreateTaskScreen: React.FC<CreateTaskScreenProps> = ({
       const createdTask = await dispatch(createTask(taskData)).unwrap();
       console.log('✅ Task created successfully:', createdTask);
 
+      // Log FCM status for debugging
+      await notificationService.logFCMStatus();
+
       // Send FCM notification payload to backend (enhanced reliability)
       try {
         const assignedNames = selectedUsers.map(u => u.name).join(', ');

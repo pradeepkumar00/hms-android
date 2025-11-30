@@ -23,16 +23,42 @@ class MainActivity : ReactActivity() {
     
     // Create notification channels for custom sounds (Android 8.0+)
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+      deleteOldNotificationChannels()
       createNotificationChannels()
+    }
+  }
+
+  private fun deleteOldNotificationChannels() {
+    val notificationManager = getSystemService(NotificationManager::class.java)
+    
+    // Delete old channels to force recreation with updated sound
+    // This is necessary because Android doesn't allow changing channel sounds after creation
+    val oldChannelIds = listOf(
+      "default_notifications",
+      "custom_sound_alert_sound",
+      "custom_sound_chime_sound",
+      "custom_sound_notification_sound",
+      // Add v1 channels for deletion as well
+      "default_notifications_v1",
+      "custom_sound_alert_sound_v1",
+      "custom_sound_chime_sound_v1"
+    )
+    
+    for (channelId in oldChannelIds) {
+      try {
+        notificationManager.deleteNotificationChannel(channelId)
+      } catch (e: Exception) {
+        // Channel might not exist, ignore
+      }
     }
   }
 
   private fun createNotificationChannels() {
     val notificationManager = getSystemService(NotificationManager::class.java)
     
-    // Default channel with custom sound
+    // Default channel with custom sound (versioned to force update)
     val defaultChannel = NotificationChannel(
-      "default_notifications",
+      "default_notifications_v2",
       "Hospital Management Notifications",
       NotificationManager.IMPORTANCE_HIGH
     ).apply {
@@ -50,9 +76,9 @@ class MainActivity : ReactActivity() {
       setSound(soundUri, audioAttributes)
     }
     
-    // Alert sound channel
+    // Alert sound channel (versioned to force update)
     val alertChannel = NotificationChannel(
-      "custom_sound_alert_sound",
+      "custom_sound_alert_sound_v2",
       "Alert Notifications",
       NotificationManager.IMPORTANCE_HIGH
     ).apply {
@@ -69,9 +95,9 @@ class MainActivity : ReactActivity() {
       setSound(soundUri, audioAttributes)
     }
     
-    // Chime sound channel
+    // Chime sound channel (versioned to force update)
     val chimeChannel = NotificationChannel(
-      "custom_sound_chime_sound", 
+      "custom_sound_chime_sound_v2", 
       "Chime Notifications",
       NotificationManager.IMPORTANCE_HIGH
     ).apply {
