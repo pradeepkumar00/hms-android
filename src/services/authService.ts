@@ -1,6 +1,7 @@
 import { LoginCredentials, LoginResponse, User, ApiResponse } from '../types';
 import { sleep } from '../utils/helpers';
 import { validateMobileNumber, validatePassword } from '../utils/validation';
+import environmentService from './environmentService';
 
 // Mock users for testing (will be replaced with real API calls)
 const MOCK_USERS: User[] = [
@@ -167,8 +168,9 @@ class AuthService {
     token: string,
   ): Promise<{ departments: string[]; users: User[] }> {
     try {
-      // Make real API call to /api/users with authorization
-      const response = await fetch('https://app.octusai.com/api/users', {
+      // Make real API call to /api/users with authorization (using environment-configured API URL)
+      const apiBaseUrl = environmentService.getApiBaseUrl();
+      const response = await fetch(`${apiBaseUrl}/users`, {
         method: 'GET',
         headers: {
           Authorization: `Bearer ${token}`,
@@ -265,7 +267,9 @@ class AuthService {
         JSON.stringify(payload, null, 2),
       );
 
-      const response = await fetch('https://app.octusai.com/api/task', {
+      // Use environment-configured API URL
+      const apiBaseUrl = environmentService.getApiBaseUrl();
+      const response = await fetch(`${apiBaseUrl}/task`, {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${token}`,
@@ -292,15 +296,14 @@ class AuthService {
 
   async assignedTasks(token: string): Promise<any> {
     try {
-      const response = await fetch(
-        `https://app.octusai.com/api/tasks/created?status=new`,
-        {
-          method: 'GET',
-          headers: {
-            Authorization: `Bearer ${token}`,
-          },
+      // Use environment-configured API URL
+      const apiBaseUrl = environmentService.getApiBaseUrl();
+      const response = await fetch(`${apiBaseUrl}/tasks/created?status=new`, {
+        method: 'GET',
+        headers: {
+          Authorization: `Bearer ${token}`,
         },
-      );
+      });
 
       if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status}`);

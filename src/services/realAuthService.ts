@@ -10,8 +10,9 @@ import { validateEmail, validatePassword } from '../utils/validation';
 
 /**
  * Real Authentication Service
- * Integrates with production API endpoints for authentication
+ * Integrates with API endpoints for authentication
  * Following React Native authentication best practices
+ * Uses environment service for dynamic API URLs
  */
 
 interface LoginApiResponse {
@@ -52,7 +53,7 @@ interface AuthorizeApiResponse {
 class RealAuthService {
   /**
    * Login with real API endpoint
-   * POST https://app.octusai.com/api/cred/login
+   * POST /api/cred/login (URL from environment configuration)
    */
   async login(credentials: LoginCredentials): Promise<LoginResponse> {
     // Validate input

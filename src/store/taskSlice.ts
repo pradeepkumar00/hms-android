@@ -1047,15 +1047,19 @@ export const createTask = createAsyncThunk(
       const { STORAGE_KEYS } = await import('../constants/app');
 
       if (!token) {
-        throw new Error('No authentication token available');
+        console.error('❌ No authentication token available in state');
+        console.error('Auth state:', JSON.stringify(state.auth, null, 2));
+        throw new Error('No authentication token available. Please login again.');
       }
+
+      console.log('🔐 Creating task with token:', token.substring(0, 20) + '...');
 
       // Prepare API request data with multi-user assignment
       const apiTaskData: any = {
         title: taskData.title,
         description: taskData.description,
         dueDate: taskData.timeline.split('T')[0], // Format as YYYY-MM-DD
-        status: taskData.selectedUsers.length > 0 ? 'assigned' : 'new',
+        status: 'new', // Always create tasks with 'new' status
         tenantId: taskData.tenantId,
         createdBy: taskData.createdBy,
         createdByName: taskData.createdByName,
@@ -1084,8 +1088,14 @@ export const createTask = createAsyncThunk(
       console.log('Task created successfully:', response);
       console.log('📋 Task creation payload sent to backend:', {
         tenantId: apiTaskData.tenantId,
+        status: apiTaskData.status, // Should always be 'new'
         hasNotificationPayload: !!apiTaskData.notificationPayload,
         notificationTitle: apiTaskData.notificationPayload?.title,
+      });
+      console.log('📋 Task response from backend:', {
+        taskId: response._id || response.id,
+        status: response.status,
+        title: response.title,
       });
 
       // Map API response to our Task interface
@@ -1100,14 +1110,7 @@ export const createTask = createAsyncThunk(
             ? taskData.selectedUsers[0].id
             : undefined,
         assignedUsers: taskData.selectedUsers, // NEW: Multiple assignees
-        status:
-          apiTaskData.status === 'progress'
-            ? 'progress'
-            : (apiTaskData.status as
-                | 'new'
-                | 'assigned'
-                | 'progress'
-                | 'completed'),
+        status: response.status || apiTaskData.status || 'new', // Use status from API response
         createdAt: response.createdAt || new Date().toISOString(),
         updatedAt: response.updatedAt || new Date().toISOString(),
         dueDate: taskData.timeline,
@@ -1156,7 +1159,20 @@ export const createTask = createAsyncThunk(
       }
 
       return { task: newTask, notifications };
-    } catch (error) {
+    } catch (error: any) {
+      console.error('❌ Task creation failed:', error);
+      console.error('Error details:', {
+        message: error?.message,
+        response: error?.response?.data,
+        status: error?.response?.status,
+      });
+
+      // Handle specific error cases
+      if (error?.response?.status === 401) {
+        const message = 'Your session has expired. Please login again.';
+        return rejectWithValue(message);
+      }
+
       const message =
         error instanceof Error ? error.message : 'Failed to create task';
       return rejectWithValue(message);

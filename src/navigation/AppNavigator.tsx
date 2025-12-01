@@ -7,6 +7,7 @@ import { checkAuthState } from '../store/authSlice';
 import { RootStackParamList } from '../types';
 import { theme } from '../constants/theme';
 import { navigationRef } from '../services/navigationService';
+import environmentService from '../services/environmentService';
 
 // Screens
 import LoginScreen from '../screens/LoginScreen';
@@ -27,6 +28,33 @@ const AppNavigator: React.FC = () => {
   const { isAuthenticated, isLoading } = useAppSelector(selectAuth);
 
   useEffect(() => {
+    // Log environment information on app start
+    console.log('');
+    console.log('═══════════════════════════════════════════════════');
+    console.log('🌍 ENVIRONMENT CONFIGURATION');
+    console.log('═══════════════════════════════════════════════════');
+    console.log(
+      `📦 Environment: ${environmentService.getEnvironment().toUpperCase()}`,
+    );
+    console.log(`🌐 API URL: ${environmentService.getApiBaseUrl()}`);
+    console.log(`🔐 Auth API: ${environmentService.getAuthApiBaseUrl()}`);
+    console.log(
+      `🔥 Firebase Project: ${environmentService.getFirebaseProjectId()}`,
+    );
+    console.log(`⏱️  API Timeout: ${environmentService.getApiTimeout()}ms`);
+    console.log(
+      `🔍 Debug Logging: ${
+        environmentService.isDebugLoggingEnabled() ? 'ENABLED' : 'DISABLED'
+      }`,
+    );
+    console.log(
+      `📱 Dev Menu: ${
+        environmentService.isDevMenuEnabled() ? 'ENABLED' : 'DISABLED'
+      }`,
+    );
+    console.log('═══════════════════════════════════════════════════');
+    console.log('');
+
     // Check if user is already authenticated on app start
     const initializeAuth = async () => {
       try {

@@ -48,6 +48,7 @@ import { Header, TaskTabs } from '../components';
 import { TASK_STATUSES } from '../constants/app';
 import { Task, User, TaskHistoryEntry } from '../types';
 import type { TabType } from '../components/TaskTabs';
+import environmentService from '../services/environmentService';
 import Icon from 'react-native-vector-icons/MaterialIcons';
 import authService from '../services/authService';
 import {
@@ -320,9 +321,10 @@ const TaskDetailsScreen: React.FC<TaskDetailsScreenProps> = ({
 
       console.log('🔄 Updating task:', task.id, updatePayload);
 
-      // Make API call to update task (using the exact endpoint format from curl)
+      // Make API call to update task (using environment-configured API URL)
+      const apiBaseUrl = environmentService.getApiBaseUrl();
       const response = await fetch(
-        `https://app.octusai.com/api/task/taskId/${task.id}/update`,
+        `${apiBaseUrl}/task/taskId/${task.id}/update`,
         {
           method: 'POST',
           headers: {
@@ -369,9 +371,10 @@ const TaskDetailsScreen: React.FC<TaskDetailsScreenProps> = ({
     try {
       console.log('💬 Submitting comment for task:', task.id);
 
-      // Make API call to add comment
+      // Make API call to add comment (using environment-configured API URL)
+      const apiBaseUrl = environmentService.getApiBaseUrl();
       const response = await fetch(
-        `https://app.octusai.com/api/task/taskId/${task.id}/comment`,
+        `${apiBaseUrl}/task/taskId/${task.id}/comment`,
         {
           method: 'POST',
           headers: {
