@@ -138,6 +138,7 @@ export interface Notification {
   message: string;
   readStatus: boolean;
   createdAt: string;
+  updatedAt?: string;
   // Enhanced fields for better notification display
   taskTitle?: string;
   assignedTo?: string;
@@ -145,6 +146,10 @@ export interface Notification {
   createdBy?: string;
   createdByName?: string;
   department?: string;
+  // Additional fields from API response
+  type?: string; // 'updated', 'created', etc.
+  status?: string; // 'progress', 'completed', 'assigned', etc.
+  user?: Array<{ id: string; name: string }>; // Array of assigned users
 }
 
 // Navigation Types
@@ -157,6 +162,11 @@ export type RootStackParamList = {
   History: undefined; // Tasks assigned to others BY current user
   CreateTask: { parentTaskId?: string }; // Optional parentTaskId for creating child tasks (Phase 10)
   NotificationSettings: undefined;
+  TaskList: {
+    status?: 'today' | 'new' | 'assigned' | 'progress' | 'completed' | 'withdraw';
+    type?: 'created' | 'assigned';
+    title: string;
+  }; // Generic task list screen with filters
 };
 
 // UI Types

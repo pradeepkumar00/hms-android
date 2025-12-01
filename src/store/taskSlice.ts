@@ -452,44 +452,62 @@ const initialState: TaskState = {
 // Async thunks for API calls
 export const fetchInboxNotifications = createAsyncThunk(
   'tasks/fetchInboxNotifications',
-  async (userId: string, { rejectWithValue }) => {
+  async (userId: string, { rejectWithValue, getState }) => {
     try {
-      // In real implementation: const response = await api.get(`/notifications/inbox/${userId}`);
-      // For now, return mock data filtered by user
-      const userNotifications = MOCK_NOTIFICATIONS.filter(
-        notification => notification.userId === userId,
-      );
+      console.log('🔔 Fetching notifications from API...');
 
-      // Also get locally created notifications from AsyncStorage
-      try {
-        const localNotifications = await AsyncStorage.getItem(
-          STORAGE_KEYS.LOCAL_NOTIFICATIONS,
+      // Get auth token from state
+      const state = getState() as any;
+      const authState = state.auth;
+      const token = authState.token;
+
+      if (!token) {
+        return rejectWithValue(
+          'Authentication required to fetch notifications',
         );
-        if (localNotifications) {
-          const parsedLocalNotifications: Notification[] =
-            JSON.parse(localNotifications);
-          const userLocalNotifications = parsedLocalNotifications.filter(
-            notification => notification.userId === userId,
-          );
-
-          // Merge local notifications with mock notifications
-          // Combine and sort by createdAt (newest first)
-          const allNotifications = [
-            ...userLocalNotifications,
-            ...userNotifications,
-          ];
-          return allNotifications.sort(
-            (a, b) =>
-              new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
-          );
-        }
-      } catch (storageError) {
-        console.error('Failed to load local notifications:', storageError);
-        // Continue with just mock notifications if storage fails
       }
 
-      return userNotifications;
+      // Import realAuthService dynamically
+      const realAuthService = (await import('../services/realAuthService'))
+        .default;
+
+      // Fetch notifications from real API endpoint: GET /task/notification
+      const response = await realAuthService.fetchNotifications(token);
+
+      console.log(
+        `✅ Fetched ${response.length} notifications from API`,
+        response,
+      );
+
+      // Transform API response to match our Notification interface
+      const transformedNotifications: Notification[] = response.map(
+        (apiNotif: any) => ({
+          id: apiNotif._id,
+          userId: userId, // Current user
+          taskId: apiNotif.taskId || apiNotif._id,
+          message: apiNotif.title || 'Task notification',
+          taskTitle: apiNotif.title,
+          readStatus: apiNotif.isRead || false,
+          createdAt: apiNotif.createdAt,
+          updatedAt: apiNotif.updatedAt,
+          // Additional fields from API
+          type: apiNotif.type, // 'updated', 'created', etc.
+          status: apiNotif.status, // 'progress', 'completed', etc.
+          user: apiNotif.user, // Array of assigned users
+          assignedToName: apiNotif.user?.map((u: any) => u.name).join(', '),
+          createdByName: apiNotif.name, // Creator name from API
+        }),
+      );
+
+      // Sort by createdAt (newest first)
+      const sortedNotifications = transformedNotifications.sort(
+        (a, b) =>
+          new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+      );
+
+      return sortedNotifications;
     } catch (error) {
+      console.error('❌ Failed to fetch notifications:', error);
       const message =
         error instanceof Error
           ? error.message

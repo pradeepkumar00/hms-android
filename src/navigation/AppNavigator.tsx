@@ -17,6 +17,7 @@ import AssignedTasksScreen from '../screens/AssignedTasksScreen';
 import HistoryScreen from '../screens/HistoryScreen';
 import CreateTaskScreen from '../screens/CreateTaskScreen';
 import NotificationSettingsScreen from '../screens/NotificationSettingsScreen';
+import TaskListScreen from '../screens/TaskListScreen';
 
 const Stack = createStackNavigator<RootStackParamList>();
 
@@ -124,6 +125,13 @@ const AppNavigator: React.FC = () => {
             <Stack.Screen
               name="NotificationSettings"
               component={NotificationSettingsScreen}
+              options={{
+                gestureEnabled: true,
+              }}
+            />
+            <Stack.Screen
+              name="TaskList"
+              component={TaskListScreen}
               options={{
                 gestureEnabled: true,
               }}

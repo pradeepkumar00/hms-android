@@ -40,7 +40,7 @@ const Header: React.FC<HeaderProps> = ({
         backgroundColor={theme.colors.primary}
         translucent={false}
       />
-      <SafeAreaView style={styles.safeArea}>
+      <SafeAreaView edges={['top']} style={styles.safeArea}>
         <View style={styles.container}>
           {/* Left Side - Home Icon or App Logo */}
           <View style={styles.leftSection}>
@@ -102,7 +102,6 @@ const Header: React.FC<HeaderProps> = ({
 const styles = StyleSheet.create({
   safeArea: {
     backgroundColor: theme.colors.primary,
-    ...theme.shadows.md,
   },
   container: {
     height: theme.headerHeight,

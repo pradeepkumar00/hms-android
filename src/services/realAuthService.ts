@@ -438,7 +438,13 @@ class RealAuthService {
    */
   async fetchCreatedTasks(
     token: string,
-    status?: 'new' | 'assigned',
+    status?:
+      | 'today'
+      | 'new'
+      | 'assigned'
+      | 'progress'
+      | 'completed'
+      | 'withdraw',
   ): Promise<any> {
     try {
       console.log(`📋 Fetching created tasks with status: ${status || 'all'}`);
@@ -524,6 +530,42 @@ class RealAuthService {
       }
     } catch (error) {
       console.error('❌ Failed to fetch assigned tasks:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Fetch tasks assigned to current user with status filter
+   * GET /api/task/assigned?status={status}
+   */
+  async fetchAssignedTasksWithStatus(
+    token: string,
+    status?:
+      | 'today'
+      | 'new'
+      | 'assigned'
+      | 'progress'
+      | 'completed'
+      | 'withdraw',
+  ): Promise<any> {
+    try {
+      console.log(`📋 Fetching assigned tasks with status: ${status || 'all'}`);
+
+      const params = status ? `?status=${status}` : '';
+      const response = await apiClient.get(`/task/assigned${params}`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+      });
+
+      console.log(
+        '✅ Assigned tasks with status fetched successfully:',
+        response.data,
+      );
+      return response.data;
+    } catch (error) {
+      console.error('❌ Failed to fetch assigned tasks with status:', error);
       throw error;
     }
   }
@@ -631,6 +673,35 @@ class RealAuthService {
       return response.data;
     } catch (error) {
       console.error('❌ Failed to create child task:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Fetch notifications from API
+   * GET /task/notification
+   */
+  async fetchNotifications(token: string): Promise<any[]> {
+    try {
+      console.log('🔔 Fetching notifications from API...');
+
+      const response = await apiClient.get('/task/notification', {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+      });
+
+      console.log(
+        '✅ Notifications fetched successfully:',
+        response.data?.length || 0,
+        'notifications',
+      );
+
+      // API returns array of notification objects directly
+      return response.data || [];
+    } catch (error) {
+      console.error('❌ Failed to fetch notifications:', error);
       throw error;
     }
   }

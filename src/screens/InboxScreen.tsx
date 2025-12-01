@@ -4,8 +4,6 @@ import {
   Text,
   StyleSheet,
   FlatList,
-  TouchableOpacity,
-  Alert,
   RefreshControl,
   ActivityIndicator,
   Platform,
@@ -23,8 +21,6 @@ import {
 } from '../store';
 import {
   fetchInboxNotifications,
-  markNotificationAsReadOptimistic,
-  markNotificationAsRead,
   clearTaskError,
 } from '../store/taskSlice';
 import { theme } from '../constants/theme';
@@ -52,8 +48,8 @@ const InboxScreen: React.FC<InboxScreenProps> = ({ navigation }) => {
   const previousNotificationCountRef = useRef<number>(0);
   const [vibrationEnabled, setVibrationEnabled] = useState(true);
 
-  // Check if user is HR for interaction permissions
-  const isHRUser = user?.department === 'HR';
+  // NOTE: Removed HR permission check - all users can view notifications
+  // Notifications are read-only (non-clickable) for all users
 
   // Load vibration settings
   useEffect(() => {
@@ -151,33 +147,6 @@ const InboxScreen: React.FC<InboxScreenProps> = ({ navigation }) => {
     }
   }, [selectedSoundId, vibrationEnabled]);
 
-  // Handle notification press - only for HR users
-  const handleNotificationPress = useCallback(
-    (notification: Notification) => {
-      if (!isHRUser) {
-        Alert.alert(
-          'Access Restricted',
-          'Only HR users can view task details.',
-          [{ text: 'OK' }],
-        );
-        return;
-      }
-
-      // Mark as read optimistically
-      if (!notification.readStatus) {
-        dispatch(markNotificationAsReadOptimistic(notification.id));
-        dispatch(markNotificationAsRead(notification.id));
-      }
-
-      // Navigate to task details (readonly from notifications)
-      navigation.navigate('TaskDetails', {
-        taskId: notification.taskId,
-        readonly: true, // Notifications are view-only
-      });
-    },
-    [dispatch, navigation, isHRUser],
-  );
-
   // Format notification time
   const formatNotificationTime = (createdAt: string) => {
     const now = new Date();
@@ -199,21 +168,17 @@ const InboxScreen: React.FC<InboxScreenProps> = ({ navigation }) => {
     }
   };
 
-  // Render notification item
+  // Render notification item (read-only, non-clickable)
   const renderNotificationItem = useCallback(
     ({ item }: { item: Notification }) => {
       const isUnread = !item.readStatus;
 
       return (
-        <TouchableOpacity
+        <View
           style={[
             styles.notificationItem,
             isUnread && styles.unreadNotification,
-            !isHRUser && styles.disabledNotification,
           ]}
-          onPress={() => handleNotificationPress(item)}
-          activeOpacity={isHRUser ? 0.7 : 1}
-          disabled={!isHRUser}
         >
           <View style={styles.notificationContent}>
             <View style={styles.notificationHeader}>
@@ -268,21 +233,28 @@ const InboxScreen: React.FC<InboxScreenProps> = ({ navigation }) => {
               </View>
             )}
 
-            {isHRUser && (
-              <View style={styles.notificationFooter}>
-                <Text style={styles.tapToViewText}>Tap to view details</Text>
-                <Icon
-                  name="chevron-right"
-                  size={16}
-                  color={theme.colors.textSecondary}
-                />
+            {/* Status badge if available */}
+            {item.status && (
+              <View style={styles.statusBadgeContainer}>
+                <View
+                  style={[
+                    styles.statusBadge,
+                    item.status === 'completed' && styles.statusCompleted,
+                    item.status === 'progress' && styles.statusProgress,
+                    item.status === 'assigned' && styles.statusAssigned,
+                  ]}
+                >
+                  <Text style={styles.statusText}>
+                    {item.status.charAt(0).toUpperCase() + item.status.slice(1)}
+                  </Text>
+                </View>
               </View>
             )}
           </View>
-        </TouchableOpacity>
+        </View>
       );
     },
-    [handleNotificationPress, isHRUser],
+    [],
   );
 
   // Render empty state
@@ -341,17 +313,6 @@ const InboxScreen: React.FC<InboxScreenProps> = ({ navigation }) => {
             </View>
           )}
         </View>
-
-        {/* Access restriction info for non-HR users */}
-        {!isHRUser && (
-          <View style={styles.restrictionNotice}>
-            <Icon name="info-outline" size={16} color={theme.colors.warning} />
-            <Text style={styles.restrictionText}>
-              You can view notifications but cannot interact with them. Only HR
-              users can access task details.
-            </Text>
-          </View>
-        )}
 
         {/* Notifications List */}
         {error ? (
@@ -605,6 +566,31 @@ const styles = StyleSheet.create({
   assignmentValue: {
     color: theme.colors.text,
     fontWeight: theme.typography.fontWeights.normal,
+  },
+  // Status badge styles
+  statusBadgeContainer: {
+    marginTop: theme.spacing.sm,
+    flexDirection: 'row',
+  },
+  statusBadge: {
+    paddingHorizontal: theme.spacing.sm,
+    paddingVertical: theme.spacing.xs,
+    borderRadius: theme.borderRadius.sm,
+    backgroundColor: theme.colors.textSecondary + '20',
+  },
+  statusCompleted: {
+    backgroundColor: '#10B981' + '20',
+  },
+  statusProgress: {
+    backgroundColor: '#F59E0B' + '20',
+  },
+  statusAssigned: {
+    backgroundColor: theme.colors.primary + '20',
+  },
+  statusText: {
+    fontSize: theme.typography.fontSizes.xs,
+    fontWeight: theme.typography.fontWeights.medium,
+    color: theme.colors.text,
   },
 });
 
