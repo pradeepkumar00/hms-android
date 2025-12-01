@@ -186,11 +186,17 @@ const MainScreen: React.FC<MainScreenProps> = ({ navigation }) => {
         style: 'destructive',
         onPress: async () => {
           try {
+            console.log('🚪 Logging out user...');
             await dispatch(logoutUser()).unwrap();
-            navigation.replace('Login');
+            console.log(
+              '✅ Logout successful - AppNavigator will handle navigation',
+            );
+            // Don't manually navigate - AppNavigator will automatically show Login screen
+            // when isAuthenticated becomes false
           } catch (error) {
-            console.error('Logout error:', error);
-            navigation.replace('Login');
+            console.error('❌ Logout error:', error);
+            // Still dispatch logout even if there's an error to clear local state
+            // AppNavigator will handle navigation automatically
           }
         },
       },

@@ -347,10 +347,31 @@ const CreateTaskScreen: React.FC<CreateTaskScreenProps> = ({
       // Show specific error message if available
       const errorMessage =
         error instanceof Error ? error.message : 'Failed to create task';
-      Alert.alert('Task Creation Failed', errorMessage, [
-        { text: 'Try Again', style: 'cancel' },
-        { text: 'OK' },
-      ]);
+      
+      // Check if it's an authentication error
+      if (errorMessage.includes('session has expired') || errorMessage.includes('login again')) {
+        Alert.alert(
+          'Session Expired', 
+          'Your session has expired. Please login again.',
+          [
+            { 
+              text: 'Login', 
+              onPress: () => {
+                // Navigate to login screen
+                navigation.reset({
+                  index: 0,
+                  routes: [{ name: 'Login' }],
+                });
+              }
+            },
+          ]
+        );
+      } else {
+        Alert.alert('Task Creation Failed', errorMessage, [
+          { text: 'Try Again', style: 'cancel' },
+          { text: 'OK' },
+        ]);
+      }
     }
   };
 

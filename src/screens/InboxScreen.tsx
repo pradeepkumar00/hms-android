@@ -8,6 +8,7 @@ import {
   ActivityIndicator,
   Platform,
   Vibration,
+  TouchableOpacity,
 } from 'react-native';
 import {
   useAppDispatch,

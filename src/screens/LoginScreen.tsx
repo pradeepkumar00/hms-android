@@ -44,10 +44,14 @@ const LoginScreen: React.FC<LoginScreenProps> = ({ navigation }) => {
 
   useEffect(() => {
     // Navigate to main screen if authenticated
+    // AppNavigator handles this automatically through conditional rendering
+    // This useEffect is kept for logging purposes only
     if (isAuthenticated) {
-      navigation.replace('Main');
+      console.log('✅ User authenticated - AppNavigator will show Main screen');
+      // Don't manually navigate - AppNavigator will automatically show Main screen
+      // when isAuthenticated becomes true
     }
-  }, [isAuthenticated, navigation]);
+  }, [isAuthenticated]);
 
   useEffect(() => {
     // Show authentication error inline instead of alert
