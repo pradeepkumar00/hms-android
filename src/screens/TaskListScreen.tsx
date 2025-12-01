@@ -8,6 +8,7 @@ import {
   ActivityIndicator,
   RefreshControl,
   TextInput,
+  Modal,
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import {
@@ -36,8 +37,8 @@ interface TaskListScreenProps {
         | 'progress'
         | 'completed'
         | 'withdraw';
-      type?: 'created' | 'assigned'; // 'created' for /api/task/created, 'assigned' for /api/task/assigned
-      title: string; // Title to display in header
+      type?: 'created' | 'assigned';
+      title: string;
     };
   };
 }
@@ -46,7 +47,11 @@ const TaskListScreen: React.FC<TaskListScreenProps> = ({
   navigation,
   route,
 }) => {
-  const { status, type, title } = route.params;
+  const {
+    status: initialStatus,
+    type: initialType,
+    title: initialTitle,
+  } = route.params;
   const dispatch = useAppDispatch();
   const user = useAppSelector(selectCurrentUser);
   const token = useAppSelector(selectAuthToken);
@@ -56,6 +61,19 @@ const TaskListScreen: React.FC<TaskListScreenProps> = ({
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
+  const [currentStatus, setCurrentStatus] = useState<
+    | 'today'
+    | 'new'
+    | 'assigned'
+    | 'progress'
+    | 'completed'
+    | 'withdraw'
+    | undefined
+  >(initialStatus);
+  const [currentType, setCurrentType] = useState<
+    'created' | 'assigned' | undefined
+  >(initialType);
+  const [showFilterModal, setShowFilterModal] = useState(false);
 
   // Fetch tasks based on status and type
   const fetchTasks = useCallback(async () => {
@@ -74,16 +92,19 @@ const TaskListScreen: React.FC<TaskListScreenProps> = ({
 
       let fetchedTasks: Task[] = [];
 
-      if (type === 'created') {
+      if (currentType === 'created') {
         // Fetch from /api/task/created with optional status query
-        fetchedTasks = await realAuthService.fetchCreatedTasks(token, status);
-      } else if (type === 'assigned') {
+        fetchedTasks = await realAuthService.fetchCreatedTasks(
+          token,
+          currentStatus,
+        );
+      } else if (currentType === 'assigned') {
         // Fetch from /api/task/assigned with optional status query
-        if (status) {
+        if (currentStatus) {
           // Use new method with status parameter
           fetchedTasks = await realAuthService.fetchAssignedTasksWithStatus(
             token,
-            status,
+            currentStatus,
           );
         } else {
           // Fetch all assigned tasks (no status filter)
@@ -112,9 +133,9 @@ const TaskListScreen: React.FC<TaskListScreenProps> = ({
 
       setTasks(transformedTasks);
       console.log(
-        `✅ Fetched ${transformedTasks.length} tasks for ${type} with status ${
-          status || 'all'
-        }`,
+        `✅ Fetched ${
+          transformedTasks.length
+        } tasks for ${currentType} with status ${currentStatus || 'all'}`,
       );
     } catch (err) {
       console.error('Error fetching tasks:', err);
@@ -122,7 +143,7 @@ const TaskListScreen: React.FC<TaskListScreenProps> = ({
     } finally {
       setIsLoading(false);
     }
-  }, [token, status, type]);
+  }, [token, currentStatus, currentType]);
 
   // Fetch tasks on mount and when screen comes into focus
   useFocusEffect(
@@ -187,6 +208,80 @@ const TaskListScreen: React.FC<TaskListScreenProps> = ({
         return taskStatus;
     }
   };
+
+  // Get filter chip label
+  const getFilterChipLabel = () => {
+    if (!currentStatus) return null;
+
+    switch (currentStatus) {
+      case 'today':
+        return "Today's";
+      case 'new':
+        return 'New';
+      case 'assigned':
+        return 'Assigned';
+      case 'progress':
+        return 'In-progress';
+      case 'completed':
+        return 'Completed';
+      case 'withdraw':
+        return 'Withdrawn';
+      default:
+        return currentStatus;
+    }
+  };
+
+  // Handle chip close - show all assigned tasks
+  const handleChipClose = () => {
+    setCurrentStatus(undefined);
+    // Keep the type as it is, just remove the status filter
+  };
+
+  // Handle filter selection
+  const handleFilterSelect = (selectedStatus: typeof currentStatus) => {
+    setCurrentStatus(selectedStatus);
+    setShowFilterModal(false);
+  };
+
+  // Filter options for modal
+  const filterOptions = [
+    {
+      value: 'today' as const,
+      label: "Today's",
+      icon: 'today',
+      color: '#F44336',
+    },
+    {
+      value: 'new' as const,
+      label: 'New',
+      icon: 'fiber-new',
+      color: '#424242',
+    },
+    {
+      value: 'assigned' as const,
+      label: 'Assigned',
+      icon: 'schedule',
+      color: '#F57C00',
+    },
+    {
+      value: 'progress' as const,
+      label: 'In-progress',
+      icon: 'autorenew',
+      color: '#66BB6A',
+    },
+    {
+      value: 'completed' as const,
+      label: 'Completed',
+      icon: 'check-circle',
+      color: '#4CAF50',
+    },
+    {
+      value: 'withdraw' as const,
+      label: 'Withdrawn',
+      icon: 'cancel',
+      color: '#F44336',
+    },
+  ];
 
   // Render task card
   const renderTaskCard = ({ item }: { item: Task }) => {
@@ -297,7 +392,7 @@ const TaskListScreen: React.FC<TaskListScreenProps> = ({
     return (
       <View style={styles.container}>
         <Header
-          title={title}
+          title={initialTitle}
           showHomeIcon={true}
           onHomePress={() => navigation.navigate('Main')}
         />
@@ -315,14 +410,28 @@ const TaskListScreen: React.FC<TaskListScreenProps> = ({
   return (
     <View style={styles.container}>
       <Header
-        title={title}
+        title={initialTitle}
         showHomeIcon={true}
         onHomePress={() => navigation.navigate('Main')}
       />
 
-      {/* Search Bar */}
+      {/* Search Bar with Chip and Filter */}
       <View style={styles.searchContainer}>
         <Icon name="search" size={20} color={theme.colors.textSecondary} />
+
+        {/* Status Filter Chip */}
+        {currentStatus && (
+          <View style={styles.filterChip}>
+            <Text style={styles.filterChipText}>{getFilterChipLabel()}</Text>
+            <TouchableOpacity
+              onPress={handleChipClose}
+              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+            >
+              <Icon name="close" size={16} color={theme.colors.textSecondary} />
+            </TouchableOpacity>
+          </View>
+        )}
+
         <TextInput
           style={styles.searchInput}
           placeholder="Search tasks..."
@@ -330,11 +439,23 @@ const TaskListScreen: React.FC<TaskListScreenProps> = ({
           value={searchQuery}
           onChangeText={setSearchQuery}
         />
+
         {searchQuery.length > 0 && (
-          <TouchableOpacity onPress={() => setSearchQuery('')}>
+          <TouchableOpacity
+            onPress={() => setSearchQuery('')}
+            style={styles.searchClearButton}
+          >
             <Icon name="close" size={20} color={theme.colors.textSecondary} />
           </TouchableOpacity>
         )}
+
+        {/* Filter Icon */}
+        <TouchableOpacity
+          onPress={() => setShowFilterModal(true)}
+          style={styles.filterButton}
+        >
+          <Icon name="filter-list" size={24} color={theme.colors.primary} />
+        </TouchableOpacity>
       </View>
 
       {/* Results count */}
@@ -372,6 +493,111 @@ const TaskListScreen: React.FC<TaskListScreenProps> = ({
           <ActivityIndicator size="large" color={theme.colors.primary} />
         </View>
       )}
+
+      {/* Filter Modal */}
+      <Modal
+        visible={showFilterModal}
+        transparent={true}
+        animationType="slide"
+        onRequestClose={() => setShowFilterModal(false)}
+      >
+        <TouchableOpacity
+          style={styles.modalOverlay}
+          activeOpacity={1}
+          onPress={() => setShowFilterModal(false)}
+        >
+          <View style={styles.filterModalContainer}>
+            <TouchableOpacity
+              activeOpacity={1}
+              onPress={e => e.stopPropagation()}
+            >
+              <View style={styles.filterModalContent}>
+                <View style={styles.filterModalHeader}>
+                  <Text style={styles.filterModalTitle}>Select Filter</Text>
+                  <TouchableOpacity onPress={() => setShowFilterModal(false)}>
+                    <Icon name="close" size={24} color={theme.colors.text} />
+                  </TouchableOpacity>
+                </View>
+
+                <View style={styles.filterOptionsContainer}>
+                  {/* All option */}
+                  <TouchableOpacity
+                    style={[
+                      styles.filterOption,
+                      !currentStatus && styles.filterOptionSelected,
+                    ]}
+                    onPress={() => {
+                      setCurrentStatus(undefined);
+                      setShowFilterModal(false);
+                    }}
+                  >
+                    <Icon
+                      name="list"
+                      size={24}
+                      color={
+                        !currentStatus
+                          ? theme.colors.primary
+                          : theme.colors.textSecondary
+                      }
+                    />
+                    <Text
+                      style={[
+                        styles.filterOptionText,
+                        !currentStatus && styles.filterOptionTextSelected,
+                      ]}
+                    >
+                      All Tasks
+                    </Text>
+                    {!currentStatus && (
+                      <Icon
+                        name="check"
+                        size={20}
+                        color={theme.colors.primary}
+                      />
+                    )}
+                  </TouchableOpacity>
+
+                  {/* Status options */}
+                  {filterOptions.map(option => (
+                    <TouchableOpacity
+                      key={option.value}
+                      style={[
+                        styles.filterOption,
+                        currentStatus === option.value &&
+                          styles.filterOptionSelected,
+                      ]}
+                      onPress={() => handleFilterSelect(option.value)}
+                    >
+                      <Icon
+                        name={option.icon}
+                        size={24}
+                        color={
+                          currentStatus === option.value
+                            ? option.color
+                            : theme.colors.textSecondary
+                        }
+                      />
+                      <Text
+                        style={[
+                          styles.filterOptionText,
+                          currentStatus === option.value && {
+                            color: option.color,
+                          },
+                        ]}
+                      >
+                        {option.label}
+                      </Text>
+                      {currentStatus === option.value && (
+                        <Icon name="check" size={20} color={option.color} />
+                      )}
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              </View>
+            </TouchableOpacity>
+          </View>
+        </TouchableOpacity>
+      </Modal>
     </View>
   );
 };
@@ -528,6 +754,85 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(0, 0, 0, 0.3)',
     justifyContent: 'center',
     alignItems: 'center',
+  },
+  filterChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: theme.colors.primary + '20',
+    paddingHorizontal: theme.spacing.sm,
+    paddingVertical: theme.spacing.xs,
+    borderRadius: theme.borderRadius.full,
+    marginLeft: theme.spacing.sm,
+    borderWidth: 1,
+    borderColor: theme.colors.primary,
+  },
+  filterChipText: {
+    fontSize: theme.typography.fontSizes.sm,
+    color: theme.colors.primary,
+    fontWeight: theme.typography.fontWeights.semiBold,
+    marginRight: theme.spacing.xs,
+  },
+  searchClearButton: {
+    padding: theme.spacing.xs,
+  },
+  filterButton: {
+    padding: theme.spacing.xs,
+    marginLeft: theme.spacing.xs,
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    justifyContent: 'flex-end',
+  },
+  filterModalContainer: {
+    backgroundColor: theme.colors.surface,
+    borderTopLeftRadius: theme.borderRadius.xl,
+    borderTopRightRadius: theme.borderRadius.xl,
+    paddingBottom: 20,
+  },
+  filterModalContent: {
+    padding: theme.spacing.lg,
+  },
+  filterModalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: theme.spacing.lg,
+    paddingBottom: theme.spacing.md,
+    borderBottomWidth: 1,
+    borderBottomColor: theme.colors.border,
+  },
+  filterModalTitle: {
+    fontSize: theme.typography.fontSizes.xl,
+    fontWeight: theme.typography.fontWeights.bold,
+    color: theme.colors.text,
+  },
+  filterOptionsContainer: {
+    gap: theme.spacing.xs,
+  },
+  filterOption: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: theme.spacing.md,
+    borderRadius: theme.borderRadius.md,
+    backgroundColor: theme.colors.background,
+    marginBottom: theme.spacing.xs,
+  },
+  filterOptionSelected: {
+    backgroundColor: theme.colors.primary + '10',
+    borderWidth: 1,
+    borderColor: theme.colors.primary,
+  },
+  filterOptionText: {
+    flex: 1,
+    fontSize: theme.typography.fontSizes.md,
+    fontWeight: theme.typography.fontWeights.medium,
+    color: theme.colors.text,
+    marginLeft: theme.spacing.md,
+  },
+  filterOptionTextSelected: {
+    color: theme.colors.primary,
+    fontWeight: theme.typography.fontWeights.semiBold,
   },
 });
 
