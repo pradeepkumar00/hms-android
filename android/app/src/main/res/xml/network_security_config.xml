@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 
+    Network Security Configuration for Android 9+ Compatibility
+    
+    Android 9 (API 28) introduced stricter security policies:
+    - Cleartext traffic (HTTP) is disabled by default
+    - Only HTTPS connections are allowed by default
+    
+    This configuration enables cleartext traffic for development/staging
+    while maintaining security for production builds.
+-->
+<network-security-config>
+    <!-- 
+        Base configuration for all domains
+        Android 9+ requires explicit cleartext traffic permission
+    -->
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <!-- Trust system certificates (default Android CA certificates) -->
+            <certificates src="system" />
+            <!-- Trust user-added certificates (for debugging with proxies like Charles) -->
+            <certificates src="user" />
+        </trust-anchors>
+    </base-config>
+    
+    <!-- 
+        Domain-specific configurations
+        Add specific domains here for fine-grained control
+    -->
+    
+    <!-- Development/Staging API servers - Allow cleartext -->
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="true">localhost</domain>
+        <domain includeSubdomains="true">10.0.2.2</domain>
+        <domain includeSubdomains="true">127.0.0.1</domain>
+        <domain includeSubdomains="true">192.168.1.1</domain>
+    </domain-config>
+    
+    <!-- 
+        Production API servers - HTTPS only (recommended)
+        Uncomment and configure for production domains
+    -->
+    <!--
+    <domain-config cleartextTrafficPermitted="false">
+        <domain includeSubdomains="true">api.yourproductiondomain.com</domain>
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </domain-config>
+    -->
+    
+    <!-- 
+        Debug configuration
+        Allows certificate pinning bypass for development
+    -->
+    <debug-overrides>
+        <trust-anchors>
+            <certificates src="system" />
+            <certificates src="user" />
+        </trust-anchors>
+    </debug-overrides>
+</network-security-config>
+

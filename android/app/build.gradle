@@ -83,28 +83,44 @@ android {
         versionName "1.0"
         
         // Specify supported ABIs for better compatibility across devices
+        // Android 9+ supports all modern ABIs
         ndk {
-            abiFilters "arm64-v8a", "armeabi-v7a"
+            abiFilters "arm64-v8a", "armeabi-v7a", "x86", "x86_64"
         }
         
-        // Enable multiDex support for Android 10+ and large app bundles
+        // Enable multiDex support for Android 9+ and large app bundles
+        // Required for apps with 64K+ methods
         multiDexEnabled true
         
         // Additional optimization for wide device compatibility
         vectorDrawables.useSupportLibrary true
+        
+        // Android 9+ specific configurations
+        // Ensure proper resource extraction for older devices
+        manifestPlaceholders = [
+            appAuthRedirectScheme: applicationId
+        ]
+        
+        // Optimize for Android 9+ compatibility
+        resConfigs "en", "xxhdpi"
     }
     
     // Configure packaging options for native libraries
+    // Enhanced for Android 9+ compatibility
     packagingOptions {
         pickFirst '**/libc++_shared.so'
         pickFirst '**/libjsc.so'
         pickFirst '**/libhermes.so'
         pickFirst '**/libfbjni.so'
+        pickFirst '**/libreactnativejni.so'
+        pickFirst '**/libturbomodulejsijni.so'
         exclude 'META-INF/DEPENDENCIES'
         exclude 'META-INF/LICENSE'
         exclude 'META-INF/LICENSE.txt'
         exclude 'META-INF/NOTICE'
         exclude 'META-INF/NOTICE.txt'
+        exclude 'META-INF/INDEX.LIST'
+        exclude 'META-INF/*.kotlin_module'
     }
     signingConfigs {
         debug {
@@ -161,8 +177,22 @@ dependencies {
         implementation("com.facebook.react:hermes-android")
     }
     
-    // MultiDex support for Android 10 compatibility
+    // MultiDex support for Android 9+ compatibility
+    // Required for apps exceeding 64K method limit
     implementation 'androidx.multidex:multidex:2.0.1'
+    
+    // Android 9+ Core libraries
+    implementation 'androidx.appcompat:appcompat:1.6.1'
+    implementation 'androidx.core:core-ktx:1.12.0'
+    
+    // Ensure proper support for Android 9 legacy features
+    implementation 'androidx.legacy:legacy-support-v4:1.0.0'
+    
+    // Firebase BOM for consistent versions (Android 9+ compatible)
+    implementation platform('com.google.firebase:firebase-bom:32.7.0')
+    
+    // Explicitly declare work manager for background tasks (Android 9+)
+    implementation 'androidx.work:work-runtime-ktx:2.9.0'
 }
 
 // Vector icons configuration

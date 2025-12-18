@@ -1,7 +1,7 @@
 buildscript {
     ext {
         buildToolsVersion = "35.0.0"
-        minSdkVersion = 29     // Android 10 - Minimum supported version
+        minSdkVersion = 28     // Android 9 (Pie) - Minimum supported version for broad compatibility
         compileSdkVersion = 35 // Latest SDK for development
         targetSdkVersion = 35  // Target latest Android for maximum compatibility
         ndkVersion = "27.1.12297006"
