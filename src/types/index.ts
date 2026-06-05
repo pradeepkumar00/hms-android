@@ -130,6 +130,38 @@ export interface TaskState {
   currentTask: Task | null; // Single task for details view
 }
 
+// Appointment Types (Calendar)
+export interface Appointment {
+  _id: string;
+  patientId?: string | null;
+  patientName: string;
+  mobileNo?: string;
+  doctorId?: string;
+  doctorName?: string;
+  doctorCode?: string;
+  doctorColor?: string | null;
+  date: string; // YYYY-MM-DD
+  time?: string | null; // e.g. "4:00 PM"
+  duration?: number | null;
+  appointmentType?: string; // SLOT | TOKEN
+  visitType?: string; // NORMAL, etc.
+  tokenCount?: number;
+  status?: string; // waiting, etc.
+  editStatus?: string;
+  source?: string | null;
+  confirmationStatus?: string; // pending | confirmed
+  isArrived?: boolean;
+  tenantId?: string;
+  expenseAmount?: number;
+  paidAmount?: number;
+  pendingAmount?: number;
+  discount?: number;
+  doctorFee?: number;
+  refId?: string | null;
+  uhid?: string | null;
+  isPaymentDone?: boolean;
+}
+
 // Notification Types
 export interface Notification {
   id: string;
@@ -162,11 +194,13 @@ export type RootStackParamList = {
   History: undefined; // Tasks assigned to others BY current user
   CreateTask: { parentTaskId?: string }; // Optional parentTaskId for creating child tasks (Phase 10)
   NotificationSettings: undefined;
+  Calendar: undefined; // Calendar view of tasks by due date
   TaskList: {
     status?: 'today' | 'new' | 'assigned' | 'progress' | 'completed' | 'withdraw';
     type?: 'created' | 'assigned';
     title: string;
   }; // Generic task list screen with filters
+  OPD: { appointment: Appointment; patient?: any }; // OPD consultation for an appointment
 };
 
 // UI Types

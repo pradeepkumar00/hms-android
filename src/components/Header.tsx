@@ -22,6 +22,14 @@ interface HeaderProps {
   showNotificationIcon?: boolean;
   showHomeIcon?: boolean;
   onHomePress?: () => void;
+  showMenuIcon?: boolean;
+  onMenuPress?: () => void;
+  rightText?: string;
+  onRightTextPress?: () => void;
+  rightTextExpanded?: boolean;
+  leftText?: string;
+  onLeftTextPress?: () => void;
+  leftTextExpanded?: boolean;
 }
 
 const Header: React.FC<HeaderProps> = ({
@@ -30,6 +38,14 @@ const Header: React.FC<HeaderProps> = ({
   showNotificationIcon = true,
   showHomeIcon = false,
   onHomePress,
+  showMenuIcon = false,
+  onMenuPress,
+  rightText,
+  onRightTextPress,
+  rightTextExpanded = false,
+  leftText,
+  onLeftTextPress,
+  leftTextExpanded = false,
 }) => {
   const unreadCount = useAppSelector(selectNotificationCount);
 
@@ -42,9 +58,28 @@ const Header: React.FC<HeaderProps> = ({
       />
       <SafeAreaView edges={['top']} style={styles.safeArea}>
         <View style={styles.container}>
-          {/* Left Side - Home Icon or App Logo */}
+          {/* Left Side - Text label, Home Icon or App Logo */}
           <View style={styles.leftSection}>
-            {showHomeIcon ? (
+            {leftText ? (
+              <TouchableOpacity
+                style={styles.leftTextButton}
+                onPress={onLeftTextPress}
+                activeOpacity={onLeftTextPress ? 0.7 : 1}
+                disabled={!onLeftTextPress}
+                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+              >
+                <Text style={styles.leftText} numberOfLines={1}>
+                  {leftText}
+                </Text>
+                {!!onLeftTextPress && (
+                  <Icon
+                    name={leftTextExpanded ? 'arrow-drop-up' : 'arrow-drop-down'}
+                    size={22}
+                    color={theme.colors.surface}
+                  />
+                )}
+              </TouchableOpacity>
+            ) : showHomeIcon ? (
               <TouchableOpacity
                 style={styles.homeButton}
                 onPress={onHomePress}
@@ -67,9 +102,47 @@ const Header: React.FC<HeaderProps> = ({
             </Text>
           </View>
 
-          {/* Right Side - Notification Bell (Conditional) */}
+          {/* Right Side - Text label, Hamburger Menu or Notification Bell (Conditional) */}
           <View style={styles.rightSection}>
-            {showNotificationIcon && (
+            {rightText ? (
+              <TouchableOpacity
+                style={styles.rightTextButton}
+                onPress={onRightTextPress}
+                activeOpacity={onRightTextPress ? 0.7 : 1}
+                disabled={!onRightTextPress}
+                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+              >
+                <Text style={styles.rightText} numberOfLines={1}>
+                  {rightText}
+                </Text>
+                {!!onRightTextPress && (
+                  <Icon
+                    name={rightTextExpanded ? 'arrow-drop-up' : 'arrow-drop-down'}
+                    size={22}
+                    color={theme.colors.surface}
+                  />
+                )}
+              </TouchableOpacity>
+            ) : showMenuIcon ? (
+              <TouchableOpacity
+                style={styles.notificationButton}
+                onPress={onMenuPress}
+                activeOpacity={0.7}
+                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+              >
+                <View>
+                  <Icon name="menu" size={28} color={theme.colors.surface} />
+                  {unreadCount > 0 && (
+                    <View style={styles.badge}>
+                      <Text style={styles.badgeText} numberOfLines={1}>
+                        {unreadCount > 9 ? '9+' : unreadCount}
+                      </Text>
+                    </View>
+                  )}
+                </View>
+              </TouchableOpacity>
+            ) : (
+              showNotificationIcon && (
               <TouchableOpacity
                 style={styles.notificationButton}
                 onPress={onNotificationPress}
@@ -91,6 +164,7 @@ const Header: React.FC<HeaderProps> = ({
                   )}
                 </View>
               </TouchableOpacity>
+              )
             )}
           </View>
         </View>
@@ -119,9 +193,18 @@ const styles = StyleSheet.create({
     shadowRadius: 3.84,
   },
   leftSection: {
-    width: 40,
+    minWidth: 40,
     alignItems: 'flex-start',
     justifyContent: 'center',
+  },
+  leftTextButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  leftText: {
+    fontSize: theme.typography.fontSizes.md,
+    fontWeight: theme.typography.fontWeights.semiBold,
+    color: theme.colors.surface,
   },
   centerSection: {
     flex: 1,
@@ -130,9 +213,18 @@ const styles = StyleSheet.create({
     paddingHorizontal: theme.spacing.sm,
   },
   rightSection: {
-    width: 40,
+    minWidth: 40,
     alignItems: 'flex-end',
     justifyContent: 'center',
+  },
+  rightTextButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  rightText: {
+    fontSize: theme.typography.fontSizes.md,
+    fontWeight: theme.typography.fontWeights.semiBold,
+    color: theme.colors.surface,
   },
   title: {
     fontSize: theme.typography.fontSizes.xl,

@@ -10,7 +10,7 @@ import {
   Image,
   Dimensions,
 } from 'react-native';
-import { useFocusEffect } from '@react-navigation/native';
+import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import {
   useAppDispatch,
   useAppSelector,
@@ -21,7 +21,7 @@ import { logoutUser } from '../store/authSlice';
 import { fetchInboxNotifications } from '../store/taskSlice';
 import { theme } from '../constants/theme';
 import { APP_CONFIG } from '../constants/app';
-import { Header } from '../components';
+import { Header, MenuDrawer } from '../components';
 import Icon from 'react-native-vector-icons/MaterialIcons';
 
 // Get screen dimensions
@@ -74,6 +74,7 @@ const MainScreen: React.FC<MainScreenProps> = ({ navigation }) => {
     allCreated: 0,
   });
   const [isLoading, setIsLoading] = useState(false);
+  const [menuVisible, setMenuVisible] = useState(false);
 
   // Load inbox notifications when the screen mounts
   useEffect(() => {
@@ -156,10 +157,6 @@ const MainScreen: React.FC<MainScreenProps> = ({ navigation }) => {
     }, [fetchTaskCounts]),
   );
 
-  const handleNotificationPress = () => {
-    navigation.navigate('Inbox');
-  };
-
   const handleCreateTaskPress = () => {
     navigation.navigate('CreateTask');
   };
@@ -207,7 +204,15 @@ const MainScreen: React.FC<MainScreenProps> = ({ navigation }) => {
     <View style={styles.container}>
       <Header
         title={APP_CONFIG.name}
-        onNotificationPress={handleNotificationPress}
+        showNotificationIcon={false}
+        showMenuIcon
+        onMenuPress={() => setMenuVisible(true)}
+      />
+
+      <MenuDrawer
+        visible={menuVisible}
+        onClose={() => setMenuVisible(false)}
+        onLogout={handleLogout}
       />
 
       <ScrollView
@@ -449,13 +454,6 @@ const MainScreen: React.FC<MainScreenProps> = ({ navigation }) => {
           </>
         )}
       </ScrollView>
-
-      {/* Logout Button */}
-      <View style={styles.footer}>
-        <TouchableOpacity style={styles.logoutButton} onPress={handleLogout}>
-          <Text style={styles.logoutButtonText}>Logout</Text>
-        </TouchableOpacity>
-      </View>
     </View>
   );
 };

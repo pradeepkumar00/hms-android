@@ -110,4 +110,9 @@
 -keepattributes SourceFile,LineNumberTable
 -renamesourcefileattribute SourceFile
 
+# react-native-config reads env values from BuildConfig fields via reflection.
+# Without this, R8 inlines/strips the static final fields and Config.* is empty
+# in release builds (falls back to wrong defaults -> API calls fail).
+-keep class com.octusai.hospital.BuildConfig { *; }
+
 # Add any project specific keep options here:

@@ -19,6 +19,8 @@ import HistoryScreen from '../screens/HistoryScreen';
 import CreateTaskScreen from '../screens/CreateTaskScreen';
 import NotificationSettingsScreen from '../screens/NotificationSettingsScreen';
 import TaskListScreen from '../screens/TaskListScreen';
+import CalendarScreen from '../screens/CalendarScreen';
+import OPDScreen from '../screens/OPDScreen';
 
 const Stack = createStackNavigator<RootStackParamList>();
 
@@ -106,8 +108,15 @@ const AppNavigator: React.FC = () => {
         }}
       >
         {isAuthenticated ? (
-          // User is authenticated - show main app screens
+          // User is authenticated - Calendar is the default landing screen
           <Stack.Group>
+            <Stack.Screen
+              name="Calendar"
+              component={CalendarScreen}
+              options={{
+                gestureEnabled: false, // Default screen - no swipe back
+              }}
+            />
             <Stack.Screen
               name="Main"
               component={MainScreen}
@@ -160,6 +169,13 @@ const AppNavigator: React.FC = () => {
             <Stack.Screen
               name="TaskList"
               component={TaskListScreen}
+              options={{
+                gestureEnabled: true,
+              }}
+            />
+            <Stack.Screen
+              name="OPD"
+              component={OPDScreen}
               options={{
                 gestureEnabled: true,
               }}

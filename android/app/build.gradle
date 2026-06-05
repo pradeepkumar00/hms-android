@@ -4,6 +4,12 @@ apply plugin: "com.facebook.react"
 apply plugin: "com.google.gms.google-services"
 
 // react-native-config - Load environment variables
+// Map each build type to its env file (release -> production API host).
+// An explicit ENVFILE env var still overrides this.
+project.ext.envConfigFiles = [
+    release: ".env.production",
+    debug: ".env.development",
+]
 apply from: project(':react-native-config').projectDir.getPath() + "/dotenv.gradle"
 
 /**

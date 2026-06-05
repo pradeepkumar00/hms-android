@@ -708,6 +708,148 @@ class RealAuthService {
   }
 
   /**
+   * Fetch appointments within a date range (inclusive) for the calendar
+   * GET /api/appointments/range?from={YYYY-MM-DD}&to={YYYY-MM-DD}
+   */
+  async fetchAppointmentsRange(
+    token: string,
+    from: string,
+    to: string,
+  ): Promise<any[]> {
+    try {
+      console.log(`📅 Fetching appointments from ${from} to ${to}`);
+
+      const response = await apiClient.get('/appointments/range', {
+        params: { from, to },
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+      });
+
+      // API returns { data: [...] }
+      const appointments = response.data?.data ?? response.data ?? [];
+      console.log(
+        `✅ Appointments fetched successfully: ${
+          Array.isArray(appointments) ? appointments.length : 0
+        } appointments`,
+      );
+      return Array.isArray(appointments) ? appointments : [];
+    } catch (error) {
+      console.error('❌ Failed to fetch appointments:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Move a patient to OPD — hits GET /patient/:id as per the backend flow.
+   */
+  async moveToOpd(patientId: string, token: string): Promise<any> {
+    try {
+      console.log(`🏥 Move to OPD for patient ${patientId}`);
+
+      const response = await apiClient.get(`/patient/${patientId}`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+      });
+
+      console.log('✅ Move to OPD request succeeded');
+      return response.data?.data ?? response.data ?? null;
+    } catch (error) {
+      console.error('❌ Move to OPD failed:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Update an appointment's status (e.g. "completed"). Hits
+   * POST /appointments/:id/status with { status }.
+   */
+  async updateAppointmentStatus(
+    appointmentId: string,
+    status: string,
+    token: string,
+  ): Promise<any> {
+    try {
+      console.log(`📝 Updating appointment ${appointmentId} -> ${status}`);
+
+      const response = await apiClient.post(
+        `/appointments/${appointmentId}/status`,
+        { status },
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+        },
+      );
+
+      console.log('✅ Appointment status updated');
+      return response.data?.data ?? response.data ?? null;
+    } catch (error) {
+      console.error('❌ Failed to update appointment status:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Fetch the prescription configuration for the given (comma-separated) categories.
+   */
+  async fetchPrescriptionConfig(
+    categories: string,
+    token: string,
+  ): Promise<any> {
+    try {
+      console.log('💊 Fetching prescription config');
+
+      // Embed categories directly so commas are sent as-is (not re-encoded).
+      const response = await apiClient.get(
+        `/prescriptionConfig?categories=${categories}`,
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+        },
+      );
+
+      return response.data?.data ?? response.data ?? null;
+    } catch (error) {
+      console.error('❌ Failed to fetch prescription config:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Fetch a patient's prescriptions (e.g. type "opd").
+   */
+  async fetchPrescriptions(
+    patientId: string,
+    type: string,
+    token: string,
+  ): Promise<any[]> {
+    try {
+      console.log(`💊 Fetching ${type} prescriptions for patient ${patientId}`);
+
+      const response = await apiClient.get('/prescription', {
+        params: { patientId, type },
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+      });
+
+      const data = response.data?.data ?? response.data ?? [];
+      return Array.isArray(data) ? data : [];
+    } catch (error) {
+      console.error('❌ Failed to fetch prescriptions:', error);
+      throw error;
+    }
+  }
+
+  /**
    * Subscribe to FCM topic using tenantId for notifications
    */
   private async subscribeToNotificationTopic(tenantId: string): Promise<void> {

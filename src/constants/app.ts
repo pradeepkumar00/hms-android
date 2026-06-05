@@ -1,5 +1,5 @@
 export const APP_CONFIG = {
-  name: 'Hospital Management',
+  name: 'Octus.AI',
   version: '1.0.0',
   apiTimeout: 30000, // 30 seconds
   tokenRefreshThreshold: 5 * 60 * 1000, // 5 minutes before expiry
