@@ -11,7 +11,8 @@ import environmentService from '../services/environmentService';
 
 // Screens
 import LoginScreen from '../screens/LoginScreen';
-import MainScreen from '../screens/MainScreen';
+import HomeScreen from '../screens/HomeScreen';
+import AllTasksScreen from '../screens/AllTasksScreen';
 import InboxScreen from '../screens/InboxScreen';
 import TaskDetailsScreen from '../screens/TaskDetailsScreen';
 import AssignedTasksScreen from '../screens/AssignedTasksScreen';
@@ -108,18 +109,25 @@ const AppNavigator: React.FC = () => {
         }}
       >
         {isAuthenticated ? (
-          // User is authenticated - Calendar is the default landing screen
+          // User is authenticated - Home is the default landing screen
           <Stack.Group>
             <Stack.Screen
-              name="Calendar"
-              component={CalendarScreen}
+              name="Home"
+              component={HomeScreen}
               options={{
                 gestureEnabled: false, // Default screen - no swipe back
               }}
             />
             <Stack.Screen
-              name="Main"
-              component={MainScreen}
+              name="Calendar"
+              component={CalendarScreen}
+              options={{
+                gestureEnabled: true,
+              }}
+            />
+            <Stack.Screen
+              name="AllTasks"
+              component={AllTasksScreen}
               options={{
                 gestureEnabled: false, // Prevent swipe back to login
               }}

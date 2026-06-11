@@ -818,7 +818,7 @@ const TaskDetailsScreen: React.FC<TaskDetailsScreenProps> = ({
           title="Task Details"
           showNotificationIcon={false}
           showHomeIcon={true}
-          onHomePress={() => navigation.navigate('Main')}
+          onHomePress={() => navigation.popToTop()}
         />
         <View style={styles.errorContainer}>
           <Icon name="error" size={48} color={theme.colors.error} />
@@ -863,7 +863,7 @@ const TaskDetailsScreen: React.FC<TaskDetailsScreenProps> = ({
           title="Task Details"
           showNotificationIcon={false}
           showHomeIcon={true}
-          onHomePress={() => navigation.navigate('Main')}
+          onHomePress={() => navigation.popToTop()}
         />
         <View style={styles.loadingContainer}>
           <ActivityIndicator size="large" color={theme.colors.primary} />

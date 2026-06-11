@@ -383,7 +383,7 @@ const CreateTaskScreen: React.FC<CreateTaskScreenProps> = ({
         title={parentTaskId ? 'Create Child Task' : 'Create Task'}
         showNotificationIcon={false}
         showHomeIcon={true}
-        onHomePress={() => navigation.navigate('Main')}
+        onHomePress={() => navigation.popToTop()}
       />
 
       <KeyboardAvoidingView

@@ -394,7 +394,7 @@ const TaskListScreen: React.FC<TaskListScreenProps> = ({
         <Header
           title={initialTitle}
           showHomeIcon={true}
-          onHomePress={() => navigation.navigate('Main')}
+          onHomePress={() => navigation.popToTop()}
         />
         <View style={styles.errorContainer}>
           <Icon name="error" size={48} color={theme.colors.error} />
@@ -412,7 +412,7 @@ const TaskListScreen: React.FC<TaskListScreenProps> = ({
       <Header
         title={initialTitle}
         showHomeIcon={true}
-        onHomePress={() => navigation.navigate('Main')}
+        onHomePress={() => navigation.popToTop()}
       />
 
       {/* Search Bar with Chip and Filter */}

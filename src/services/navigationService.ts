@@ -102,7 +102,7 @@ class NavigationService {
       // Validate data exists and is an object
       if (!data || typeof data !== 'object') {
         console.warn('⚠️ Invalid notification data for deep link:', data);
-        this.navigate('Main');
+        this.navigate('AllTasks');
         return;
       }
 
@@ -133,19 +133,19 @@ class NavigationService {
             break;
           default:
             console.warn('Unknown screen for deep link:', data.screen);
-            this.navigate('Main');
+            this.navigate('AllTasks');
         }
       } else {
         // Default to main screen
         console.log(
           '🔗 No valid taskId or screen found in data, navigating to Main',
         );
-        this.navigate('Main');
+        this.navigate('AllTasks');
       }
     } catch (error) {
       console.error('❌ Error handling notification deep link:', error);
       // Fallback to main screen
-      this.navigate('Main');
+      this.navigate('AllTasks');
     }
   }
 

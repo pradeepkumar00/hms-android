@@ -480,7 +480,7 @@ const HistoryScreen: React.FC<HistoryScreenProps> = ({ navigation }) => {
         <Header
           title="Tasks Assigned to Me"
           showHomeIcon={true}
-          onHomePress={() => navigation.navigate('Main')}
+          onHomePress={() => navigation.popToTop()}
         />
         <View style={styles.errorContainer}>
           <Icon name="error" size={48} color={theme.colors.error} />
@@ -498,7 +498,7 @@ const HistoryScreen: React.FC<HistoryScreenProps> = ({ navigation }) => {
       <Header
         title="Tasks Assigned to Me"
         showHomeIcon={true}
-        onHomePress={() => navigation.navigate('Main')}
+        onHomePress={() => navigation.popToTop()}
       />
 
       {renderHeader()}

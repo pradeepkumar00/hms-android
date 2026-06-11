@@ -17,6 +17,7 @@ import {
 } from '../store';
 import { navigationService } from '../services/navigationService';
 import { theme } from '../constants/theme';
+import { MENU_ITEMS } from '../constants/menuItems';
 import { RootStackParamList } from '../types';
 
 interface MenuDrawerProps {
@@ -24,42 +25,6 @@ interface MenuDrawerProps {
   onClose: () => void;
   onLogout: () => void;
 }
-
-interface MenuItem {
-  key: string;
-  label: string;
-  icon: string;
-  screen: keyof RootStackParamList;
-  showBadge?: boolean;
-}
-
-const MENU_ITEMS: MenuItem[] = [
-  {
-    key: 'calendar',
-    label: 'Calendar',
-    icon: 'calendar-today',
-    screen: 'Calendar',
-  },
-  {
-    key: 'tasks',
-    label: 'Tasks',
-    icon: 'check-circle-outline',
-    screen: 'Main',
-  },
-  {
-    key: 'inbox',
-    label: 'Notifications',
-    icon: 'notifications',
-    screen: 'Inbox',
-    showBadge: true,
-  },
-  {
-    key: 'settings',
-    label: 'Notification Settings',
-    icon: 'settings',
-    screen: 'NotificationSettings',
-  },
-];
 
 const MenuDrawer: React.FC<MenuDrawerProps> = ({
   visible,

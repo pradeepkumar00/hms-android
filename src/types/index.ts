@@ -187,7 +187,8 @@ export interface Notification {
 // Navigation Types
 export type RootStackParamList = {
   Login: undefined;
-  Main: undefined;
+  Home: undefined; // Landing screen with menu tiles
+  AllTasks: undefined;
   TaskDetails: { taskId: string; readonly?: boolean };
   Inbox: undefined;
   AssignedTasks: undefined; // Tasks created BY current user

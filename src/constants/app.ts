@@ -87,7 +87,7 @@ export const SCREENS = {
   ASSIGNED_TASKS: 'AssignedTasks',
   CREATE_TASK: 'CreateTask',
   LOGIN: 'Login',
-  MAIN: 'Main',
+  MAIN: 'AllTasks',
   NOTIFICATION_SETTINGS: 'NotificationSettings',
 } as const;
 

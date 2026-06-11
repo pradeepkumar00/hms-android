@@ -11,13 +11,11 @@ import {
   Modal,
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
-import { useAppSelector, selectAuthToken, useAppDispatch } from '../store';
+import { useAppSelector, selectAuthToken } from '../store';
 import { theme } from '../constants/theme';
-import { Header, MenuDrawer } from '../components';
+import { Header } from '../components';
 import Icon from 'react-native-vector-icons/MaterialIcons';
 import { Appointment } from '../types';
-import { APP_CONFIG } from '../constants/app';
-import { logoutUser } from '../store/authSlice';
 
 interface CalendarScreenProps {
   navigation: any;
@@ -145,8 +143,6 @@ const layoutEvents = (
 };
 
 const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation }) => {
-    const dispatch = useAppDispatch();
-  
   const token = useAppSelector(selectAuthToken);
 
   const [appointments, setAppointments] = useState<Appointment[]>([]);
@@ -479,47 +475,16 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation }) => {
     }
   };
 
-    const [menuVisible, setMenuVisible] = useState(false);
-    const handleLogout = () => {
-      Alert.alert('Logout', 'Are you sure you want to logout?', [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Logout',
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              console.log('🚪 Logging out user...');
-              await dispatch(logoutUser()).unwrap();
-              console.log(
-                '✅ Logout successful - AppNavigator will handle navigation',
-              );
-              // Don't manually navigate - AppNavigator will automatically show Login screen
-              // when isAuthenticated becomes false
-            } catch (error) {
-              console.error('❌ Logout error:', error);
-              // Still dispatch logout even if there's an error to clear local state
-              // AppNavigator will handle navigation automatically
-            }
-          },
-        },
-      ]);
-    };
-  
-
   return (
     <View style={styles.container}>
       <Header
-        title={APP_CONFIG.name}
-        showNotificationIcon={false}
-        showMenuIcon
-        onMenuPress={() => setMenuVisible(true)}
+        title="Calendar"
+        showHomeIcon
+        onHomePress={() => navigation.popToTop()}
+        showNotificationIcon
+        onNotificationPress={() => navigation.navigate('Inbox')}
       />
 
-      <MenuDrawer
-        visible={menuVisible}
-        onClose={() => setMenuVisible(false)}
-        onLogout={handleLogout}
-      />
       {/* Week navigation + doctor dropdown */}
       <View style={styles.navRow}>
         <View style={styles.todayNav}>

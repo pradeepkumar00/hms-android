@@ -299,7 +299,7 @@ const InboxScreen: React.FC<InboxScreenProps> = ({ navigation }) => {
         title="Inbox"
         showNotificationIcon={false}
         showHomeIcon={true}
-        onHomePress={() => navigation.navigate('Main')}
+        onHomePress={() => navigation.popToTop()}
       />
 
       <View style={styles.content}>

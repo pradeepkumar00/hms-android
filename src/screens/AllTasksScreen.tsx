@@ -4,7 +4,6 @@ import {
   Text,
   StyleSheet,
   TouchableOpacity,
-  Alert,
   ScrollView,
   ActivityIndicator,
   Image,
@@ -17,11 +16,9 @@ import {
   selectCurrentUser,
   selectAuthToken,
 } from '../store';
-import { logoutUser } from '../store/authSlice';
 import { fetchInboxNotifications } from '../store/taskSlice';
 import { theme } from '../constants/theme';
-import { APP_CONFIG } from '../constants/app';
-import { Header, MenuDrawer } from '../components';
+import { Header } from '../components';
 import Icon from 'react-native-vector-icons/MaterialIcons';
 
 // Get screen dimensions
@@ -44,7 +41,7 @@ const DoubleArrowIcon = require('../../assets/images/DoubleArrow.png');
 const TodayIcon = require('../../assets/images/Today.png');
 const DefaultIcon = require('../../assets/images/Default.png');
 
-interface MainScreenProps {
+interface AllTasksScreenProps {
   navigation: any;
 }
 
@@ -59,7 +56,7 @@ interface TaskCounts {
   allCreated: number;
 }
 
-const MainScreen: React.FC<MainScreenProps> = ({ navigation }) => {
+const AllTasksScreen: React.FC<AllTasksScreenProps> = ({ navigation }) => {
   const dispatch = useAppDispatch();
   const user = useAppSelector(selectCurrentUser);
   const token = useAppSelector(selectAuthToken);
@@ -74,7 +71,6 @@ const MainScreen: React.FC<MainScreenProps> = ({ navigation }) => {
     allCreated: 0,
   });
   const [isLoading, setIsLoading] = useState(false);
-  const [menuVisible, setMenuVisible] = useState(false);
 
   // Load inbox notifications when the screen mounts
   useEffect(() => {
@@ -175,44 +171,13 @@ const MainScreen: React.FC<MainScreenProps> = ({ navigation }) => {
     navigation.navigate('TaskList', { status, type, title });
   };
 
-  const handleLogout = () => {
-    Alert.alert('Logout', 'Are you sure you want to logout?', [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Logout',
-        style: 'destructive',
-        onPress: async () => {
-          try {
-            console.log('🚪 Logging out user...');
-            await dispatch(logoutUser()).unwrap();
-            console.log(
-              '✅ Logout successful - AppNavigator will handle navigation',
-            );
-            // Don't manually navigate - AppNavigator will automatically show Login screen
-            // when isAuthenticated becomes false
-          } catch (error) {
-            console.error('❌ Logout error:', error);
-            // Still dispatch logout even if there's an error to clear local state
-            // AppNavigator will handle navigation automatically
-          }
-        },
-      },
-    ]);
-  };
-
   return (
     <View style={styles.container}>
       <Header
-        title={APP_CONFIG.name}
+        title="All Tasks"
         showNotificationIcon={false}
-        showMenuIcon
-        onMenuPress={() => setMenuVisible(true)}
-      />
-
-      <MenuDrawer
-        visible={menuVisible}
-        onClose={() => setMenuVisible(false)}
-        onLogout={handleLogout}
+        showHomeIcon={true}
+        onHomePress={() => navigation.popToTop()}
       />
 
       <ScrollView
@@ -656,4 +621,4 @@ const styles = StyleSheet.create({
   },
 });
 
-export default MainScreen;
+export default AllTasksScreen;

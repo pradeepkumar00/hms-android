@@ -756,7 +756,9 @@ class RealAuthService {
       });
 
       console.log('✅ Move to OPD request succeeded');
-      return response.data?.data ?? response.data ?? null;
+      // The patient record is nested under `user` (response shape: { status, user }).
+      const body = response.data?.data ?? response.data ?? {};
+      return body.user ?? body ?? null;
     } catch (error) {
       console.error('❌ Move to OPD failed:', error);
       throw error;
@@ -845,6 +847,150 @@ class RealAuthService {
       return Array.isArray(data) ? data : [];
     } catch (error) {
       console.error('❌ Failed to fetch prescriptions:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Fetch a patient's full prescription history (uploads, lab reports, notes,
+   * etc.) from the no-session endpoint. Returns the raw structured object with
+   * its various arrays (prescriptionUpload, labreport, ...).
+   */
+  async fetchPrescriptionHistory(
+    patientId: string,
+    type: string,
+    token: string,
+  ): Promise<any> {
+    try {
+      console.log(`💊 Fetching ${type} prescription history for ${patientId}`);
+
+      const response = await apiClient.get('/prescription/no-session', {
+        params: { patientId, type },
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+      });
+
+      return response.data?.data ?? response.data ?? {};
+    } catch (error) {
+      console.error('❌ Failed to fetch prescription history:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Upload a patient file (e.g. a prescription) using the presigned-URL flow:
+   *   1. POST /file/patient/upload-url to get a presigned upload URL.
+   *   2. PUT the file bytes directly to that URL.
+   * Returns the metadata object from step 1 (key/url/etc.).
+   */
+  async uploadPatientFile(
+    file: { uri: string; name: string; type: string },
+    patientId: string,
+    fileType: string,
+    token: string,
+  ): Promise<any> {
+    try {
+      console.log(`📤 Requesting upload URL for ${fileType}: ${file.name}`);
+
+      // 1. Ask the backend for a presigned upload URL.
+      const urlResponse = await apiClient.post(
+        '/file/patient/upload-url',
+        {
+          patientId,
+          type: fileType,
+          originalName: file.name,
+          mimeType: file.type,
+        },
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+        },
+      );
+
+      const meta = urlResponse.data?.data ?? urlResponse.data ?? {};
+
+      // The backend returns `instructions` describing exactly how to upload:
+      // the HTTP method, the signed URL, and the full set of headers that were
+      // signed (Content-Type + x-goog-meta-*). The signed URL only validates if
+      // every signed header is sent verbatim, so use them as-is.
+      const instructions = meta.instructions ?? {};
+      const uploadUrl =
+        instructions.url ||
+        meta.uploadUrl ||
+        meta.url ||
+        meta.signedUrl ||
+        meta.presignedUrl;
+      const method = (instructions.method || 'PUT').toUpperCase();
+      const uploadHeaders = instructions.headers || {
+        'Content-Type': file.type,
+      };
+
+      if (!uploadUrl) {
+        throw new Error('Upload URL was not returned by the server');
+      }
+
+      // 2. Read the local file and upload it to the presigned URL.
+      // Use the global fetch (not apiClient) so the auth header / baseURL are
+      // not attached to the storage provider's signed URL.
+      const fileResponse = await fetch(file.uri);
+      const blob = await fileResponse.blob();
+
+      const putResponse = await fetch(uploadUrl, {
+        method,
+        headers: uploadHeaders,
+        body: blob,
+      });
+
+      if (!putResponse.ok) {
+        const errorBody = await putResponse.text().catch(() => '');
+        console.error('❌ Storage upload rejected:', errorBody);
+        throw new Error(`File upload failed (status ${putResponse.status})`);
+      }
+
+      console.log('✅ File uploaded successfully');
+      return meta;
+    } catch (error) {
+      console.error('❌ Failed to upload patient file:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get a temporary signed (GET) URL for viewing/downloading a stored patient
+   * file. The bucket objects are private, so this is required to open them.
+   */
+  async getPatientFileSignedUrl(
+    filePath: string,
+    patientId: string,
+    token: string,
+  ): Promise<string> {
+    try {
+      console.log(`🔗 Requesting signed URL for ${filePath}`);
+
+      const response = await apiClient.post(
+        '/file/patient/signed-url',
+        { filePath, patientId },
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+        },
+      );
+
+      const data = response.data?.data ?? response.data ?? {};
+      const signedUrl = data.signedUrl || data.url;
+
+      if (!signedUrl) {
+        throw new Error('Signed URL was not returned by the server');
+      }
+      return signedUrl;
+    } catch (error) {
+      console.error('❌ Failed to get signed URL:', error);
       throw error;
     }
   }

@@ -498,7 +498,7 @@ const NotificationSettingsScreen: React.FC<NotificationSettingsScreenProps> = ({
           title="Notification Settings"
           onNotificationPress={() => navigation.navigate('Inbox')}
           showHomeIcon={true}
-          onHomePress={() => navigation.navigate('Main')}
+          onHomePress={() => navigation.popToTop()}
         />
         <View style={styles.loadingContainer}>
           <ActivityIndicator size="large" color={theme.colors.primary} />
@@ -514,7 +514,7 @@ const NotificationSettingsScreen: React.FC<NotificationSettingsScreenProps> = ({
         title="Notification Settings"
         onNotificationPress={() => navigation.navigate('Inbox')}
         showHomeIcon={true}
-        onHomePress={() => navigation.navigate('Main')}
+        onHomePress={() => navigation.popToTop()}
       />
       <View style={styles.content}>
         {/* Permission Management Section */}
