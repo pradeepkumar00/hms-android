@@ -1052,6 +1052,36 @@ class RealAuthService {
   }
 
   /**
+   * Fetch the doctor → color map (GET /get-doctor). Returns a lookup keyed by
+   * both doctor _id and doctorCode so callers can resolve a color either way.
+   */
+  async fetchDoctorColors(token: string): Promise<Record<string, string>> {
+    try {
+      console.log('🎨 Fetching doctor colors');
+
+      const response = await apiClient.get('/get-doctor', {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+      });
+
+      const list = response.data?.data ?? response.data ?? [];
+      const map: Record<string, string> = {};
+      (Array.isArray(list) ? list : []).forEach((d: any) => {
+        if (d?.color) {
+          if (d._id) map[d._id] = d.color;
+          if (d.doctorCode) map[d.doctorCode] = d.color;
+        }
+      });
+      return map;
+    } catch (error) {
+      console.error('❌ Failed to fetch doctor colors:', error);
+      return {};
+    }
+  }
+
+  /**
    * Fetch a doctor's bookable slots for a given day. Hits
    * GET /slot?doctorId=&date=YYYY-MM-DD&forBooking=1 and returns the slots array.
    */

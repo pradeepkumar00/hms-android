@@ -11,6 +11,7 @@ import {
   Modal,
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
+import DatePicker from 'react-native-date-picker';
 import { useAppSelector, selectAuthToken } from '../store';
 import { theme } from '../constants/theme';
 import { Header } from '../components';
@@ -24,11 +25,14 @@ interface CalendarScreenProps {
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
 // Timeline layout constants (Teams-style hour grid)
-const HOUR_HEIGHT = 64; // px per hour row
-const GUTTER = 112; // px reserved for the TOKENS / hour-label column on the left
-const DEFAULT_DURATION = 45; // minutes when the API gives no duration
+const HOUR_HEIGHT = 90; // px per hour row
+const GUTTER = 80; // px reserved for the TOKENS / hour-label column on the left
+const DEFAULT_DURATION = 30; // minutes when the API gives no duration
 const DAY_START_HOUR = 8; // default visible window start
 const DAY_END_HOUR = 19; // default visible window end
+
+// Fallback card color when a doctor has no assigned color (matches the web app)
+const DEFAULT_EVENT_COLOR = '#7CB342';
 
 // Local YYYY-MM-DD key for a Date
 const toKey = (d: Date) =>
@@ -86,6 +90,24 @@ const getStatusColor = (status?: string) => {
 const getStatusLabel = (status?: string) => {
   if (!status) return 'Unknown';
   return status.charAt(0).toUpperCase() + status.slice(1);
+};
+
+// Pick black or white text for best contrast against a hex background color.
+const contrastText = (bg: string): string => {
+  let hex = (bg || '').replace('#', '');
+  if (hex.length === 3) {
+    hex = hex
+      .split('')
+      .map(c => c + c)
+      .join('');
+  }
+  if (hex.length !== 6) return '#FFFFFF';
+  const r = parseInt(hex.slice(0, 2), 16);
+  const g = parseInt(hex.slice(2, 4), 16);
+  const b = parseInt(hex.slice(4, 6), 16);
+  // Perceived brightness (0–1); bright backgrounds get dark text.
+  const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+  return luminance > 0.6 ? '#1A1A1A' : '#FFFFFF';
 };
 
 // Timed appointment enriched with timeline placement info
@@ -146,6 +168,8 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation }) => {
   const token = useAppSelector(selectAuthToken);
 
   const [appointments, setAppointments] = useState<Appointment[]>([]);
+  // doctor _id/doctorCode → color hex (from GET /get-doctor)
+  const [doctorColors, setDoctorColors] = useState<Record<string, string>>({});
   const [isLoading, setIsLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   // Sunday of the week currently displayed
@@ -162,6 +186,8 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation }) => {
   const [selectedDoctorId, setSelectedDoctorId] = useState<string | null>(null);
   // Whether the doctor dropdown is open
   const [doctorModalOpen, setDoctorModalOpen] = useState(false);
+  // Whether the date picker is open
+  const [showDatePicker, setShowDatePicker] = useState(false);
   // Appointment shown in the bottom details sheet (null = closed)
   const [selectedAppt, setSelectedAppt] = useState<Appointment | null>(null);
   // Whether the "Move to OPD" request is in flight
@@ -206,6 +232,32 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation }) => {
   useEffect(() => {
     fetchAppointments();
   }, [fetchAppointments]);
+
+  // Load the doctor → color map once (used to color-code appointment cards).
+  useEffect(() => {
+    if (!token) return;
+    let active = true;
+    (async () => {
+      const realAuthService = (await import('../services/realAuthService'))
+        .default;
+      const map = await realAuthService.fetchDoctorColors(token);
+      if (active) setDoctorColors(map);
+    })();
+    return () => {
+      active = false;
+    };
+  }, [token]);
+
+  // Resolve an appointment's card color: the doctor's assigned color (by id or
+  // code), then any color already on the appointment, then the default green.
+  const colorForAppt = useCallback(
+    (appt: Appointment) =>
+      doctorColors[appt.doctorId || ''] ||
+      doctorColors[appt.doctorCode || ''] ||
+      appt.doctorColor ||
+      DEFAULT_EVENT_COLOR,
+    [doctorColors],
+  );
 
   useFocusEffect(
     useCallback(() => {
@@ -275,6 +327,14 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation }) => {
     sunday.setDate(sunday.getDate() - sunday.getDay());
     setWeekStart(sunday);
     setSelectedKey(toKey(n));
+  };
+  // Jump to an arbitrary date chosen from the date picker
+  const goToDate = (date: Date) => {
+    const day = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+    const sunday = new Date(day);
+    sunday.setDate(day.getDate() - day.getDay());
+    setWeekStart(sunday);
+    setSelectedKey(toKey(day));
   };
   // Split the selected day's appointments into timed (timeline) and untimed (token/slot)
   const { timed, untimed, hours, timelineHeight, minHour } = useMemo(() => {
@@ -349,12 +409,13 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation }) => {
 
   const renderEventBlock = (e: TimedEvent) => {
     const { appt } = e;
-    const statusColor = getStatusColor(appt.status);
-    const accent = appt.doctorColor || statusColor;
-    const top = ((e.start - minHour * 60) / 60) * HOUR_HEIGHT;
+    const accent = colorForAppt(appt);
+    const textColor = contrastText(accent);
+    const VGAP = 3; // vertical breathing room around each card
+    const top = ((e.start - minHour * 60) / 60) * HOUR_HEIGHT + VGAP;
     const height = Math.max(
-      40,
-      ((e.end - e.start) / 60) * HOUR_HEIGHT - 4,
+      38,
+      ((e.end - e.start) / 60) * HOUR_HEIGHT - VGAP * 4,
     );
     const widthPct = 100 / e.cols;
     return (
@@ -369,30 +430,31 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation }) => {
             height,
             left: `${e.col * widthPct}%`,
             width: `${widthPct}%`,
-            backgroundColor: `${accent}1A`,
-            borderLeftColor: accent,
+            backgroundColor: accent,
           },
         ]}
       >
-        <Text style={styles.eventTitle} numberOfLines={1}>
-          {appt.patientName || 'Unknown patient'}
-        </Text>
-        <Text style={styles.eventMeta} numberOfLines={1}>
-          {appt.time}
-          {appt.doctorName ? ` · ${appt.doctorName}` : ''}
-        </Text>
-        {height > 56 && !!appt.status && (
-          <Text style={[styles.eventStatus, { color: statusColor }]} numberOfLines={1}>
-            {getStatusLabel(appt.status)}
+        <Text style={[styles.eventText, { color: textColor }]} numberOfLines={2}>
+          <Text style={[styles.eventTime, { color: textColor }]}>
+            {appt.time}
           </Text>
-        )}
+          <Text style={[styles.eventName, { color: textColor }]}>
+            {'  '}
+            {appt.patientName || 'Unknown'}
+          </Text>
+          {appt.doctorName ? (
+            <Text style={[styles.eventDoctor, { color: textColor }]}>
+              {`  · ${appt.doctorName}`}
+            </Text>
+          ) : null}
+        </Text>
       </TouchableOpacity>
     );
   };
 
   // Compact chip for a token (untimed) appointment in the timeline's TOKENS column
   const renderTokenChip = (appt: Appointment) => {
-    const accent = appt.doctorColor || theme.colors.primary;
+    const accent = colorForAppt(appt);
     return (
       <TouchableOpacity
         key={appt._id}
@@ -516,6 +578,15 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation }) => {
         </View>
 
         <TouchableOpacity
+          style={styles.datePickerBtn}
+          activeOpacity={0.7}
+          onPress={() => setShowDatePicker(true)}
+          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+        >
+          <Icon name="calendar-today" size={20} color={theme.colors.primary} />
+        </TouchableOpacity>
+
+        <TouchableOpacity
           style={styles.doctorSelectBox}
           activeOpacity={0.7}
           onPress={() => setDoctorModalOpen(true)}
@@ -530,6 +601,20 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation }) => {
           />
         </TouchableOpacity>
       </View>
+
+      {/* Date picker for jumping to a specific day */}
+      <DatePicker
+        modal
+        open={showDatePicker}
+        date={new Date(`${selectedKey}T00:00:00`)}
+        mode="date"
+        onConfirm={date => {
+          setShowDatePicker(false);
+          goToDate(date);
+        }}
+        onCancel={() => setShowDatePicker(false)}
+        title="Select date"
+      />
 
       {/* Week strip (day chips) */}
       <View style={styles.weekStrip}>
@@ -682,7 +767,12 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation }) => {
                     <View
                       style={[
                         styles.doctorDot,
-                        { backgroundColor: doc.color || theme.colors.primary },
+                        {
+                          backgroundColor:
+                            doctorColors[doc.id] ||
+                            doc.color ||
+                            theme.colors.primary,
+                        },
                       ]}
                     />
                     <Text style={styles.doctorOptionText} numberOfLines={1}>
@@ -946,6 +1036,17 @@ const styles = StyleSheet.create({
     fontSize: theme.typography.fontSizes.md,
     fontWeight: theme.typography.fontWeights.semiBold,
     color: theme.colors.text,
+  },
+  datePickerBtn: {
+    width: 40,
+    height: 40,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    borderRadius: theme.borderRadius.md,
+    marginLeft: theme.spacing.sm,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: theme.colors.surface,
   },
   doctorSelectBox: {
     flex: 1,
@@ -1348,32 +1449,35 @@ const styles = StyleSheet.create({
     position: 'absolute',
     top: 0,
     bottom: 0,
-    left: GUTTER,
+    left: GUTTER + theme.spacing.sm,
     right: theme.spacing.md,
   },
   eventBlock: {
     position: 'absolute',
-    borderRadius: theme.borderRadius.sm,
-    borderLeftWidth: 3,
-    paddingHorizontal: theme.spacing.sm,
-    paddingVertical: 4,
-    marginRight: 2,
+    borderRadius: theme.borderRadius.lg,
+    paddingHorizontal: theme.spacing.md,
+    paddingVertical: 8,
+    marginRight: theme.spacing.sm,
+    justifyContent: 'center',
     overflow: 'hidden',
   },
-  eventTitle: {
+  eventText: {
     fontSize: theme.typography.fontSizes.sm,
-    fontWeight: theme.typography.fontWeights.semiBold,
-    color: theme.colors.text,
+    color: theme.colors.surface,
   },
-  eventMeta: {
-    fontSize: theme.typography.fontSizes.xs,
-    color: theme.colors.textSecondary,
-    marginTop: 1,
-  },
-  eventStatus: {
-    fontSize: theme.typography.fontSizes.xs,
+  eventTime: {
+    fontSize: theme.typography.fontSizes.sm,
     fontWeight: theme.typography.fontWeights.bold,
-    marginTop: 2,
+    color: theme.colors.surface,
+  },
+  eventName: {
+    fontSize: theme.typography.fontSizes.sm,
+    fontWeight: theme.typography.fontWeights.bold,
+    color: theme.colors.surface,
+  },
+  eventDoctor: {
+    fontSize: theme.typography.fontSizes.sm,
+    opacity: 0.9,
   },
   nowLine: {
     position: 'absolute',
