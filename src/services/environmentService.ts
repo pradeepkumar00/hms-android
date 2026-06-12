@@ -36,11 +36,11 @@ class EnvironmentService {
       environment,
 
       // API Configuration - Default to DEVELOPMENT environment
-      apiBaseUrl: Config.API_BASE_URL || 'https://app.octusai.com/api',
+      apiBaseUrl: Config.API_BASE_URL || 'https://prod-api.octusai.com/api',
       authApiBaseUrl:
         Config.AUTH_API_BASE_URL ||
         Config.API_BASE_URL ||
-        'https://app.octusai.com/api',
+        'https://prod-api.octusai.com/api',
       apiTimeout: parseInt(Config.API_TIMEOUT || '30000', 10),
 
       // Firebase Configuration - Default to DEVELOPMENT project
@@ -228,9 +228,9 @@ class EnvironmentService {
     }
 
     return {
-      localhost: 'https://app.octusai.com/api',
-      androidEmulator: 'https://app.octusai.com/api',
-      physicalDevice: 'https://app.octusai.com/api', // Real device testing IP
+      localhost: 'https://prod-api.octusai.com/api',
+      androidEmulator: 'https://prod-api.octusai.com/api',
+      physicalDevice: 'https://prod-api.octusai.com/api', // Real device testing IP
     };
   }
 

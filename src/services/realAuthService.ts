@@ -890,6 +890,7 @@ class RealAuthService {
     patientId: string,
     fileType: string,
     token: string,
+    category?: string,
   ): Promise<any> {
     try {
       console.log(`📤 Requesting upload URL for ${fileType}: ${file.name}`);
@@ -951,8 +952,33 @@ class RealAuthService {
         throw new Error(`File upload failed (status ${putResponse.status})`);
       }
 
-      console.log('✅ File uploaded successfully');
-      return meta;
+      console.log('✅ File uploaded to storage, confirming…');
+
+      // 3. Confirm the upload so the backend records the prescription/file.
+      const confirmResponse = await apiClient.post(
+        '/file/patient/confirm-upload',
+        {
+          patientId,
+          type: fileType,
+          filePath: meta.filePath,
+          fileName: meta.fileName,
+          originalName: meta.originalName || file.name,
+          mimeType: meta.mimeType || file.type,
+          sizeBytes: blob.size,
+          category: category || '',
+          sessionId: '',
+          prescriptionId: '',
+        },
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+        },
+      );
+
+      console.log('✅ Upload confirmed');
+      return confirmResponse.data?.data ?? confirmResponse.data ?? meta;
     } catch (error) {
       console.error('❌ Failed to upload patient file:', error);
       throw error;
@@ -991,6 +1017,115 @@ class RealAuthService {
       return signedUrl;
     } catch (error) {
       console.error('❌ Failed to get signed URL:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Fetch the list of doctors for the current tenant. Hits
+   * GET /users?type=doctor and returns the raw user records.
+   */
+  async fetchDoctors(token: string): Promise<any[]> {
+    try {
+      console.log('🩺 Fetching doctors');
+
+      const response = await apiClient.get('/users', {
+        params: { type: 'doctor' },
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+      });
+
+      const users =
+        response.data?.users ?? response.data?.data ?? response.data ?? [];
+      // Only keep actual doctor accounts (the endpoint can include others).
+      const doctors = (Array.isArray(users) ? users : []).filter(
+        (u: any) => u?.type === 'doctor',
+      );
+      console.log(`✅ Doctors fetched: ${doctors.length}`);
+      return doctors;
+    } catch (error) {
+      console.error('❌ Failed to fetch doctors:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Fetch a doctor's bookable slots for a given day. Hits
+   * GET /slot?doctorId=&date=YYYY-MM-DD&forBooking=1 and returns the slots array.
+   */
+  async fetchDoctorSlots(
+    doctorId: string,
+    date: string,
+    token: string,
+  ): Promise<any[]> {
+    try {
+      console.log(`🕑 Fetching slots for doctor ${doctorId} on ${date}`);
+
+      const response = await apiClient.get('/slot', {
+        params: { doctorId, date, forBooking: 1 },
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+      });
+
+      const body = response.data?.data ?? response.data ?? {};
+      const slots = body?.slots ?? [];
+      return Array.isArray(slots) ? slots : [];
+    } catch (error) {
+      console.error('❌ Failed to fetch doctor slots:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Book a follow-up (token-only) appointment. Hits POST /book-token.
+   */
+  async bookFollowupToken(
+    params: {
+      doctorId: string;
+      doctorName: string;
+      patientId: string;
+      date: string; // YYYY-MM-DD
+      appointmentTime: string; // e.g. "12:00 PM"
+      tokenCount?: number;
+    },
+    token: string,
+  ): Promise<any> {
+    try {
+      console.log(
+        `🎟️ Booking follow-up token for patient ${params.patientId} with doctor ${params.doctorId}`,
+      );
+
+      const response = await apiClient.post(
+        '/book-token',
+        {
+          doctorId: params.doctorId,
+          patientId: params.patientId,
+          doctorName: params.doctorName,
+          date: params.date,
+          tokenType: 'opd',
+          visitType: 'FOLLOW_UP',
+          expenseAmount: 0,
+          paidAmount: 0,
+          discount: 0,
+          tokenCount: params.tokenCount,
+          appointmentTime: params.appointmentTime,
+        },
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+        },
+      );
+
+      console.log('✅ Follow-up token booked');
+      return response.data?.data ?? response.data ?? null;
+    } catch (error) {
+      console.error('❌ Failed to book follow-up token:', error);
       throw error;
     }
   }
