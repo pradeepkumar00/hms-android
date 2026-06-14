@@ -4,11 +4,13 @@ import {
   Text,
   StyleSheet,
   TouchableOpacity,
+  Pressable,
   ActivityIndicator,
   ScrollView,
   RefreshControl,
   Alert,
   Modal,
+  Dimensions,
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
 import DatePicker from 'react-native-date-picker';
@@ -24,12 +26,15 @@ interface CalendarScreenProps {
 
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
-// Timeline layout constants (Teams-style hour grid)
-const HOUR_HEIGHT = 90; // px per hour row
+// Timeline layout constants
+const HOUR_MIN_HEIGHT = 72; // px for an empty hour row
+const EVENT_MIN_HEIGHT = 30; // px per appointment card
+const EVENT_GAP = 6; // px between stacked cards in the same hour
 const GUTTER = 80; // px reserved for the TOKENS / hour-label column on the left
 const DEFAULT_DURATION = 30; // minutes when the API gives no duration
-const DAY_START_HOUR = 8; // default visible window start
-const DAY_END_HOUR = 19; // default visible window end
+const DAY_START_HOUR = 7; // timeline starts at 7 AM
+const DAY_END_HOUR = 23; // timeline ends at 11 PM
+const SHEET_MAX_HEIGHT = Math.round(Dimensions.get('window').height * 0.88);
 
 // Fallback card color when a doctor has no assigned color (matches the web app)
 const DEFAULT_EVENT_COLOR = '#7CB342';
@@ -67,6 +72,19 @@ const formatHour = (h: number) => {
   let display = h % 12;
   if (display === 0) display = 12;
   return `${display} ${period}`;
+};
+
+// "03 Jun 2026" (optionally with time) for the all-appointments list
+const formatApptListDate = (date?: string, time?: string | null) => {
+  const key = appointmentKey(date);
+  if (!key) return date || '—';
+  const [y, m, d] = key.split('-').map(Number);
+  const formatted = new Date(y, m - 1, d).toLocaleDateString('en-GB', {
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric',
+  });
+  return time ? `${formatted} ${time}` : formatted;
 };
 
 const getStatusColor = (status?: string) => {
@@ -110,58 +128,60 @@ const contrastText = (bg: string): string => {
   return luminance > 0.6 ? '#1A1A1A' : '#FFFFFF';
 };
 
-// Timed appointment enriched with timeline placement info
-interface TimedEvent {
+interface HourEventLayout {
   appt: Appointment;
   start: number; // minutes from midnight
   end: number; // minutes from midnight
-  col: number; // column index among overlapping events
-  cols: number; // total columns in its overlap cluster
+  top: number; // px from top of hour slot
+  height: number; // px
 }
 
-// Greedy column packing so overlapping appointments sit side-by-side (Teams style)
-const layoutEvents = (
+interface HourSlot {
+  hour: number;
+  height: number;
+  events: HourEventLayout[];
+}
+
+// Stack appointments from the top of each hour slot; expand height as needed.
+const layoutHourSlots = (
   events: { appt: Appointment; start: number; end: number }[],
-): TimedEvent[] => {
-  const sorted = [...events].sort(
-    (a, b) => a.start - b.start || a.end - b.end,
-  );
-  const result: TimedEvent[] = [];
-  let cluster: (TimedEvent & { _placed?: boolean })[] = [];
-  let clusterEnd = -1;
+  minHour: number,
+  maxHour: number,
+): HourSlot[] => {
+  const slots: HourSlot[] = [];
 
-  const flush = () => {
-    const colEnds: number[] = []; // last end time per column
-    cluster.forEach(ev => {
-      let placed = false;
-      for (let i = 0; i < colEnds.length; i++) {
-        if (colEnds[i] <= ev.start) {
-          ev.col = i;
-          colEnds[i] = ev.end;
-          placed = true;
-          break;
-        }
-      }
-      if (!placed) {
-        ev.col = colEnds.length;
-        colEnds.push(ev.end);
-      }
-    });
-    const total = colEnds.length;
-    cluster.forEach(ev => result.push({ ...ev, cols: total }));
-    cluster = [];
-  };
+  for (let hour = minHour; hour <= maxHour; hour++) {
+    const inHour = events
+      .filter(e => Math.floor(e.start / 60) === hour)
+      .sort((a, b) => a.start - b.start || a.end - b.end);
 
-  sorted.forEach(ev => {
-    if (cluster.length && ev.start >= clusterEnd) {
-      flush();
-      clusterEnd = -1;
+    if (inHour.length === 0) {
+      slots.push({ hour, height: HOUR_MIN_HEIGHT, events: [] });
+      continue;
     }
-    cluster.push({ ...ev, col: 0, cols: 1 });
-    clusterEnd = Math.max(clusterEnd, ev.end);
-  });
-  flush();
-  return result;
+
+    const laidOut: HourEventLayout[] = [];
+    let lastBottom = 8;
+
+    inHour.forEach((event, index) => {
+      const top = index === 0 ? 8 : lastBottom + EVENT_GAP;
+
+      laidOut.push({
+        ...event,
+        top,
+        height: EVENT_MIN_HEIGHT,
+      });
+      lastBottom = top + EVENT_MIN_HEIGHT;
+    });
+
+    slots.push({
+      hour,
+      height: Math.max(HOUR_MIN_HEIGHT, lastBottom + 8),
+      events: laidOut,
+    });
+  }
+
+  return slots;
 };
 
 const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation }) => {
@@ -180,8 +200,6 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation }) => {
     return d;
   });
   const [selectedKey, setSelectedKey] = useState(() => toKey(new Date()));
-  // Tick used to refresh the "now" indicator position periodically
-  const [now, setNow] = useState(() => new Date());
   // Doctor filter (null = all doctors)
   const [selectedDoctorId, setSelectedDoctorId] = useState<string | null>(null);
   // Whether the doctor dropdown is open
@@ -194,6 +212,13 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation }) => {
   const [movingToOpd, setMovingToOpd] = useState(false);
   // Which status update is in flight (e.g. 'completed'), null when idle
   const [statusUpdating, setStatusUpdating] = useState<string | null>(null);
+  // Patient history shown in the details sheet
+  const [patientAppointments, setPatientAppointments] = useState<Appointment[]>(
+    [],
+  );
+  const [patientApptsLoading, setPatientApptsLoading] = useState(false);
+  // Measured height of the fixed sheet header/details/actions block
+  const [sheetTopHeight, setSheetTopHeight] = useState(0);
 
   // The seven dates of the displayed week (Sun → Sat)
   const weekDays = useMemo(
@@ -265,11 +290,58 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation }) => {
     }, [fetchAppointments]),
   );
 
-  // Keep the "now" line roughly in sync (every minute)
+  // Load all appointments for the patient when the details sheet opens
   useEffect(() => {
-    const id = setInterval(() => setNow(new Date()), 60 * 1000);
-    return () => clearInterval(id);
-  }, []);
+    if (!selectedAppt?.patientId || !token) {
+      setPatientAppointments([]);
+      setPatientApptsLoading(false);
+      return;
+    }
+
+    let active = true;
+    setPatientApptsLoading(true);
+    (async () => {
+      try {
+        const realAuthService = (await import('../services/realAuthService'))
+          .default;
+        const fetched = await realAuthService.fetchPatientAppointments(
+          selectedAppt.patientId!,
+          token,
+        );
+        if (active) setPatientAppointments(fetched || []);
+      } catch (err) {
+        console.error('Calendar: failed to fetch patient appointments:', err);
+        if (active) setPatientAppointments([]);
+      } finally {
+        if (active) setPatientApptsLoading(false);
+      }
+    })();
+
+    return () => {
+      active = false;
+    };
+  }, [selectedAppt?.patientId, selectedAppt?._id, token]);
+
+  const sortedPatientAppointments = useMemo(() => {
+    return [...patientAppointments]
+      .filter(appt => appt._id !== selectedAppt?._id)
+      .sort((a, b) => {
+        const dateCmp = (b.date || '').localeCompare(a.date || '');
+        if (dateCmp !== 0) return dateCmp;
+        return (parseTime(b.time) ?? 0) - (parseTime(a.time) ?? 0);
+      });
+  }, [patientAppointments, selectedAppt?._id]);
+
+  const allApptsListHeight = useMemo(() => {
+    const topHeight = sheetTopHeight || 460;
+    const sectionHeader = 52;
+    const bottomPad = theme.spacing.lg;
+    return Math.max(96, SHEET_MAX_HEIGHT - topHeight - sectionHeader - bottomPad);
+  }, [sheetTopHeight]);
+
+  useEffect(() => {
+    setSheetTopHeight(0);
+  }, [selectedAppt?._id]);
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
@@ -306,7 +378,7 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation }) => {
     return Array.from(map.values());
   }, [appointments]);
 
-  const todayKey = toKey(now);
+  const todayKey = toKey(new Date());
 
   const goToPrevWeek = () =>
     setWeekStart(d => {
@@ -336,9 +408,15 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation }) => {
     setWeekStart(sunday);
     setSelectedKey(toKey(day));
   };
-  // Split the selected day's appointments into timed (timeline) and untimed (token/slot)
-  const { timed, untimed, hours, timelineHeight, minHour } = useMemo(() => {
-    const dayAppointments = appointmentsByDate[selectedKey] || [];
+  // Split the selected day's appointments into hour slots and untimed tokens
+  const { hourSlots, untimed, timelineHeight } = useMemo(() => {
+    let dayAppointments = appointmentsByDate[selectedKey] || [];
+    if (selectedDoctorId) {
+      dayAppointments = dayAppointments.filter(
+        appt => (appt.doctorId || appt.doctorName) === selectedDoctorId,
+      );
+    }
+
     const timedRaw: { appt: Appointment; start: number; end: number }[] = [];
     const untimedList: Appointment[] = [];
 
@@ -355,26 +433,15 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation }) => {
       }
     });
 
-    let minH = DAY_START_HOUR;
-    let maxH = DAY_END_HOUR;
-    timedRaw.forEach(e => {
-      minH = Math.min(minH, Math.floor(e.start / 60));
-      maxH = Math.max(maxH, Math.ceil(e.end / 60));
-    });
-    minH = Math.max(0, minH);
-    maxH = Math.min(24, maxH);
-
-    const hoursList: number[] = [];
-    for (let h = minH; h <= maxH; h++) hoursList.push(h);
+    const slots = layoutHourSlots(timedRaw, DAY_START_HOUR, DAY_END_HOUR);
+    const totalHeight = slots.reduce((sum, slot) => sum + slot.height, 0);
 
     return {
-      timed: layoutEvents(timedRaw),
+      hourSlots: slots,
       untimed: untimedList,
-      hours: hoursList,
-      timelineHeight: (maxH - minH) * HOUR_HEIGHT,
-      minHour: minH,
+      timelineHeight: totalHeight,
     };
-  }, [appointmentsByDate, selectedKey]);
+  }, [appointmentsByDate, selectedKey, selectedDoctorId]);
 
   // The currently selected doctor option (null = all doctors)
   const selectedDoctor = useMemo(
@@ -382,42 +449,10 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation }) => {
     [doctorOptions, selectedDoctorId],
   );
 
-  // Token list filtered by the selected doctor
-  const filteredUntimed = useMemo(() => {
-    if (!selectedDoctorId) return untimed;
-    return untimed.filter(
-      appt => (appt.doctorId || appt.doctorName) === selectedDoctorId,
-    );
-  }, [untimed, selectedDoctorId]);
-
-  // Timed (timeline) events filtered by the selected doctor
-  const filteredTimed = useMemo(() => {
-    if (!selectedDoctorId) return timed;
-    return timed.filter(
-      e => (e.appt.doctorId || e.appt.doctorName) === selectedDoctorId,
-    );
-  }, [timed, selectedDoctorId]);
-
-  // "Now" indicator position (only when viewing today and within the visible window)
-  const nowTop = useMemo(() => {
-    if (selectedKey !== todayKey) return null;
-    const minutes = now.getHours() * 60 + now.getMinutes();
-    const top = ((minutes - minHour * 60) / 60) * HOUR_HEIGHT;
-    if (top < 0 || top > timelineHeight) return null;
-    return top;
-  }, [selectedKey, todayKey, now, minHour, timelineHeight]);
-
-  const renderEventBlock = (e: TimedEvent) => {
+  const renderEventBlock = (e: HourEventLayout) => {
     const { appt } = e;
     const accent = colorForAppt(appt);
     const textColor = contrastText(accent);
-    const VGAP = 3; // vertical breathing room around each card
-    const top = ((e.start - minHour * 60) / 60) * HOUR_HEIGHT + VGAP;
-    const height = Math.max(
-      38,
-      ((e.end - e.start) / 60) * HOUR_HEIGHT - VGAP * 4,
-    );
-    const widthPct = 100 / e.cols;
     return (
       <TouchableOpacity
         key={appt._id}
@@ -426,10 +461,8 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation }) => {
         style={[
           styles.eventBlock,
           {
-            top,
-            height,
-            left: `${e.col * widthPct}%`,
-            width: `${widthPct}%`,
+            top: e.top,
+            height: e.height,
             backgroundColor: accent,
           },
         ]}
@@ -672,41 +705,27 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation }) => {
               <Text style={styles.gridHeaderText}>TOKENS</Text>
             </View>
             <View style={styles.tokenListColumn}>
-              {filteredUntimed.length > 0 ? (
-                filteredUntimed.map(renderTokenChip)
+              {untimed.length > 0 ? (
+                untimed.map(renderTokenChip)
               ) : (
                 <Text style={styles.tokenRowEmpty}>No tokens</Text>
               )}
             </View>
           </View>
 
-          <View style={[styles.timeline, { height: timelineHeight }]}>
-            {/* Vertical divider between the token column and the events */}
-            <View style={styles.timelineDivider} />
-
-            {/* Hour grid lines + labels */}
-            {hours.map(h => (
+          <View style={[styles.timeline, { minHeight: timelineHeight }]}>
+            {hourSlots.map(slot => (
               <View
-                key={h}
-                style={[styles.hourRow, { top: (h - minHour) * HOUR_HEIGHT }]}
+                key={slot.hour}
+                style={[styles.hourSlot, { height: slot.height }]}
               >
-                <Text style={styles.hourLabel}>{formatHour(h)}</Text>
-                <View style={styles.hourLine} />
+                <Text style={styles.hourLabel}>{formatHour(slot.hour)}</Text>
+                <View style={styles.hourEventsArea}>
+                  {slot.events.map(renderEventBlock)}
+                </View>
               </View>
             ))}
 
-            {/* Events layer */}
-            <View style={styles.eventsLayer}>
-              {filteredTimed.map(renderEventBlock)}
-            </View>
-
-            {/* Now indicator */}
-            {nowTop != null && (
-              <View style={[styles.nowLine, { top: nowTop }]}>
-                <View style={styles.nowDot} />
-                <View style={styles.nowBar} />
-              </View>
-            )}
           </View>
         </ScrollView>
       )}
@@ -796,168 +815,222 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation }) => {
         animationType="slide"
         onRequestClose={() => setSelectedAppt(null)}
       >
-        <TouchableOpacity
-          style={styles.sheetOverlay}
-          activeOpacity={1}
-          onPress={() => setSelectedAppt(null)}
-        >
-          <TouchableOpacity activeOpacity={1} style={styles.sheet}>
+        <View style={styles.sheetOverlay}>
+          <Pressable
+            style={styles.sheetBackdrop}
+            onPress={() => setSelectedAppt(null)}
+          />
+          <View style={styles.sheet}>
             {selectedAppt && (
               <>
-                {/* Header: name + mobile */}
-                <View style={styles.sheetHeader}>
-                  <View style={styles.sheetAvatar}>
-                    <Icon
-                      name="person"
-                      size={26}
-                      color={theme.colors.textSecondary}
+                <View
+                  style={styles.sheetTop}
+                  onLayout={event =>
+                    setSheetTopHeight(event.nativeEvent.layout.height)
+                  }
+                >
+                  {/* Header: name + mobile */}
+                  <View style={styles.sheetHeader}>
+                    <View style={styles.sheetAvatar}>
+                      <Icon
+                        name="person"
+                        size={26}
+                        color={theme.colors.textSecondary}
+                      />
+                    </View>
+                    <View style={styles.sheetHeaderCol}>
+                      <Text style={styles.sheetHeaderLabel}>NAME</Text>
+                      <Text style={styles.sheetHeaderValue} numberOfLines={1}>
+                        {selectedAppt.patientName || 'Unknown'}
+                      </Text>
+                    </View>
+                    <View style={styles.sheetHeaderColDivider} />
+                    <View style={styles.sheetHeaderCol}>
+                      <Text style={styles.sheetHeaderLabel}>MOBILE</Text>
+                      <Text style={styles.sheetHeaderValue} numberOfLines={1}>
+                        {selectedAppt.mobileNo || '—'}
+                      </Text>
+                    </View>
+                    <View style={styles.sheetStatusDot} />
+                    <TouchableOpacity
+                      style={styles.sheetClose}
+                      onPress={() => setSelectedAppt(null)}
+                    >
+                      <Icon name="close" size={20} color={theme.colors.text} />
+                    </TouchableOpacity>
+                  </View>
+
+                  {/* Details */}
+                  <View style={styles.sheetBody}>
+                    <Text style={styles.sheetSectionTitle}>
+                      APPOINTMENT DETAILS
+                    </Text>
+
+                    <View style={styles.detailRow}>
+                      <Text style={styles.detailLabel}>Doctor</Text>
+                      <Text style={styles.detailValue}>
+                        {selectedAppt.doctorName || '—'}
+                      </Text>
+                    </View>
+
+                    <View style={styles.detailRow}>
+                      <Text style={styles.detailLabel}>Type</Text>
+                      {renderPill(selectedAppt.appointmentType || '—', '#B7791F')}
+                    </View>
+
+                    <View style={styles.detailRow}>
+                      <Text style={styles.detailLabel}>Visit</Text>
+                      {renderPill(
+                        selectedAppt.visitType || 'Normal',
+                        theme.colors.textSecondary,
+                      )}
+                    </View>
+
+                    <View style={styles.detailRow}>
+                      <Text style={styles.detailLabel}>Token</Text>
+                      <Text style={styles.detailValue}>
+                        {selectedAppt.tokenCount != null
+                          ? `T${selectedAppt.tokenCount}`
+                          : '—'}
+                      </Text>
+                    </View>
+
+                    <View style={styles.detailRow}>
+                      <Text style={styles.detailLabel}>Status</Text>
+                      {renderPill(
+                        getStatusLabel(selectedAppt.status),
+                        getStatusColor(selectedAppt.status),
+                      )}
+                    </View>
+
+                    <View style={styles.detailRow}>
+                      <Text style={styles.detailLabel}>Arrival</Text>
+                      {renderPill(
+                        arrivalInfo(selectedAppt).label,
+                        arrivalInfo(selectedAppt).color,
+                      )}
+                    </View>
+
+                    <View style={styles.detailRow}>
+                      <Text style={styles.detailLabel}>Fee</Text>
+                      <Text style={styles.detailValue}>
+                        ₹{selectedAppt.doctorFee ?? selectedAppt.expenseAmount ?? 0}
+                      </Text>
+                    </View>
+                  </View>
+
+                  {/* Actions */}
+                  <View style={styles.sheetActions}>
+                    <TouchableOpacity
+                      style={[
+                        styles.sheetPrimaryBtn,
+                        movingToOpd && styles.sheetPrimaryBtnDisabled,
+                      ]}
+                      activeOpacity={0.85}
+                      disabled={movingToOpd}
+                      onPress={handleMoveToOpd}
+                    >
+                      {movingToOpd ? (
+                        <ActivityIndicator size="small" color={theme.colors.surface} />
+                      ) : (
+                        <Text style={styles.sheetPrimaryText}>Move to OPD</Text>
+                      )}
+                    </TouchableOpacity>
+                    <View style={styles.sheetOutlineRow}>
+                      <TouchableOpacity
+                        style={[
+                          styles.sheetOutlineBtn,
+                          styles.sheetCompleteBtn,
+                          statusUpdating != null && styles.sheetPrimaryBtnDisabled,
+                        ]}
+                        activeOpacity={0.85}
+                        disabled={statusUpdating != null}
+                        onPress={() => handleStatusUpdate('completed', 'Completed')}
+                      >
+                        {statusUpdating === 'completed' ? (
+                          <ActivityIndicator size="small" color="#2E7D32" />
+                        ) : (
+                          <Text
+                            style={[styles.sheetOutlineText, { color: '#2E7D32' }]}
+                          >
+                            Complete
+                          </Text>
+                        )}
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={[
+                          styles.sheetOutlineBtn,
+                          styles.sheetAbsentBtn,
+                          statusUpdating != null && styles.sheetPrimaryBtnDisabled,
+                        ]}
+                        activeOpacity={0.85}
+                        disabled={statusUpdating != null}
+                        onPress={() => handleStatusUpdate('absent', 'Absent')}
+                      >
+                        {statusUpdating === 'absent' ? (
+                          <ActivityIndicator size="small" color="#C62828" />
+                        ) : (
+                          <Text
+                            style={[styles.sheetOutlineText, { color: '#C62828' }]}
+                          >
+                            Absent
+                          </Text>
+                        )}
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                </View>
+
+                {/* All appointments for this patient — list scrolls independently */}
+                <View style={styles.sheetAllAppts}>
+                  <Text style={styles.sheetSectionTitle}>ALL APPOINTMENTS</Text>
+                  {patientApptsLoading ? (
+                    <ActivityIndicator
+                      style={styles.sheetAllApptsLoader}
+                      color={theme.colors.primary}
                     />
-                  </View>
-                  <View style={styles.sheetHeaderCol}>
-                    <Text style={styles.sheetHeaderLabel}>NAME</Text>
-                    <Text style={styles.sheetHeaderValue} numberOfLines={1}>
-                      {selectedAppt.patientName || 'Unknown'}
+                  ) : sortedPatientAppointments.length === 0 ? (
+                    <Text style={styles.sheetAllApptsEmpty}>
+                      No other appointments found
                     </Text>
-                  </View>
-                  <View style={styles.sheetHeaderColDivider} />
-                  <View style={styles.sheetHeaderCol}>
-                    <Text style={styles.sheetHeaderLabel}>MOBILE</Text>
-                    <Text style={styles.sheetHeaderValue} numberOfLines={1}>
-                      {selectedAppt.mobileNo || '—'}
-                    </Text>
-                  </View>
-                  <View style={styles.sheetStatusDot} />
-                  <TouchableOpacity
-                    style={styles.sheetClose}
-                    onPress={() => setSelectedAppt(null)}
-                  >
-                    <Icon name="close" size={20} color={theme.colors.text} />
-                  </TouchableOpacity>
-                </View>
-
-                {/* Details */}
-                <View style={styles.sheetBody}>
-                  <Text style={styles.sheetSectionTitle}>
-                    APPOINTMENT DETAILS
-                  </Text>
-
-                  <View style={styles.detailRow}>
-                    <Text style={styles.detailLabel}>Doctor</Text>
-                    <Text style={styles.detailValue}>
-                      {selectedAppt.doctorName || '—'}
-                    </Text>
-                  </View>
-
-                  <View style={styles.detailRow}>
-                    <Text style={styles.detailLabel}>Type</Text>
-                    {renderPill(selectedAppt.appointmentType || '—', '#B7791F')}
-                  </View>
-
-                  <View style={styles.detailRow}>
-                    <Text style={styles.detailLabel}>Visit</Text>
-                    {renderPill(
-                      selectedAppt.visitType || 'Normal',
-                      theme.colors.textSecondary,
-                    )}
-                  </View>
-
-                  <View style={styles.detailRow}>
-                    <Text style={styles.detailLabel}>Token</Text>
-                    <Text style={styles.detailValue}>
-                      {selectedAppt.tokenCount != null
-                        ? `T${selectedAppt.tokenCount}`
-                        : '—'}
-                    </Text>
-                  </View>
-
-                  <View style={styles.detailRow}>
-                    <Text style={styles.detailLabel}>Status</Text>
-                    {renderPill(
-                      getStatusLabel(selectedAppt.status),
-                      getStatusColor(selectedAppt.status),
-                    )}
-                  </View>
-
-                  <View style={styles.detailRow}>
-                    <Text style={styles.detailLabel}>Arrival</Text>
-                    {renderPill(
-                      arrivalInfo(selectedAppt).label,
-                      arrivalInfo(selectedAppt).color,
-                    )}
-                  </View>
-
-                  <View style={styles.detailRow}>
-                    <Text style={styles.detailLabel}>Fee</Text>
-                    <Text style={styles.detailValue}>
-                      ₹{selectedAppt.doctorFee ?? selectedAppt.expenseAmount ?? 0}
-                    </Text>
-                  </View>
-                </View>
-
-                {/* Actions */}
-                <View style={styles.sheetActions}>
-                  <TouchableOpacity
-                    style={[
-                      styles.sheetPrimaryBtn,
-                      movingToOpd && styles.sheetPrimaryBtnDisabled,
-                    ]}
-                    activeOpacity={0.85}
-                    disabled={movingToOpd}
-                    onPress={handleMoveToOpd}
-                  >
-                    {movingToOpd ? (
-                      <ActivityIndicator size="small" color={theme.colors.surface} />
-                    ) : (
-                      <Text style={styles.sheetPrimaryText}>Move to OPD</Text>
-                    )}
-                  </TouchableOpacity>
-                  <View style={styles.sheetOutlineRow}>
-                    <TouchableOpacity
-                      style={[
-                        styles.sheetOutlineBtn,
-                        styles.sheetCompleteBtn,
-                        statusUpdating != null && styles.sheetPrimaryBtnDisabled,
-                      ]}
-                      activeOpacity={0.85}
-                      disabled={statusUpdating != null}
-                      onPress={() => handleStatusUpdate('completed', 'Completed')}
+                  ) : (
+                    <ScrollView
+                      style={{ maxHeight: allApptsListHeight }}
+                      contentContainerStyle={styles.sheetAllApptsScrollContent}
+                      nestedScrollEnabled
+                      showsVerticalScrollIndicator
+                      keyboardShouldPersistTaps="handled"
                     >
-                      {statusUpdating === 'completed' ? (
-                        <ActivityIndicator size="small" color="#2E7D32" />
-                      ) : (
-                        <Text
-                          style={[styles.sheetOutlineText, { color: '#2E7D32' }]}
-                        >
-                          Complete
-                        </Text>
-                      )}
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                      style={[
-                        styles.sheetOutlineBtn,
-                        styles.sheetAbsentBtn,
-                        statusUpdating != null && styles.sheetPrimaryBtnDisabled,
-                      ]}
-                      activeOpacity={0.85}
-                      disabled={statusUpdating != null}
-                      onPress={() => handleStatusUpdate('absent', 'Absent')}
-                    >
-                      {statusUpdating === 'absent' ? (
-                        <ActivityIndicator size="small" color="#C62828" />
-                      ) : (
-                        <Text
-                          style={[styles.sheetOutlineText, { color: '#C62828' }]}
-                        >
-                          Absent
-                        </Text>
-                      )}
-                    </TouchableOpacity>
-                  </View>
+                      {sortedPatientAppointments.map(appt => (
+                        <View key={appt._id} style={styles.allApptRow}>
+                          <View style={styles.allApptRowMain}>
+                            <Text style={styles.allApptDate} numberOfLines={1}>
+                              {formatApptListDate(appt.date, appt.time)}
+                            </Text>
+                            {appt.doctorName ? (
+                              <Text
+                                style={styles.allApptDoctor}
+                                numberOfLines={1}
+                              >
+                                {appt.doctorName}
+                              </Text>
+                            ) : null}
+                          </View>
+                          <View style={styles.allApptPillWrap}>
+                            {renderPill(
+                              getStatusLabel(appt.status),
+                              getStatusColor(appt.status),
+                            )}
+                          </View>
+                        </View>
+                      ))}
+                    </ScrollView>
+                  )}
                 </View>
               </>
             )}
-          </TouchableOpacity>
-        </TouchableOpacity>
+          </View>
+        </View>
       </Modal>
     </View>
   );
@@ -1423,41 +1496,38 @@ const styles = StyleSheet.create({
   timeline: {
     position: 'relative',
     marginTop: theme.spacing.xs,
+    borderLeftWidth: 1,
+    borderLeftColor: theme.colors.border,
+    marginLeft: GUTTER,
   },
-  hourRow: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    height: HOUR_HEIGHT,
+  hourSlot: {
     flexDirection: 'row',
-    alignItems: 'flex-start',
+    alignItems: 'stretch',
+    borderBottomWidth: 1,
+    borderBottomColor: theme.colors.border,
   },
   hourLabel: {
-    width: GUTTER,
-    paddingRight: theme.spacing.sm,
+    position: 'absolute',
+    left: -GUTTER,
+    width: GUTTER - theme.spacing.sm,
     textAlign: 'right',
-    marginTop: -7,
+    top: 6,
     fontSize: theme.typography.fontSizes.xs,
     color: theme.colors.textSecondary,
   },
-  hourLine: {
+  hourEventsArea: {
     flex: 1,
-    height: 1,
-    backgroundColor: theme.colors.border,
-  },
-  eventsLayer: {
-    position: 'absolute',
-    top: 0,
-    bottom: 0,
-    left: GUTTER + theme.spacing.sm,
-    right: theme.spacing.md,
+    position: 'relative',
+    marginLeft: theme.spacing.sm,
+    marginRight: theme.spacing.md,
   },
   eventBlock: {
     position: 'absolute',
+    left: 0,
+    right: 0,
     borderRadius: theme.borderRadius.lg,
     paddingHorizontal: theme.spacing.md,
     paddingVertical: 8,
-    marginRight: theme.spacing.sm,
     justifyContent: 'center',
     overflow: 'hidden',
   },
@@ -1478,24 +1548,6 @@ const styles = StyleSheet.create({
   eventDoctor: {
     fontSize: theme.typography.fontSizes.sm,
     opacity: 0.9,
-  },
-  nowLine: {
-    position: 'absolute',
-    left: GUTTER - 4,
-    right: theme.spacing.md,
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  nowDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    backgroundColor: '#F44336',
-  },
-  nowBar: {
-    flex: 1,
-    height: 1.5,
-    backgroundColor: '#F44336',
   },
   centerBox: {
     flex: 1,
@@ -1569,12 +1621,19 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(0,0,0,0.4)',
     justifyContent: 'flex-end',
   },
+  sheetBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+  },
   sheet: {
     backgroundColor: theme.colors.surface,
     borderTopLeftRadius: theme.borderRadius.xl,
     borderTopRightRadius: theme.borderRadius.xl,
+    maxHeight: SHEET_MAX_HEIGHT,
+    overflow: 'hidden',
     paddingBottom: theme.spacing.lg,
-    maxHeight: '88%',
+  },
+  sheetTop: {
+    flexShrink: 0,
   },
   sheetHeader: {
     flexDirection: 'row',
@@ -1710,6 +1769,57 @@ const styles = StyleSheet.create({
   sheetOutlineText: {
     fontSize: theme.typography.fontSizes.md,
     fontWeight: theme.typography.fontWeights.bold,
+  },
+  sheetAllAppts: {
+    flexShrink: 1,
+    minHeight: 0,
+    paddingHorizontal: theme.spacing.md,
+  },
+  sheetAllApptsScrollContent: {
+    paddingBottom: theme.spacing.xs,
+  },
+  sheetAllApptsLoader: {
+    marginVertical: theme.spacing.lg,
+  },
+  sheetAllApptsEmpty: {
+    fontSize: theme.typography.fontSizes.sm,
+    color: theme.colors.textSecondary,
+    marginTop: theme.spacing.sm,
+  },
+  allApptRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    borderRadius: theme.borderRadius.md,
+    paddingHorizontal: theme.spacing.md,
+    paddingVertical: theme.spacing.sm,
+    marginTop: theme.spacing.sm,
+    backgroundColor: theme.colors.surface,
+  },
+  allApptRowMain: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginRight: theme.spacing.sm,
+    minWidth: 0,
+  },
+  allApptDate: {
+    flexShrink: 1,
+    fontSize: theme.typography.fontSizes.md,
+    fontWeight: theme.typography.fontWeights.bold,
+    color: theme.colors.text,
+    marginRight: theme.spacing.sm,
+  },
+  allApptDoctor: {
+    flex: 1,
+    flexShrink: 1,
+    fontSize: theme.typography.fontSizes.md,
+    color: theme.colors.textSecondary,
+  },
+  allApptPillWrap: {
+    flexShrink: 0,
   },
 });
 

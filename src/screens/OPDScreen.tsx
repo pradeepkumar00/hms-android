@@ -111,7 +111,7 @@ const shortName = (n?: string) => {
 
 interface HistoryItem {
   id: string;
-  kind: 'upload' | 'lab';
+  kind: 'upload' | 'lab' | 'appointment';
   createdAt?: string;
   category?: string;
   mimeType?: string;
@@ -119,15 +119,112 @@ interface HistoryItem {
   filePath?: string;
   reportName?: string;
   uploadedBy?: string;
+  appointmentDate?: string;
+  appointmentTime?: string | null;
+  slot?: number | null;
+  visitType?: string;
+  doctorName?: string;
+  status?: string;
+  sortAt?: number;
 }
 
-interface HistorySection {
-  label: string;
-  items: HistoryItem[];
-}
+const parseApptTime = (time?: string | null): number | null => {
+  if (!time) return null;
+  const m = time.trim().match(/^(\d{1,2}):(\d{2})\s*(AM|PM)?$/i);
+  if (!m) return null;
+  let hours = parseInt(m[1], 10);
+  const minutes = parseInt(m[2], 10);
+  const meridiem = m[3]?.toUpperCase();
+  if (meridiem === 'PM' && hours < 12) hours += 12;
+  if (meridiem === 'AM' && hours === 12) hours = 0;
+  return hours * 60 + minutes;
+};
 
-// Flatten the no-session response into a single, date-sorted, grouped list.
-const buildHistorySections = (history: any): HistorySection[] => {
+const appointmentSortAt = (appt: Appointment): number => {
+  if (!appt.date) return 0;
+  const [y, m, d] = appt.date.split('-').map(Number);
+  if (!y || !m || !d) return new Date(appt.date).getTime() || 0;
+  const minutes = parseApptTime(appt.time) ?? 0;
+  return new Date(y, m - 1, d, Math.floor(minutes / 60), minutes % 60).getTime();
+};
+
+// DD/MM/YYYY for appointment cards (matches the web OPD timeline)
+const formatApptDate = (value?: string) => {
+  if (!value) return '—';
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    const [y, m, d] = value.split('-');
+    return `${d}/${m}/${y}`;
+  }
+  return formatDate(value);
+};
+
+const formatVisitType = (value?: string) => {
+  if (!value) return '—';
+  return value
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, char => char.toUpperCase());
+};
+
+const getApptStatusColor = (status?: string) => {
+  switch ((status || '').toLowerCase()) {
+    case 'waiting':
+      return '#FF9800';
+    case 'confirmed':
+      return '#2196F3';
+    case 'arrived':
+      return '#9C27B0';
+    case 'completed':
+      return '#4CAF50';
+    case 'cancelled':
+    case 'canceled':
+      return '#F44336';
+    default:
+      return theme.colors.textSecondary;
+  }
+};
+
+const getApptStatusLabel = (status?: string) => {
+  if (!status) return 'Unknown';
+  return status.charAt(0).toUpperCase() + status.slice(1);
+};
+
+const itemGroupLabel = (item: HistoryItem) => {
+  if (item.kind === 'appointment' && item.appointmentDate) {
+    return dateGroupLabel(`${item.appointmentDate}T12:00:00`);
+  }
+  return dateGroupLabel(item.createdAt);
+};
+
+const itemSortAt = (item: HistoryItem) => {
+  if (item.sortAt != null) return item.sortAt;
+  return new Date(item.createdAt || 0).getTime();
+};
+
+const kindOrder = (kind: HistoryItem['kind']) => {
+  switch (kind) {
+    case 'upload':
+      return 0;
+    case 'lab':
+      return 1;
+    case 'appointment':
+      return 2;
+    default:
+      return 3;
+  }
+};
+
+// Prescriptions/labs first, then appointments; newest first within each type.
+const compareHistoryItems = (a: HistoryItem, b: HistoryItem) => {
+  const kindDiff = kindOrder(a.kind) - kindOrder(b.kind);
+  if (kindDiff !== 0) return kindDiff;
+  return itemSortAt(b) - itemSortAt(a);
+};
+
+// Flatten prescriptions, labs, and appointments into a date-sorted timeline.
+const buildHistorySections = (
+  history: any,
+  appointments: Appointment[] = [],
+): HistorySection[] => {
   const uploads: HistoryItem[] = (history?.prescriptionUpload || []).map(
     (u: any) => ({
       id: u._id,
@@ -149,24 +246,44 @@ const buildHistorySections = (history: any): HistorySection[] => {
     uploadedBy: l.createdByName,
   }));
 
-  const all = [...uploads, ...labs].sort(
-    (a, b) =>
-      new Date(b.createdAt || 0).getTime() -
-      new Date(a.createdAt || 0).getTime(),
-  );
+  const appts: HistoryItem[] = appointments.map(appt => ({
+    id: appt._id,
+    kind: 'appointment' as const,
+    createdAt: appt.date ? `${appt.date}T12:00:00` : undefined,
+    appointmentDate: appt.date,
+    appointmentTime: appt.time,
+    slot: appt.tokenCount,
+    visitType: appt.visitType,
+    doctorName: appt.doctorName,
+    status: appt.status,
+    sortAt: appointmentSortAt(appt),
+  }));
 
-  const sections: HistorySection[] = [];
+  const all = [...uploads, ...labs, ...appts];
+
+  const byLabel = new Map<string, HistoryItem[]>();
   for (const item of all) {
-    const label = dateGroupLabel(item.createdAt);
-    const last = sections[sections.length - 1];
-    if (last && last.label === label) {
-      last.items.push(item);
-    } else {
-      sections.push({ label, items: [item] });
-    }
+    const label = itemGroupLabel(item);
+    if (!label) continue;
+    const group = byLabel.get(label) || [];
+    group.push(item);
+    byLabel.set(label, group);
   }
-  return sections;
+
+  return Array.from(byLabel.entries())
+    .map(([label, items]) => ({
+      label,
+      items: [...items].sort(compareHistoryItems),
+      sectionSortAt: Math.max(...items.map(itemSortAt), 0),
+    }))
+    .sort((a, b) => b.sectionSortAt - a.sectionSortAt)
+    .map(({ label, items }) => ({ label, items }));
 };
+
+interface HistorySection {
+  label: string;
+  items: HistoryItem[];
+}
 
 const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
   const token = useAppSelector(selectAuthToken);
@@ -175,6 +292,9 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
   const patientId = appointment?.patientId || patient?._id || patient?.id;
 
   const [history, setHistory] = useState<any>(null);
+  const [patientAppointments, setPatientAppointments] = useState<Appointment[]>(
+    [],
+  );
   const [, setConfig] = useState<any>(null);
   const [loading, setLoading] = useState(false);
   const [selectedFile, setSelectedFile] = useState<{
@@ -191,6 +311,7 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
   const [viewerIndex, setViewerIndex] = useState<number | null>(null);
   // Shared cache of upload _id -> signed URL (used by thumbnails and viewer).
   const [signedUrls, setSignedUrls] = useState<Record<string, string>>({});
+  const [deletingFileId, setDeletingFileId] = useState<string | null>(null);
 
   // ── Book Follow-up modal ──────────────────────────────────────────────────
   // The doctor is chosen from a dropdown, defaulting to the OPD visit's doctor
@@ -209,8 +330,8 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
   const [booking, setBooking] = useState(false);
 
   const historySections = useMemo(
-    () => buildHistorySections(history),
-    [history],
+    () => buildHistorySections(history, patientAppointments),
+    [history, patientAppointments],
   );
 
   // All openable upload files (images + PDFs) in display order — the set the
@@ -444,6 +565,13 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
           selectedSlot.startTime
         }`,
       );
+
+      if (patientId) {
+        const appts = await realAuthService
+          .fetchPatientAppointments(patientId, token)
+          .catch(() => []);
+        setPatientAppointments(appts || []);
+      }
     } catch (error) {
       console.error('Follow-up booking error:', error);
       Alert.alert(
@@ -470,13 +598,23 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
           .then(cfg => active && setConfig(cfg))
           .catch(() => {});
 
-        // Prescription history for this patient
-        const data = patientId
-          ? await realAuthService
-              .fetchPrescriptionHistory(patientId, 'opd', token)
-              .catch(() => null)
-          : null;
-        if (active) setHistory(data);
+        // Prescription history and appointments for this patient
+        const [data, appts] = await Promise.all([
+          patientId
+            ? realAuthService
+                .fetchPrescriptionHistory(patientId, 'opd', token)
+                .catch(() => null)
+            : Promise.resolve(null),
+          patientId
+            ? realAuthService
+                .fetchPatientAppointments(patientId, token)
+                .catch(() => [])
+            : Promise.resolve([]),
+        ]);
+        if (active) {
+          setHistory(data);
+          setPatientAppointments(appts || []);
+        }
       } finally {
         if (active) setLoading(false);
       }
@@ -485,6 +623,15 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
     return () => {
       active = false;
     };
+  }, [token, patientId]);
+
+  const refreshPrescriptionHistory = useCallback(async () => {
+    if (!token || !patientId) return;
+    const realAuthService = (await import('../services/realAuthService')).default;
+    const data = await realAuthService
+      .fetchPrescriptionHistory(patientId, 'opd', token)
+      .catch(() => null);
+    setHistory(data);
   }, [token, patientId]);
 
   const headerItem = (label: string, value: string) => (
@@ -503,29 +650,47 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
     </Text>
   );
 
+  const metaField = (
+    label: string,
+    value: string,
+    variant: 'primary' | 'muted' = 'primary',
+  ) => (
+    <View style={styles.metaField}>
+      <Text
+        style={[
+          styles.metaLabel,
+          variant === 'muted' && styles.metaLabelMuted,
+        ]}
+      >
+        {label}
+      </Text>
+      <Text style={styles.metaValue} numberOfLines={1}>
+        {value}
+      </Text>
+    </View>
+  );
+
   const renderUploadCard = (item: HistoryItem) => {
     const isImage = (item.mimeType || '').startsWith('image/');
     const thumbUri = signedUrls[item.id];
     return (
-      <TouchableOpacity
-        key={item.id}
-        style={styles.uploadCard}
-        activeOpacity={0.7}
-        onPress={() => openFile(item)}
-      >
-        <View style={styles.uploadCardAccent} />
-        <View style={styles.uploadCardBody}>
-          <View style={styles.uploadCardHeader}>
-            <Text style={styles.uploadCardTitle}>Uploaded Prescription</Text>
-            {!!item.category && (
-              <View style={styles.categoryBadge}>
-                <Text style={styles.categoryBadgeText}>{item.category}</Text>
-              </View>
-            )}
-          </View>
+      <View key={item.id} style={styles.uploadCard}>
+        <View style={styles.historyCardHeader}>
+          <Text style={styles.historyCardHeaderTitle}>Uploaded Prescription</Text>
+          {!!item.category && (
+            <View style={styles.uploadCategoryBadge}>
+              <Text style={styles.uploadCategoryBadgeText}>{item.category}</Text>
+            </View>
+          )}
+        </View>
 
+        <View style={styles.uploadCardPanel}>
           <View style={styles.uploadCardContent}>
-            <View style={styles.thumbnail}>
+            <TouchableOpacity
+              style={styles.thumbnail}
+              activeOpacity={0.8}
+              onPress={() => openFile(item)}
+            >
               {isImage && thumbUri ? (
                 <Image
                   source={{ uri: thumbUri }}
@@ -544,17 +709,50 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
                   </Text>
                 </>
               )}
-            </View>
+            </TouchableOpacity>
 
             <View style={styles.uploadCardInfo}>
-              {infoRow('File:', shortName(item.fileName))}
-              {infoRow('Date:', formatDate(item.createdAt))}
-              {infoRow('Time:', formatTime(item.createdAt))}
-              {infoRow('Uploaded By:', item.uploadedBy || '—')}
+              <TouchableOpacity activeOpacity={0.7} onPress={() => openFile(item)}>
+                <Text style={styles.uploadFileName} numberOfLines={2}>
+                  {item.fileName || 'Prescription file'}
+                </Text>
+              </TouchableOpacity>
+              {metaField('DATE', formatDate(item.createdAt), 'muted')}
+              {metaField('TIME', formatTime(item.createdAt), 'muted')}
+              {metaField('BY', item.uploadedBy || '—', 'muted')}
             </View>
           </View>
+
+          <View style={styles.uploadCardActions}>
+            <TouchableOpacity
+              style={[styles.uploadActionBtn, styles.uploadActionPrint]}
+              activeOpacity={0.85}
+              onPress={() => openFile(item)}
+            >
+              <Icon name="print" size={18} color={theme.colors.surface} />
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.uploadActionBtn, styles.uploadActionDownload]}
+              activeOpacity={0.85}
+              onPress={() => openFile(item)}
+            >
+              <Icon name="file-download" size={18} color={theme.colors.surface} />
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.uploadActionBtn, styles.uploadActionDelete]}
+              activeOpacity={0.85}
+              disabled={deletingFileId === item.id}
+              onPress={() => handleDeletePrescription(item)}
+            >
+              {deletingFileId === item.id ? (
+                <ActivityIndicator size="small" color={theme.colors.surface} />
+              ) : (
+                <Icon name="delete-outline" size={18} color={theme.colors.surface} />
+              )}
+            </TouchableOpacity>
+          </View>
         </View>
-      </TouchableOpacity>
+      </View>
     );
   };
 
@@ -568,6 +766,55 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
       {infoRow('Time:', formatTime(item.createdAt))}
     </View>
   );
+
+  const renderAppointmentCard = (item: HistoryItem) => {
+    const statusColor = getApptStatusColor(item.status);
+    return (
+      <View key={item.id} style={styles.apptCard}>
+        <View style={styles.historyCardHeader}>
+          <View style={styles.apptCardHeaderLeft}>
+            <Icon name="event" size={18} color={theme.colors.surface} />
+            <Text style={[styles.historyCardHeaderTitle, styles.apptHeaderTitle]}>
+              Appointment
+            </Text>
+          </View>
+          <View
+            style={[styles.apptStatusBadge, { backgroundColor: statusColor }]}
+          >
+            <Text style={styles.apptStatusText}>
+              {getApptStatusLabel(item.status)}
+            </Text>
+          </View>
+        </View>
+
+        <View style={styles.apptCardBody}>
+          <View style={styles.apptCardGrid}>
+            <View style={styles.apptGridCell}>
+              {metaField('DATE', formatApptDate(item.appointmentDate))}
+            </View>
+            <View style={styles.apptGridCell}>
+              {metaField('TIME', item.appointmentTime || '—')}
+            </View>
+            <View style={styles.apptGridCell}>
+              {metaField('SLOT', item.slot != null ? `#${item.slot}` : '—')}
+            </View>
+            <View style={styles.apptGridCell}>
+              {metaField('VISIT', formatVisitType(item.visitType))}
+            </View>
+            <View style={styles.apptGridCell}>
+              {metaField('DOCTOR', item.doctorName || '—')}
+            </View>
+          </View>
+        </View>
+      </View>
+    );
+  };
+
+  const renderHistoryItem = (item: HistoryItem) => {
+    if (item.kind === 'upload') return renderUploadCard(item);
+    if (item.kind === 'appointment') return renderAppointmentCard(item);
+    return renderLabCard(item);
+  };
 
   const handleCameraCapture = async () => {
     // CAMERA is declared in AndroidManifest, so Android requires a runtime grant
@@ -665,6 +912,54 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
     if (index >= 0) setViewerIndex(index);
   };
 
+  const handleDeletePrescription = (item: HistoryItem) => {
+    if (!token || !patientId || deletingFileId) return;
+
+    Alert.alert(
+      'Delete prescription',
+      `Remove "${item.fileName || 'this file'}"?`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            setDeletingFileId(item.id);
+            try {
+              const realAuthService = (await import('../services/realAuthService'))
+                .default;
+              await realAuthService.deletePatientFile(item.id, token);
+
+              if (
+                viewerIndex != null &&
+                openableItems[viewerIndex]?.id === item.id
+              ) {
+                setViewerIndex(null);
+              }
+
+              setSignedUrls(prev => {
+                const next = { ...prev };
+                delete next[item.id];
+                return next;
+              });
+
+              await refreshPrescriptionHistory();
+              Alert.alert('Deleted', 'Prescription removed successfully.');
+            } catch (error) {
+              console.error('Prescription delete error:', error);
+              Alert.alert(
+                'Delete Failed',
+                'Could not delete the prescription. Please try again.',
+              );
+            } finally {
+              setDeletingFileId(null);
+            }
+          },
+        },
+      ],
+    );
+  };
+
   const handleUpload = async () => {
     if (!selectedFile || !token) return;
     if (!patientId) {
@@ -692,11 +987,7 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
       setSelectedCategory(null);
       Alert.alert('Success', 'Prescription uploaded successfully.');
 
-      // Refresh the prescription history to reflect the new upload.
-      const data = await realAuthService
-        .fetchPrescriptionHistory(patientId, 'opd', token)
-        .catch(() => null);
-      setHistory(data);
+      await refreshPrescriptionHistory();
     } catch (error) {
       console.error('Prescription upload error:', error);
       Alert.alert(
@@ -767,7 +1058,7 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
           </TouchableOpacity>
         </View>
 
-        {/* Prescriptions & Labs history */}
+        {/* Prescriptions, labs, and appointments */}
         <Text style={styles.historyTitle}>Prescriptions &amp; Labs</Text>
         {loading ? (
           <ActivityIndicator
@@ -776,7 +1067,7 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
           />
         ) : historySections.length === 0 ? (
           <Text style={styles.emptyText}>
-            No prescriptions found for this patient
+            No records found for this patient
           </Text>
         ) : (
           historySections.map(section => (
@@ -787,11 +1078,7 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
                 </View>
                 <View style={styles.sectionDivider} />
               </View>
-              {section.items.map(item =>
-                item.kind === 'upload'
-                  ? renderUploadCard(item)
-                  : renderLabCard(item),
-              )}
+              {section.items.map(item => renderHistoryItem(item))}
             </View>
           ))
         )}
@@ -1603,7 +1890,7 @@ const styles = StyleSheet.create({
     marginBottom: theme.spacing.md,
   },
   sectionLabelPill: {
-    backgroundColor: '#E8EAF6',
+    backgroundColor: '#ECEFF1',
     borderRadius: theme.borderRadius.lg,
     paddingVertical: theme.spacing.xs,
     paddingHorizontal: theme.spacing.md,
@@ -1611,7 +1898,7 @@ const styles = StyleSheet.create({
   sectionLabelText: {
     fontSize: theme.typography.fontSizes.sm,
     fontWeight: theme.typography.fontWeights.bold,
-    color: theme.colors.textSecondary,
+    color: '#546E7A',
   },
   sectionDivider: {
     flex: 1,
@@ -1628,49 +1915,96 @@ const styles = StyleSheet.create({
   cardInfoLabel: {
     fontWeight: theme.typography.fontWeights.bold,
   },
+  metaField: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: theme.spacing.xs,
+  },
+  metaLabel: {
+    fontSize: theme.typography.fontSizes.xs,
+    fontWeight: theme.typography.fontWeights.bold,
+    color: theme.colors.primary,
+    letterSpacing: 0.4,
+    marginRight: theme.spacing.sm,
+  },
+  metaLabelMuted: {
+    color: theme.colors.textSecondary,
+  },
+  metaValue: {
+    flex: 1,
+    fontSize: theme.typography.fontSizes.md,
+    fontWeight: theme.typography.fontWeights.semiBold,
+    color: theme.colors.text,
+  },
+  historyCardHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: theme.colors.primary,
+    paddingHorizontal: theme.spacing.md,
+    paddingVertical: 10,
+  },
+  historyCardHeaderTitle: {
+    fontSize: theme.typography.fontSizes.md,
+    fontWeight: theme.typography.fontWeights.bold,
+    color: theme.colors.surface,
+  },
   // Uploaded prescription card
   uploadCard: {
-    flexDirection: 'row',
     backgroundColor: theme.colors.surface,
     borderRadius: theme.borderRadius.lg,
     overflow: 'hidden',
     marginBottom: theme.spacing.md,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
     ...theme.shadows.sm,
   },
-  uploadCardAccent: {
-    width: 5,
-    backgroundColor: theme.colors.primary,
-  },
-  uploadCardBody: {
-    flex: 1,
+  uploadCardPanel: {
+    backgroundColor: '#F5F6F8',
     padding: theme.spacing.md,
   },
-  uploadCardHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: theme.spacing.md,
-  },
-  uploadCardTitle: {
-    flex: 1,
-    fontSize: theme.typography.fontSizes.md,
-    fontWeight: theme.typography.fontWeights.bold,
-    color: theme.colors.text,
-  },
-  categoryBadge: {
-    backgroundColor: '#E8EAF6',
+  uploadCategoryBadge: {
+    backgroundColor: '#7E57C2',
     borderRadius: theme.borderRadius.sm,
     paddingVertical: 2,
     paddingHorizontal: theme.spacing.sm,
     marginLeft: theme.spacing.sm,
   },
-  categoryBadgeText: {
-    fontSize: theme.typography.fontSizes.sm,
+  uploadCategoryBadgeText: {
+    fontSize: theme.typography.fontSizes.xs,
     fontWeight: theme.typography.fontWeights.bold,
-    color: theme.colors.primary,
+    color: theme.colors.surface,
   },
   uploadCardContent: {
     flexDirection: 'row',
+  },
+  uploadFileName: {
+    fontSize: theme.typography.fontSizes.md,
+    fontWeight: theme.typography.fontWeights.bold,
+    color: theme.colors.text,
+    marginBottom: theme.spacing.sm,
+  },
+  uploadCardActions: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    marginTop: theme.spacing.md,
+    gap: theme.spacing.sm,
+  },
+  uploadActionBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  uploadActionPrint: {
+    backgroundColor: '#43A047',
+  },
+  uploadActionDownload: {
+    backgroundColor: theme.colors.primary,
+  },
+  uploadActionDelete: {
+    backgroundColor: '#E53935',
   },
   thumbnail: {
     width: 96,
@@ -1717,6 +2051,48 @@ const styles = StyleSheet.create({
     fontSize: theme.typography.fontSizes.md,
     fontWeight: theme.typography.fontWeights.bold,
     color: theme.colors.text,
+  },
+  apptCard: {
+    backgroundColor: theme.colors.surface,
+    borderRadius: theme.borderRadius.lg,
+    overflow: 'hidden',
+    marginBottom: theme.spacing.md,
+    borderWidth: 1,
+    borderColor: '#BBDEFB',
+    ...theme.shadows.sm,
+  },
+  apptCardHeaderLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 1,
+  },
+  apptHeaderTitle: {
+    marginLeft: theme.spacing.sm,
+  },
+  apptStatusBadge: {
+    borderRadius: theme.borderRadius.xl,
+    paddingHorizontal: theme.spacing.md,
+    paddingVertical: 4,
+    marginLeft: theme.spacing.sm,
+  },
+  apptStatusText: {
+    fontSize: theme.typography.fontSizes.sm,
+    fontWeight: theme.typography.fontWeights.bold,
+    color: theme.colors.surface,
+  },
+  apptCardBody: {
+    backgroundColor: theme.colors.surface,
+    paddingHorizontal: theme.spacing.md,
+    paddingVertical: theme.spacing.md,
+  },
+  apptCardGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+  },
+  apptGridCell: {
+    width: '50%',
+    paddingRight: theme.spacing.sm,
+    marginBottom: theme.spacing.sm,
   },
   // In-app file viewer
   viewerContainer: {

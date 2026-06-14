@@ -742,6 +742,38 @@ class RealAuthService {
   }
 
   /**
+   * Fetch all appointments for a patient.
+   * GET /api/appointments/patient?patientId={id}
+   */
+  async fetchPatientAppointments(
+    patientId: string,
+    token: string,
+  ): Promise<any[]> {
+    try {
+      console.log(`📅 Fetching appointments for patient ${patientId}`);
+
+      const response = await apiClient.get('/appointments/patient', {
+        params: { patientId },
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+      });
+
+      const appointments = response.data?.data ?? response.data ?? [];
+      console.log(
+        `✅ Patient appointments fetched: ${
+          Array.isArray(appointments) ? appointments.length : 0
+        }`,
+      );
+      return Array.isArray(appointments) ? appointments : [];
+    } catch (error) {
+      console.error('❌ Failed to fetch patient appointments:', error);
+      throw error;
+    }
+  }
+
+  /**
    * Move a patient to OPD — hits GET /patient/:id as per the backend flow.
    */
   async moveToOpd(patientId: string, token: string): Promise<any> {
@@ -1017,6 +1049,28 @@ class RealAuthService {
       return signedUrl;
     } catch (error) {
       console.error('❌ Failed to get signed URL:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Delete an uploaded patient file. Hits DELETE /file/patient/:id.
+   */
+  async deletePatientFile(fileId: string, token: string): Promise<any> {
+    try {
+      console.log(`🗑️ Deleting patient file ${fileId}`);
+
+      const response = await apiClient.delete(`/file/patient/${fileId}`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+      });
+
+      console.log('✅ Patient file deleted');
+      return response.data?.data ?? response.data ?? null;
+    } catch (error) {
+      console.error('❌ Failed to delete patient file:', error);
       throw error;
     }
   }
