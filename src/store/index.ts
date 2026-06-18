@@ -3,6 +3,7 @@ import { TypedUseSelectorHook, useDispatch, useSelector } from 'react-redux';
 import authReducer from './authSlice';
 import taskReducer from './taskSlice';
 import settingsReducer from './settingsSlice';
+import appDataReducer from './appDataSlice';
 import { RootState } from '../types';
 
 export const store = configureStore({
@@ -10,6 +11,7 @@ export const store = configureStore({
     auth: authReducer,
     tasks: taskReducer,
     settings: settingsReducer,
+    appData: appDataReducer,
   },
   middleware: getDefaultMiddleware =>
     getDefaultMiddleware({
@@ -73,5 +75,18 @@ export const selectNotificationCount = createSelector(
 export const selectSettings = (state: AppRootState) => state.settings;
 export const selectNotificationSoundId = (state: AppRootState) =>
   state.settings.notificationSoundId;
+
+// App data selectors
+export const selectAppData = (state: AppRootState) => state.appData;
+export const selectAppConfig = (state: AppRootState) => state.appData.config;
+export const selectManageServices = (state: AppRootState) =>
+  state.appData.manageServices;
+export const selectAppDataLoading = (state: AppRootState) =>
+  state.appData.isLoading;
+export const selectAppDataLoaded = (state: AppRootState) =>
+  state.appData.isLoaded;
+export const selectAppDataError = (state: AppRootState) => state.appData.error;
+
+export { loadAppData } from './appDataSlice';
 
 export default store;

@@ -24,6 +24,8 @@ interface HeaderProps {
   onHomePress?: () => void;
   showMenuIcon?: boolean;
   onMenuPress?: () => void;
+  showSearchIcon?: boolean;
+  onSearchPress?: () => void;
   rightText?: string;
   onRightTextPress?: () => void;
   rightTextExpanded?: boolean;
@@ -40,6 +42,8 @@ const Header: React.FC<HeaderProps> = ({
   onHomePress,
   showMenuIcon = false,
   onMenuPress,
+  showSearchIcon = false,
+  onSearchPress,
   rightText,
   onRightTextPress,
   rightTextExpanded = false,
@@ -140,6 +144,15 @@ const Header: React.FC<HeaderProps> = ({
                     </View>
                   )}
                 </View>
+              </TouchableOpacity>
+            ) : showSearchIcon ? (
+              <TouchableOpacity
+                style={styles.notificationButton}
+                onPress={onSearchPress}
+                activeOpacity={0.7}
+                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+              >
+                <Icon name="search" size={28} color={theme.colors.surface} />
               </TouchableOpacity>
             ) : (
               showNotificationIcon && (

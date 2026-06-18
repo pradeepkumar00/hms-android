@@ -4,11 +4,11 @@ import {
   Text,
   StyleSheet,
   TouchableOpacity,
-  TouchableWithoutFeedback,
+  Pressable,
   Modal,
   ScrollView,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import Icon from 'react-native-vector-icons/MaterialIcons';
 import {
   useAppSelector,
@@ -17,7 +17,7 @@ import {
 } from '../store';
 import { navigationService } from '../services/navigationService';
 import { theme } from '../constants/theme';
-import { MENU_ITEMS } from '../constants/menuItems';
+import { DRAWER_MENU_ITEMS } from '../constants/menuItems';
 import { RootStackParamList } from '../types';
 
 interface MenuDrawerProps {
@@ -31,6 +31,7 @@ const MenuDrawer: React.FC<MenuDrawerProps> = ({
   onClose,
   onLogout,
 }) => {
+  const insets = useSafeAreaInsets();
   const unreadCount = useAppSelector(selectNotificationCount);
   const currentUser = useAppSelector(selectCurrentUser);
 
@@ -52,13 +53,23 @@ const MenuDrawer: React.FC<MenuDrawerProps> = ({
       animationType="fade"
       onRequestClose={onClose}
       statusBarTranslucent
+      presentationStyle="overFullScreen"
     >
-      {/* Tap outside to dismiss */}
-      <TouchableWithoutFeedback onPress={onClose}>
-        <View style={styles.overlay} />
-      </TouchableWithoutFeedback>
+      <View style={styles.root}>
+        <Pressable
+          style={[
+            styles.overlay,
+            {
+              top: -insets.top,
+              bottom: -insets.bottom,
+            },
+          ]}
+          onPress={onClose}
+          accessibilityRole="button"
+          accessibilityLabel="Close menu"
+        />
 
-      <SafeAreaView edges={['top']} style={styles.panelContainer}>
+        <SafeAreaView edges={['top']} style={styles.panelContainer}>
         <View style={styles.panel}>
           {/* Header row */}
           <View style={styles.panelHeader}>
@@ -73,7 +84,7 @@ const MenuDrawer: React.FC<MenuDrawerProps> = ({
           </View>
 
           <ScrollView showsVerticalScrollIndicator={false}>
-            {MENU_ITEMS.map(item => (
+            {DRAWER_MENU_ITEMS.map(item => (
               <TouchableOpacity
                 key={item.key}
                 style={styles.menuItem}
@@ -119,12 +130,16 @@ const MenuDrawer: React.FC<MenuDrawerProps> = ({
             )}
           </TouchableOpacity>
         </View>
-      </SafeAreaView>
+        </SafeAreaView>
+      </View>
     </Modal>
   );
 };
 
 const styles = StyleSheet.create({
+  root: {
+    flex: 1,
+  },
   overlay: {
     ...StyleSheet.absoluteFillObject,
     backgroundColor: 'rgba(0, 0, 0, 0.4)',

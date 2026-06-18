@@ -13,13 +13,12 @@ import {
   useAppDispatch,
   useAppSelector,
   selectCurrentUser,
-  selectNotificationCount,
 } from '../store';
 import { logoutUser } from '../store/authSlice';
 import { fetchInboxNotifications } from '../store/taskSlice';
 import { theme } from '../constants/theme';
 import { APP_CONFIG } from '../constants/app';
-import { MENU_ITEMS } from '../constants/menuItems';
+import { HOME_MENU_ITEMS } from '../constants/menuItems';
 import { Header, MenuDrawer } from '../components';
 import { RootStackParamList } from '../types';
 
@@ -33,10 +32,8 @@ interface HomeScreenProps {
 const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
   const dispatch = useAppDispatch();
   const user = useAppSelector(selectCurrentUser);
-  const unreadCount = useAppSelector(selectNotificationCount);
   const [menuVisible, setMenuVisible] = useState(false);
 
-  // Load inbox notifications so the notifications tile badge is accurate
   useEffect(() => {
     if (user?.id) {
       dispatch(fetchInboxNotifications(user.id));
@@ -107,7 +104,7 @@ const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
 
         {/* Menu tiles */}
         <View style={styles.tilesGrid}>
-          {MENU_ITEMS.map(item => (
+          {HOME_MENU_ITEMS.map(item => (
             <TouchableOpacity
               key={item.key}
               style={styles.tile}
@@ -116,13 +113,6 @@ const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
             >
               <View style={styles.tileIconWrapper}>
                 <Icon name={item.icon} size={32} color={theme.colors.primary} />
-                {item.showBadge && unreadCount > 0 && (
-                  <View style={styles.badge}>
-                    <Text style={styles.badgeText} numberOfLines={1}>
-                      {unreadCount > 9 ? '9+' : unreadCount}
-                    </Text>
-                  </View>
-                )}
               </View>
               <Text style={styles.tileLabel} numberOfLines={2}>
                 {item.label}

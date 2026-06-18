@@ -742,6 +742,139 @@ class RealAuthService {
   }
 
   /**
+   * Fetch tenant app configuration (includes regisConfig for patient registration).
+   * GET /api/config
+   */
+  async fetchAppConfig(token: string): Promise<any> {
+    try {
+      console.log('⚙️ Fetching app config');
+
+      const response = await apiClient.get('/config', {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+      });
+
+      const body = response.data?.data ?? response.data ?? {};
+      console.log(
+        '⚙️ Config loaded — regisConfig keys:',
+        Object.keys(body?.regisConfig ?? {}),
+      );
+      return body;
+    } catch (error) {
+      console.error('❌ Failed to fetch app config:', error);
+      throw new Error(handleNetworkError(error));
+    }
+  }
+
+  /**
+   * Register a new patient.
+   * POST /api/add/patient
+   */
+  async registerPatient(
+    payload: Record<string, unknown>,
+    token: string,
+  ): Promise<any> {
+    try {
+      console.log('📝 Registering patient via /add/patient');
+
+      const response = await apiClient.post('/add/patient', payload, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+      });
+
+      const body = response.data ?? {};
+      if (body.status >= 400) {
+        throw new Error(body.message || 'Failed to register patient');
+      }
+
+      console.log('✅ Patient registered');
+      return body.data ?? body;
+    } catch (error) {
+      console.error('❌ Failed to register patient:', error);
+      throw new Error(handleNetworkError(error));
+    }
+  }
+
+  /**
+   * Fetch paginated patient list.
+   * GET /api/patient?page=0&limit=20
+   */
+  async fetchPatients(
+    token: string,
+    params: { page?: number; limit?: number; search?: string } = {},
+  ): Promise<{
+    patients: any[];
+    total: number;
+    page: number;
+    limit: number;
+    hasMore: boolean;
+  }> {
+    const page = params.page ?? 0;
+    const limit = params.limit ?? 20;
+
+    try {
+      console.log(`👥 Fetching patients page=${page} limit=${limit}`);
+
+      const response = await apiClient.get('/patient', {
+        params: {
+          page,
+          limit,
+          ...(params.search?.trim() ? { search: params.search.trim() } : {}),
+        },
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+      });
+
+      const root = response.data ?? {};
+      const body = root.data ?? root;
+
+      const rawList = Array.isArray(body)
+        ? body
+        : body.patients ??
+          body.docs ??
+          body.list ??
+          body.rows ??
+          body.records ??
+          body.result ??
+          body.items ??
+          body.users ??
+          body.data ??
+          [];
+
+      const patients = Array.isArray(rawList) ? rawList : [];
+      const totalSource = Array.isArray(body) ? root : body;
+      const total =
+        totalSource.total ??
+        totalSource.totalCount ??
+        totalSource.totalRecords ??
+        totalSource.count ??
+        root.total ??
+        root.totalCount ??
+        patients.length;
+      const hasMore = (page + 1) * limit < total;
+
+      if (patients.length === 0) {
+        console.log('⚠️ Patient list empty — response keys:', {
+          rootKeys: Object.keys(root),
+          bodyKeys: Array.isArray(body) ? 'array' : Object.keys(body ?? {}),
+        });
+      }
+
+      console.log(`✅ Patients fetched: ${patients.length} (total: ${total})`);
+      return { patients, total, page, limit, hasMore };
+    } catch (error) {
+      console.error('❌ Failed to fetch patients:', error);
+      throw new Error(handleNetworkError(error));
+    }
+  }
+
+  /**
    * Fetch all appointments for a patient.
    * GET /api/appointments/patient?patientId={id}
    */
@@ -824,6 +957,37 @@ class RealAuthService {
       return response.data?.data ?? response.data ?? null;
     } catch (error) {
       console.error('❌ Failed to update appointment status:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Save or update an appointment remark.
+   * PATCH /appointments/:id/remark
+   */
+  async saveAppointmentRemark(
+    appointmentId: string,
+    remark: string,
+    token: string,
+  ): Promise<any> {
+    try {
+      console.log(`📝 Saving remark for appointment ${appointmentId}`);
+
+      const response = await apiClient.patch(
+        `/appointments/${appointmentId}/remark`,
+        { remark },
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+        },
+      );
+
+      console.log('✅ Appointment remark saved');
+      return response.data?.data ?? response.data ?? null;
+    } catch (error) {
+      console.error('❌ Failed to save appointment remark:', error);
       throw error;
     }
   }
@@ -1173,8 +1337,19 @@ class RealAuthService {
       doctorName: string;
       patientId: string;
       date: string; // YYYY-MM-DD
-      appointmentTime: string; // e.g. "12:00 PM"
+      appointmentTime?: string; // e.g. "12:00 PM"
       tokenCount?: number;
+      details?: Array<{
+        treatmentDesc: string;
+        manageServiceId: string;
+        expenseAmount: number;
+        date: string;
+        teeth: Record<string, number[]>;
+        source?: 'catalog';
+        qty?: number;
+        description?: string;
+      }>;
+      remark?: string;
     },
     token: string,
   ): Promise<any> {
@@ -1183,31 +1358,41 @@ class RealAuthService {
         `🎟️ Booking follow-up token for patient ${params.patientId} with doctor ${params.doctorId}`,
       );
 
-      const response = await apiClient.post(
-        '/book-token',
-        {
-          doctorId: params.doctorId,
-          patientId: params.patientId,
-          doctorName: params.doctorName,
-          date: params.date,
-          tokenType: 'opd',
-          visitType: 'FOLLOW_UP',
-          expenseAmount: 0,
-          paidAmount: 0,
-          discount: 0,
-          tokenCount: params.tokenCount,
-          appointmentTime: params.appointmentTime,
+      const payload: Record<string, unknown> = {
+        doctorId: params.doctorId,
+        patientId: params.patientId,
+        doctorName: params.doctorName,
+        date: params.date,
+        tokenType: 'opd',
+        visitType: 'FOLLOW_UP',
+        expenseAmount: 0,
+        paidAmount: 0,
+        discount: 0,
+      };
+
+      if (params.details?.length) {
+        payload.details = params.details;
+      }
+      if (params.remark?.trim()) {
+        payload.remark = params.remark.trim();
+      }
+      if (params.tokenCount != null) {
+        payload.tokenCount = params.tokenCount;
+      }
+      if (params.appointmentTime) {
+        payload.appointmentTime = params.appointmentTime;
+      }
+
+      const response = await apiClient.post('/book-token', payload, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
         },
-        {
-          headers: {
-            Authorization: `Bearer ${token}`,
-            'Content-Type': 'application/json',
-          },
-        },
-      );
+      });
 
       console.log('✅ Follow-up token booked');
-      return response.data?.data ?? response.data ?? null;
+      const body = response.data;
+      return body?.res ?? body?.data ?? body ?? null;
     } catch (error) {
       console.error('❌ Failed to book follow-up token:', error);
       throw error;
@@ -1284,6 +1469,190 @@ class RealAuthService {
       }
     } catch (error) {
       console.error('❌ Failed to unsubscribe from notification topic:', error);
+    }
+  }
+
+  /**
+   * Fetch treatment plans for a patient.
+   * GET /treatment-plan?patientId=...&noSession=1&type=opd
+   */
+  async fetchTreatmentPlans(
+    patientId: string,
+    token: string,
+    type: string = 'opd',
+  ): Promise<any[]> {
+    try {
+      console.log(`🦷 Fetching treatment plans for patient ${patientId}`);
+
+      const response = await apiClient.get('/treatment-plan', {
+        params: {
+          patientId,
+          noSession: 1,
+          type,
+        },
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+      });
+
+      const raw =
+        response.data?.data ??
+        response.data?.plans ??
+        response.data?.treatmentPlans ??
+        response.data;
+
+      if (Array.isArray(raw)) {
+        console.log(`✅ Treatment plans fetched: ${raw.length}`);
+        return raw;
+      }
+      if (raw && typeof raw === 'object') {
+        return [raw];
+      }
+      return [];
+    } catch (error) {
+      console.error('❌ Failed to fetch treatment plans:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Cancel a treatment plan / bill group.
+   * POST /payment/cancel-treatment
+   */
+  async cancelTreatment(
+    payload: {
+      patientId: string;
+      groupId: string;
+      cancelRemark: string;
+    },
+    token: string,
+  ): Promise<any> {
+    try {
+      console.log(`🦷 Cancelling treatment group ${payload.groupId}`);
+
+      const response = await apiClient.post('/payment/cancel-treatment', payload, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+      });
+
+      console.log('✅ Treatment cancelled');
+      return response.data?.data ?? response.data;
+    } catch (error) {
+      console.error('❌ Failed to cancel treatment:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Save a treatment plan and bill for an OPD patient.
+   * POST /treatment-plan
+   */
+  async saveTreatmentPlan(payload: Record<string, unknown>, token: string): Promise<any> {
+    try {
+      console.log('🦷 Saving treatment plan');
+
+      const response = await apiClient.post('/treatment-plan', payload, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+      });
+
+      console.log('✅ Treatment plan saved');
+      return response.data?.data ?? response.data;
+    } catch (error) {
+      console.error('❌ Failed to save treatment plan:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Fetch manage-service items (e.g. treatments) for the current tenant.
+   * GET /manage-service?type=treatment
+   */
+  async fetchManageServices(
+    token: string,
+    type: string = 'treatment',
+  ): Promise<
+    Array<{ _id: string; name: string; price: number }>
+  > {
+    try {
+      console.log(`🦷 Fetching manage services (${type})`);
+
+      const response = await apiClient.get('/manage-service', {
+        params: { type },
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: 'application/json, text/plain, */*',
+        },
+      });
+
+      const list =
+        response.data?.data ??
+        response.data?.services ??
+        response.data?.result ??
+        response.data ??
+        [];
+      const raw = Array.isArray(list) ? list : [];
+      const services = raw.map((item: Record<string, unknown>) => ({
+        _id: String(item._id ?? item.id ?? ''),
+        name: String(
+          item.serviceName ?? item.name ?? item.title ?? '',
+        ),
+        price: Number(
+          item.servicePrice ??
+            item.price ??
+            item.amount ??
+            item.cost ??
+            item.fees ??
+            item.rate ??
+            0,
+        ),
+      }));
+      console.log(`✅ Manage services fetched: ${services.length}`);
+      return services;
+    } catch (error) {
+      console.error('❌ Failed to fetch manage services:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Raw manage-service records for follow-up treatment picker.
+   * GET /manage-service?type=treatment
+   */
+  async fetchManageServiceRecords(
+    token: string,
+    type?: string,
+  ): Promise<Array<Record<string, unknown>>> {
+    try {
+      console.log(
+        `🦷 Fetching manage service records${type ? ` (${type})` : ''}`,
+      );
+
+      const response = await apiClient.get('/manage-service', {
+        params: type ? { type } : undefined,
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: 'application/json, text/plain, */*',
+        },
+      });
+
+      const list =
+        response.data?.data ??
+        response.data?.services ??
+        response.data?.result ??
+        response.data ??
+        [];
+      const raw = Array.isArray(list) ? list : [];
+      console.log(`✅ Manage service records fetched: ${raw.length}`);
+      return raw as Array<Record<string, unknown>>;
+    } catch (error) {
+      console.error('❌ Failed to fetch manage service records:', error);
+      throw error;
     }
   }
 

@@ -130,6 +130,43 @@ export interface TaskState {
   currentTask: Task | null; // Single task for details view
 }
 
+// Patient Types
+export interface Patient {
+  _id: string;
+  id?: string;
+  name: string;
+  mobileNo?: string;
+  uhid?: string | null;
+  gender?: string;
+  age?: number;
+  type?: string;
+  admitType?: string | null;
+}
+
+export interface PatientListResult {
+  patients: Patient[];
+  total: number;
+  page: number;
+  limit: number;
+  hasMore: boolean;
+}
+
+export interface RegisFieldOption {
+  label: string;
+  value: string;
+}
+
+export interface RegisField {
+  key: string;
+  label: string;
+  type: 'text' | 'number' | 'email' | 'select' | 'date' | 'textarea' | 'doctor';
+  required: boolean;
+  placeholder?: string;
+  options?: RegisFieldOption[];
+  defaultValue?: string;
+  visible?: boolean;
+}
+
 // Appointment Types (Calendar)
 export interface Appointment {
   _id: string;
@@ -160,6 +197,7 @@ export interface Appointment {
   refId?: string | null;
   uhid?: string | null;
   isPaymentDone?: boolean;
+  remark?: string;
 }
 
 // Notification Types
@@ -201,7 +239,9 @@ export type RootStackParamList = {
     type?: 'created' | 'assigned';
     title: string;
   }; // Generic task list screen with filters
-  OPD: { appointment: Appointment; patient?: any }; // OPD consultation for an appointment
+  OPD: { appointment?: Appointment; patient?: any }; // OPD consultation screen
+  PatientList: undefined;
+  AddPatient: undefined;
 };
 
 // UI Types
@@ -223,12 +263,22 @@ export interface SettingsState {
   vibrationEnabled: boolean; // whether vibration is enabled for notifications
 }
 
+export interface AppDataState {
+  config: Record<string, unknown> | null;
+  manageServices: Array<Record<string, unknown>>;
+  isLoading: boolean;
+  isLoaded: boolean;
+  error: string | null;
+  loadedAt: string | null;
+}
+
 // Root State
 export interface RootState {
   auth: AuthState;
   tasks: TaskState;
   ui: UIState;
   settings: SettingsState;
+  appData: AppDataState;
 }
 
 // API Response Types

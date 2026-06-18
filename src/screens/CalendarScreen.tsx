@@ -4,21 +4,24 @@ import {
   Text,
   StyleSheet,
   TouchableOpacity,
-  Pressable,
   ActivityIndicator,
   ScrollView,
   RefreshControl,
   Alert,
-  Modal,
   Dimensions,
+  TextInput,
+  FlatList,
+  Linking,
+  StatusBar,
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import DatePicker from 'react-native-date-picker';
 import { useAppSelector, selectAuthToken } from '../store';
 import { theme } from '../constants/theme';
-import { Header } from '../components';
+import { Header, ModalBackdrop } from '../components';
 import Icon from 'react-native-vector-icons/MaterialIcons';
-import { Appointment } from '../types';
+import { Appointment, Patient } from '../types';
 
 interface CalendarScreenProps {
   navigation: any;
@@ -219,6 +222,15 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation }) => {
   const [patientApptsLoading, setPatientApptsLoading] = useState(false);
   // Measured height of the fixed sheet header/details/actions block
   const [sheetTopHeight, setSheetTopHeight] = useState(0);
+  // Patient search modal
+  const [patientSearchOpen, setPatientSearchOpen] = useState(false);
+  const [patientSearchQuery, setPatientSearchQuery] = useState('');
+  const [debouncedPatientSearch, setDebouncedPatientSearch] = useState('');
+  const [searchPatients, setSearchPatients] = useState<Patient[]>([]);
+  const [searchPatientsLoading, setSearchPatientsLoading] = useState(false);
+  const [movingSearchPatientId, setMovingSearchPatientId] = useState<
+    string | null
+  >(null);
 
   // The seven dates of the displayed week (Sun → Sat)
   const weekDays = useMemo(
@@ -289,6 +301,121 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation }) => {
       fetchAppointments();
     }, [fetchAppointments]),
   );
+
+  useEffect(() => {
+    const timer = setTimeout(
+      () => setDebouncedPatientSearch(patientSearchQuery.trim()),
+      400,
+    );
+    return () => clearTimeout(timer);
+  }, [patientSearchQuery]);
+
+  const normalizeSearchPatient = (raw: any): Patient => {
+    const source = raw?.user ?? raw?.patient ?? raw;
+    return {
+      _id: source._id || source.id || raw._id || raw.id,
+      id: source.id || raw.id,
+      name:
+        source.name ||
+        source.patientName ||
+        source.fullName ||
+        'Unknown',
+      mobileNo:
+        source.mobileNo ||
+        source.mobile ||
+        source.phone ||
+        source.phoneNo ||
+        '',
+      uhid: source.uhid ?? source.UHID ?? raw.uhid ?? null,
+    };
+  };
+
+  const fetchSearchPatients = useCallback(async () => {
+    if (!token || !patientSearchOpen) return;
+
+    setSearchPatientsLoading(true);
+    try {
+      const realAuthService = (await import('../services/realAuthService'))
+        .default;
+      const result = await realAuthService.fetchPatients(token, {
+        page: 0,
+        limit: 20,
+        search: debouncedPatientSearch || undefined,
+      });
+      setSearchPatients(result.patients.map(normalizeSearchPatient));
+    } catch (err) {
+      console.error('Patient search failed:', err);
+      setSearchPatients([]);
+    } finally {
+      setSearchPatientsLoading(false);
+    }
+  }, [token, patientSearchOpen, debouncedPatientSearch]);
+
+  useEffect(() => {
+    if (patientSearchOpen) {
+      fetchSearchPatients();
+    }
+  }, [patientSearchOpen, fetchSearchPatients]);
+
+  const handlePatientCall = (mobileNo?: string) => {
+    const phone = mobileNo?.trim();
+    if (!phone) {
+      Alert.alert('Call', 'No mobile number available for this patient.');
+      return;
+    }
+    Linking.openURL(`tel:${phone}`).catch(() => {
+      Alert.alert('Call', 'Unable to open the phone dialer.');
+    });
+  };
+
+  const openPatientSearch = () => {
+    setPatientSearchQuery('');
+    setDebouncedPatientSearch('');
+    setPatientSearchOpen(true);
+  };
+
+  const closePatientSearch = () => {
+    setPatientSearchOpen(false);
+    setPatientSearchQuery('');
+    setDebouncedPatientSearch('');
+    setSearchPatients([]);
+    setMovingSearchPatientId(null);
+  };
+
+  const handleSearchPatientMoveToOpd = async (patient: Patient) => {
+    const patientId = patient._id || patient.id;
+    if (!patientId || !token || movingSearchPatientId) return;
+
+    setMovingSearchPatientId(patientId);
+    try {
+      const realAuthService = (await import('../services/realAuthService'))
+        .default;
+      const fullPatient = await realAuthService.moveToOpd(patientId, token);
+      const resolvedPatient = fullPatient || patient;
+      const appointment: Appointment = {
+        _id: `calendar-search-${patientId}`,
+        patientId,
+        patientName: resolvedPatient.name || patient.name,
+        mobileNo: resolvedPatient.mobileNo || patient.mobileNo,
+        uhid: resolvedPatient.uhid ?? patient.uhid,
+        date: new Date().toISOString().slice(0, 10),
+      };
+
+      closePatientSearch();
+      navigation.navigate('OPD', {
+        appointment,
+        patient: resolvedPatient,
+      });
+    } catch (err) {
+      console.error('Move to OPD failed:', err);
+      Alert.alert(
+        'Error',
+        'Failed to move the patient to OPD. Please try again.',
+      );
+    } finally {
+      setMovingSearchPatientId(null);
+    }
+  };
 
   // Load all appointments for the patient when the details sheet opens
   useEffect(() => {
@@ -576,8 +703,9 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation }) => {
         title="Calendar"
         showHomeIcon
         onHomePress={() => navigation.popToTop()}
-        showNotificationIcon
-        onNotificationPress={() => navigation.navigate('Inbox')}
+        showNotificationIcon={false}
+        showSearchIcon
+        onSearchPress={openPatientSearch}
       />
 
       {/* Week navigation + doctor dropdown */}
@@ -731,96 +859,240 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation }) => {
       )}
 
       {/* Doctor filter dropdown for the token section */}
-      <Modal
+      <ModalBackdrop
         visible={doctorModalOpen}
-        transparent
+        onClose={() => setDoctorModalOpen(false)}
         animationType="fade"
-        onRequestClose={() => setDoctorModalOpen(false)}
+        align="center"
       >
-        <TouchableOpacity
-          style={styles.modalOverlay}
-          activeOpacity={1}
-          onPress={() => setDoctorModalOpen(false)}
-        >
-          <View style={styles.doctorModalContent}>
-            <View style={styles.doctorModalHeader}>
-              <Text style={styles.doctorModalTitle}>Select Doctor</Text>
-              <TouchableOpacity onPress={() => setDoctorModalOpen(false)}>
-                <Icon name="close" size={22} color={theme.colors.text} />
+        <View style={styles.doctorModalContent}>
+          <View style={styles.doctorModalHeader}>
+            <Text style={styles.doctorModalTitle}>Select Doctor</Text>
+            <TouchableOpacity onPress={() => setDoctorModalOpen(false)}>
+              <Icon name="close" size={22} color={theme.colors.text} />
+            </TouchableOpacity>
+          </View>
+          <ScrollView>
+            {/* All doctors */}
+            <TouchableOpacity
+              style={styles.doctorOption}
+              activeOpacity={0.7}
+              onPress={() => {
+                setSelectedDoctorId(null);
+                setDoctorModalOpen(false);
+              }}
+            >
+              <Icon
+                name="groups"
+                size={18}
+                color={theme.colors.textSecondary}
+                style={styles.doctorOptionIcon}
+              />
+              <Text style={styles.doctorOptionText}>All Doctors</Text>
+              {selectedDoctorId == null && (
+                <Icon name="check" size={20} color={theme.colors.primary} />
+              )}
+            </TouchableOpacity>
+
+            {doctorOptions.map(doc => {
+              const isSelected = selectedDoctorId === doc.id;
+              return (
+                <TouchableOpacity
+                  key={doc.id}
+                  style={styles.doctorOption}
+                  activeOpacity={0.7}
+                  onPress={() => {
+                    setSelectedDoctorId(doc.id);
+                    setDoctorModalOpen(false);
+                  }}
+                >
+                  <View
+                    style={[
+                      styles.doctorDot,
+                      {
+                        backgroundColor:
+                          doctorColors[doc.id] ||
+                          doc.color ||
+                          theme.colors.primary,
+                      },
+                    ]}
+                  />
+                  <Text style={styles.doctorOptionText} numberOfLines={1}>
+                    {doc.name}
+                  </Text>
+                  {isSelected && (
+                    <Icon name="check" size={20} color={theme.colors.primary} />
+                  )}
+                </TouchableOpacity>
+              );
+            })}
+          </ScrollView>
+        </View>
+      </ModalBackdrop>
+
+      {/* Patient search modal */}
+      <ModalBackdrop
+        visible={patientSearchOpen}
+        onClose={closePatientSearch}
+        animationType="slide"
+        align="full"
+        dismissOnBackdropPress={false}
+      >
+        <View style={styles.patientSearchModal}>
+          <StatusBar
+            barStyle="light-content"
+            backgroundColor={theme.colors.primary}
+            translucent={false}
+          />
+          <SafeAreaView edges={['top']} style={styles.patientSearchHeaderSafeArea}>
+            <View style={styles.patientSearchHeader}>
+              <Text style={styles.patientSearchHeaderTitle}>Search Patients</Text>
+              <TouchableOpacity
+                onPress={closePatientSearch}
+                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+              >
+                <Icon name="close" size={24} color={theme.colors.textInverse} />
               </TouchableOpacity>
             </View>
-            <ScrollView>
-              {/* All doctors */}
-              <TouchableOpacity
-                style={styles.doctorOption}
-                activeOpacity={0.7}
-                onPress={() => {
-                  setSelectedDoctorId(null);
-                  setDoctorModalOpen(false);
-                }}
-              >
-                <Icon
-                  name="groups"
-                  size={18}
-                  color={theme.colors.textSecondary}
-                  style={styles.doctorOptionIcon}
-                />
-                <Text style={styles.doctorOptionText}>All Doctors</Text>
-                {selectedDoctorId == null && (
-                  <Icon name="check" size={20} color={theme.colors.primary} />
-                )}
-              </TouchableOpacity>
+          </SafeAreaView>
 
-              {doctorOptions.map(doc => {
-                const isSelected = selectedDoctorId === doc.id;
-                return (
-                  <TouchableOpacity
-                    key={doc.id}
-                    style={styles.doctorOption}
-                    activeOpacity={0.7}
-                    onPress={() => {
-                      setSelectedDoctorId(doc.id);
-                      setDoctorModalOpen(false);
-                    }}
-                  >
-                    <View
-                      style={[
-                        styles.doctorDot,
-                        {
-                          backgroundColor:
-                            doctorColors[doc.id] ||
-                            doc.color ||
-                            theme.colors.primary,
-                        },
-                      ]}
-                    />
-                    <Text style={styles.doctorOptionText} numberOfLines={1}>
-                      {doc.name}
-                    </Text>
-                    {isSelected && (
-                      <Icon name="check" size={20} color={theme.colors.primary} />
-                    )}
-                  </TouchableOpacity>
-                );
-              })}
-            </ScrollView>
+          <SafeAreaView edges={['bottom']} style={styles.patientSearchContentSafeArea}>
+            <View style={styles.patientSearchBody}>
+            <View style={styles.patientSearchInputRow}>
+              <Icon name="search" size={20} color={theme.colors.textSecondary} />
+              <TextInput
+                style={styles.patientSearchInput}
+                placeholder="Search by name, number or UHID/PID"
+                placeholderTextColor={theme.colors.placeholder}
+                value={patientSearchQuery}
+                onChangeText={setPatientSearchQuery}
+                autoFocus
+              />
+              {patientSearchQuery.length > 0 && (
+                <TouchableOpacity onPress={() => setPatientSearchQuery('')}>
+                  <Icon name="close" size={20} color={theme.colors.textSecondary} />
+                </TouchableOpacity>
+              )}
+            </View>
+
+            <View style={styles.patientSearchListSection}>
+              <View style={styles.patientSearchTableHeader}>
+                <Text style={[styles.patientSearchHeaderCell, styles.patientSearchNameColHeader]}>
+                  NAME
+                </Text>
+                <Text style={[styles.patientSearchHeaderCell, styles.patientSearchMobileColHeader]}>
+                  MOBILE
+                </Text>
+                <Text style={[styles.patientSearchHeaderCell, styles.patientSearchActionColHeader]}>
+                  CALL
+                </Text>
+              </View>
+
+              {searchPatientsLoading ? (
+                <View style={styles.patientSearchLoading}>
+                  <ActivityIndicator size="small" color={theme.colors.primary} />
+                </View>
+              ) : (
+                <FlatList
+                  data={searchPatients}
+                  keyExtractor={(item, index) =>
+                    item._id || item.id || `patient-${index}`
+                  }
+                  keyboardShouldPersistTaps="handled"
+                  style={styles.patientSearchList}
+                  contentContainerStyle={styles.patientSearchListContent}
+                  ListEmptyComponent={
+                    <View style={styles.patientSearchEmpty}>
+                      <Icon
+                        name="people-outline"
+                        size={48}
+                        color={theme.colors.disabled}
+                      />
+                      <Text style={styles.patientSearchEmptyText}>
+                        {patientSearchQuery.trim()
+                          ? `No patients match "${patientSearchQuery}"`
+                          : 'No patients found'}
+                      </Text>
+                    </View>
+                  }
+                  renderItem={({ item }) => {
+                    const patientId = item._id || item.id || '';
+                    const isMoving = movingSearchPatientId === patientId;
+
+                    return (
+                    <View style={styles.patientSearchRow}>
+                      <TouchableOpacity
+                        style={styles.patientSearchInfoPressable}
+                        activeOpacity={0.7}
+                        disabled={isMoving}
+                        onPress={() => handleSearchPatientMoveToOpd(item)}
+                      >
+                        <View style={styles.patientSearchNameCell}>
+                          <View style={styles.patientSearchAvatar}>
+                            {isMoving ? (
+                              <ActivityIndicator
+                                size="small"
+                                color={theme.colors.primary}
+                              />
+                            ) : (
+                              <Icon
+                                name="person"
+                                size={20}
+                                color={theme.colors.primary}
+                              />
+                            )}
+                          </View>
+                          <Text style={styles.patientSearchName} numberOfLines={2}>
+                            {item.name}
+                          </Text>
+                        </View>
+                        <Text
+                          style={[styles.patientSearchMobile, styles.patientSearchMobileCell]}
+                          numberOfLines={1}
+                        >
+                          {item.mobileNo || '—'}
+                        </Text>
+                      </TouchableOpacity>
+                      <View style={styles.patientSearchActionCell}>
+                        <TouchableOpacity
+                          style={[
+                            styles.patientSearchCallBtn,
+                            !item.mobileNo && styles.patientSearchCallBtnDisabled,
+                          ]}
+                          onPress={() => handlePatientCall(item.mobileNo)}
+                          disabled={!item.mobileNo}
+                          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                        >
+                          <Icon
+                            name="phone"
+                            size={18}
+                            color={
+                              item.mobileNo
+                                ? theme.colors.success
+                                : theme.colors.disabled
+                            }
+                          />
+                        </TouchableOpacity>
+                      </View>
+                    </View>
+                    );
+                  }}
+                />
+              )}
+            </View>
           </View>
-        </TouchableOpacity>
-      </Modal>
+          </SafeAreaView>
+        </View>
+      </ModalBackdrop>
 
       {/* Appointment details bottom sheet */}
-      <Modal
+      <ModalBackdrop
         visible={selectedAppt != null}
-        transparent
+        onClose={() => setSelectedAppt(null)}
         animationType="slide"
-        onRequestClose={() => setSelectedAppt(null)}
+        align="bottom"
       >
-        <View style={styles.sheetOverlay}>
-          <Pressable
-            style={styles.sheetBackdrop}
-            onPress={() => setSelectedAppt(null)}
-          />
-          <View style={styles.sheet}>
+        <View style={styles.sheet}>
             {selectedAppt && (
               <>
                 <View
@@ -1029,9 +1301,8 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation }) => {
                 </View>
               </>
             )}
-          </View>
         </View>
-      </Modal>
+      </ModalBackdrop>
     </View>
   );
 };
@@ -1560,13 +1831,6 @@ const styles = StyleSheet.create({
     fontSize: theme.typography.fontSizes.md,
     color: theme.colors.textSecondary,
   },
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.4)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    paddingHorizontal: theme.spacing.lg,
-  },
   doctorModalContent: {
     width: '100%',
     maxHeight: '70%',
@@ -1616,13 +1880,174 @@ const styles = StyleSheet.create({
     fontSize: theme.typography.fontSizes.md,
     color: theme.colors.text,
   },
-  sheetOverlay: {
+  patientSearchModal: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.4)',
-    justifyContent: 'flex-end',
+    width: '100%',
+    backgroundColor: theme.colors.background,
   },
-  sheetBackdrop: {
-    ...StyleSheet.absoluteFillObject,
+  patientSearchHeaderSafeArea: {
+    backgroundColor: theme.colors.primary,
+  },
+  patientSearchContentSafeArea: {
+    flex: 1,
+    backgroundColor: theme.colors.background,
+  },
+  patientSearchHeader: {
+    height: theme.headerHeight,
+    backgroundColor: theme.colors.primary,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: theme.spacing.md,
+    ...theme.shadows.md,
+  },
+  patientSearchHeaderTitle: {
+    fontSize: theme.typography.fontSizes.xl,
+    fontWeight: theme.typography.fontWeights.bold,
+    color: theme.colors.textInverse,
+  },
+  patientSearchBody: {
+    flex: 1,
+    paddingTop: theme.spacing.sm,
+  },
+  patientSearchInputRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: theme.colors.surface,
+    marginHorizontal: theme.spacing.md,
+    marginBottom: theme.spacing.sm,
+    paddingHorizontal: theme.spacing.md,
+    paddingVertical: theme.spacing.sm,
+    borderRadius: theme.borderRadius.md,
+    ...theme.shadows.sm,
+  },
+  patientSearchInput: {
+    flex: 1,
+    marginLeft: theme.spacing.sm,
+    fontSize: theme.typography.fontSizes.md,
+    color: theme.colors.text,
+    paddingVertical: 0,
+  },
+  patientSearchListSection: {
+    flex: 1,
+    marginHorizontal: theme.spacing.md,
+  },
+  patientSearchTableHeader: {
+    flexDirection: 'row',
+    backgroundColor: theme.colors.secondary,
+    paddingVertical: theme.spacing.sm,
+    paddingHorizontal: theme.spacing.md,
+    borderTopLeftRadius: theme.borderRadius.md,
+    borderTopRightRadius: theme.borderRadius.md,
+  },
+  patientSearchHeaderCell: {
+    fontSize: theme.typography.fontSizes.xs,
+    fontWeight: theme.typography.fontWeights.bold,
+    color: theme.colors.textInverse,
+    letterSpacing: 0.5,
+  },
+  patientSearchNameColHeader: {
+    flex: 2,
+    paddingRight: theme.spacing.sm,
+  },
+  patientSearchMobileColHeader: {
+    flex: 1.2,
+    paddingRight: theme.spacing.sm,
+  },
+  patientSearchActionColHeader: {
+    width: 48,
+    textAlign: 'center',
+  },
+  patientSearchInfoPressable: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    minWidth: 0,
+  },
+  patientSearchNameCell: {
+    flex: 2,
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingRight: theme.spacing.sm,
+  },
+  patientSearchMobileCell: {
+    flex: 1.2,
+    paddingRight: theme.spacing.sm,
+  },
+  patientSearchActionCell: {
+    width: 48,
+    alignItems: 'center',
+  },
+  patientSearchList: {
+    flex: 1,
+    backgroundColor: theme.colors.surface,
+    borderBottomLeftRadius: theme.borderRadius.md,
+    borderBottomRightRadius: theme.borderRadius.md,
+    ...theme.shadows.sm,
+  },
+  patientSearchListContent: {
+    flexGrow: 1,
+    paddingBottom: theme.spacing.md,
+  },
+  patientSearchLoading: {
+    flex: 1,
+    backgroundColor: theme.colors.surface,
+    borderBottomLeftRadius: theme.borderRadius.md,
+    borderBottomRightRadius: theme.borderRadius.md,
+    paddingVertical: theme.spacing.xxl,
+    alignItems: 'center',
+    ...theme.shadows.sm,
+  },
+  patientSearchEmpty: {
+    alignItems: 'center',
+    paddingVertical: theme.spacing.xxl,
+    paddingHorizontal: theme.spacing.lg,
+  },
+  patientSearchEmptyText: {
+    marginTop: theme.spacing.md,
+    fontSize: theme.typography.fontSizes.md,
+    color: theme.colors.textSecondary,
+    textAlign: 'center',
+  },
+  patientSearchRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: theme.spacing.md,
+    paddingHorizontal: theme.spacing.md,
+    borderBottomWidth: 1,
+    borderBottomColor: theme.colors.border,
+  },
+  patientSearchAvatar: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: '#EEF1FE',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: theme.spacing.sm,
+  },
+  patientSearchName: {
+    flex: 1,
+    fontSize: theme.typography.fontSizes.sm,
+    fontWeight: theme.typography.fontWeights.medium,
+    color: theme.colors.text,
+  },
+  patientSearchMobile: {
+    fontSize: theme.typography.fontSizes.sm,
+    color: theme.colors.text,
+  },
+  patientSearchCallBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: theme.borderRadius.full,
+    backgroundColor: theme.colors.background,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  patientSearchCallBtnDisabled: {
+    opacity: 0.5,
   },
   sheet: {
     backgroundColor: theme.colors.surface,

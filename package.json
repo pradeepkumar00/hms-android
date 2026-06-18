@@ -1,6 +1,6 @@
 {
   "name": "HospitalManagement",
-  "version": "0.0.1",
+  "version": "0.0.7",
   "private": true,
   "scripts": {
     "android": "cross-env ENVFILE=.env.development react-native run-android",
@@ -23,7 +23,7 @@
     "env:check": "echo 'Current environment:' && grep ENVIRONMENT= .env || echo 'No .env file found'",
     "env:debug": "node debug-environment.js",
     "env:test": "node test-environment.js",
-    "android:clean": "cd android && ./gradlew clean && cd ..",
+    "android:clean": "rm -rf android/app/.cxx android/app/build android/build android/.gradle && find node_modules -path '*/android/build' -type d -prune -exec rm -rf {} + 2>/dev/null || true",
     "ios:clean": "cd ios && rm -rf build && rm -rf ~/Library/Developer/Xcode/DerivedData/UserManagementApp-* && cd ..",
     "cache:clear": "npx react-native start --reset-cache",
     "full:rebuild:android": "npm run cache:clear & npm run android:clean && npm run android",

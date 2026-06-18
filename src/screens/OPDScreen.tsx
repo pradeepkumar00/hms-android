@@ -6,6 +6,7 @@ import {
   ScrollView,
   TouchableOpacity,
   ActivityIndicator,
+  RefreshControl,
   StatusBar,
   Alert,
   Modal,
@@ -13,8 +14,9 @@ import {
   Dimensions,
   PermissionsAndroid,
   Platform,
+  TextInput,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import Pdf from 'react-native-pdf';
 import DatePicker from 'react-native-date-picker';
 import { launchCamera, CameraOptions } from 'react-native-image-picker';
@@ -23,10 +25,20 @@ import {
   errorCodes,
   isErrorWithCode,
 } from '@react-native-documents/picker';
-import { useAppSelector, selectAuthToken } from '../store';
+import { useAppSelector, selectAuthToken, selectManageServices, selectAppDataLoading } from '../store';
 import { theme } from '../constants/theme';
+import { ModalBackdrop, OPDActionsFab, TreatmentPlanCard, TreatmentPlanDrawer } from '../components';
+import type { TreatmentPlanRecord } from '../components';
 import Icon from 'react-native-vector-icons/MaterialIcons';
 import { Appointment } from '../types';
+import {
+  collectSelectedFollowupDetails,
+  mapCatalogTreatments,
+  mapPlanGroups,
+  type FollowupPlanGroup,
+  type FollowupTreatmentOption,
+} from '../utils/followupTreatments';
+import { filterManageServicesByType } from '../utils/manageServices';
 
 interface OPDScreenProps {
   navigation: any;
@@ -111,7 +123,8 @@ const shortName = (n?: string) => {
 
 interface HistoryItem {
   id: string;
-  kind: 'upload' | 'lab' | 'appointment';
+  kind: 'upload' | 'lab' | 'appointment' | 'treatmentPlan';
+  uploadType?: string;
   createdAt?: string;
   category?: string;
   mimeType?: string;
@@ -125,7 +138,9 @@ interface HistoryItem {
   visitType?: string;
   doctorName?: string;
   status?: string;
+  remark?: string;
   sortAt?: number;
+  treatmentPlan?: TreatmentPlanRecord;
 }
 
 const parseApptTime = (time?: string | null): number | null => {
@@ -165,6 +180,11 @@ const formatVisitType = (value?: string) => {
     .replace(/\b\w/g, char => char.toUpperCase());
 };
 
+const formatApptToken = (slot?: number | null) => {
+  if (slot == null) return '—';
+  return `T${slot}`;
+};
+
 const getApptStatusColor = (status?: string) => {
   switch ((status || '').toLowerCase()) {
     case 'waiting':
@@ -175,6 +195,8 @@ const getApptStatusColor = (status?: string) => {
       return '#9C27B0';
     case 'completed':
       return '#4CAF50';
+    case 'scheduled':
+      return 'rgba(255,255,255,0.25)';
     case 'cancelled':
     case 'canceled':
       return '#F44336';
@@ -203,6 +225,7 @@ const itemSortAt = (item: HistoryItem) => {
 const kindOrder = (kind: HistoryItem['kind']) => {
   switch (kind) {
     case 'upload':
+    case 'treatmentPlan':
       return 0;
     case 'lab':
       return 1;
@@ -220,21 +243,24 @@ const compareHistoryItems = (a: HistoryItem, b: HistoryItem) => {
   return itemSortAt(b) - itemSortAt(a);
 };
 
-// Flatten prescriptions, labs, and appointments into a date-sorted timeline.
+// Flatten prescriptions, labs, appointments, and treatment plans into a date-sorted timeline.
 const buildHistorySections = (
   history: any,
   appointments: Appointment[] = [],
+  treatmentPlans: TreatmentPlanRecord[] = [],
 ): HistorySection[] => {
   const uploads: HistoryItem[] = (history?.prescriptionUpload || []).map(
     (u: any) => ({
       id: u._id,
       kind: 'upload' as const,
+      uploadType: u.type,
       createdAt: u.createdAt,
       category: u.category,
       mimeType: u.mimeType,
       fileName: u.originalName || u.fileName,
       filePath: u.filePath,
       uploadedBy: u.uploadedBy,
+      status: u.status,
     }),
   );
 
@@ -256,10 +282,18 @@ const buildHistorySections = (
     visitType: appt.visitType,
     doctorName: appt.doctorName,
     status: appt.status,
+    remark: appt.remark,
     sortAt: appointmentSortAt(appt),
   }));
 
-  const all = [...uploads, ...labs, ...appts];
+  const plans: HistoryItem[] = treatmentPlans.map((plan, index) => ({
+    id: plan._id || `plan-${index}`,
+    kind: 'treatmentPlan' as const,
+    createdAt: plan.createdAt || plan.updatedAt,
+    treatmentPlan: plan,
+  }));
+
+  const all = [...uploads, ...labs, ...appts, ...plans];
 
   const byLabel = new Map<string, HistoryItem[]>();
   for (const item of all) {
@@ -285,8 +319,39 @@ interface HistorySection {
   items: HistoryItem[];
 }
 
+type UploadFileType = 'prescription' | 'procedure';
+
+const uploadApiType = (kind: UploadFileType): string =>
+  kind === 'procedure' ? 'note' : 'prescription';
+
+const mapTeethForPlan = (selectedTeeth: number[]) => {
+  const Upper = selectedTeeth
+    .filter(
+      t =>
+        (t >= 11 && t <= 28) ||
+        (t >= 51 && t <= 55) ||
+        (t >= 61 && t <= 65),
+    )
+    .sort((a, b) => a - b);
+  const Lower = selectedTeeth
+    .filter(
+      t =>
+        (t >= 31 && t <= 48) ||
+        (t >= 71 && t <= 75) ||
+        (t >= 81 && t <= 85),
+    )
+    .sort((a, b) => a - b);
+  const teeth: { Upper?: number[]; Lower?: number[] } = {};
+  if (Upper.length) teeth.Upper = Upper;
+  if (Lower.length) teeth.Lower = Lower;
+  return teeth;
+};
+
 const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
+  const insets = useSafeAreaInsets();
   const token = useAppSelector(selectAuthToken);
+  const manageServiceRecords = useAppSelector(selectManageServices);
+  const appDataLoading = useAppSelector(selectAppDataLoading);
   const appointment = route.params?.appointment;
   const patient = route.params?.patient;
   const patientId = appointment?.patientId || patient?._id || patient?.id;
@@ -297,12 +362,15 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
   );
   const [, setConfig] = useState<any>(null);
   const [loading, setLoading] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [selectedFile, setSelectedFile] = useState<{
     name: string;
     uri: string;
     type: string;
   } | null>(null);
   const [uploading, setUploading] = useState(false);
+  const [uploadFileType, setUploadFileType] =
+    useState<UploadFileType>('prescription');
   const [showUploadModal, setShowUploadModal] = useState(false);
   // Prescription category for the file being uploaded.
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
@@ -328,10 +396,31 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
   const [selectedSlot, setSelectedSlot] = useState<Slot | null>(null);
   const [slotPickerOpen, setSlotPickerOpen] = useState(false);
   const [booking, setBooking] = useState(false);
+  const [followupCatalogTreatments, setFollowupCatalogTreatments] = useState<
+    FollowupTreatmentOption[]
+  >([]);
+  const [followupPlanGroups, setFollowupPlanGroups] = useState<
+    FollowupPlanGroup[]
+  >([]);
+  const [followupTreatmentsLoading, setFollowupTreatmentsLoading] =
+    useState(false);
+  const [selectedFollowupTreatmentKeys, setSelectedFollowupTreatmentKeys] =
+    useState<Set<string>>(new Set());
+  const [followupTreatmentDropdownOpen, setFollowupTreatmentDropdownOpen] =
+    useState(false);
+  const [followupTreatmentSearch, setFollowupTreatmentSearch] = useState('');
+  const [followupRemark, setFollowupRemark] = useState('');
+  const [treatmentPlanOpen, setTreatmentPlanOpen] = useState(false);
+  const [treatmentPlans, setTreatmentPlans] = useState<TreatmentPlanRecord[]>(
+    [],
+  );
+  const [editingRemarkId, setEditingRemarkId] = useState<string | null>(null);
+  const [remarkDraft, setRemarkDraft] = useState('');
+  const [savingRemarkId, setSavingRemarkId] = useState<string | null>(null);
 
   const historySections = useMemo(
-    () => buildHistorySections(history, patientAppointments),
-    [history, patientAppointments],
+    () => buildHistorySections(history, patientAppointments, treatmentPlans),
+    [history, patientAppointments, treatmentPlans],
   );
 
   // All openable upload files (images + PDFs) in display order — the set the
@@ -451,9 +540,102 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
     setSlots([]);
     setSlotPickerOpen(false);
     setDoctorDropdownOpen(false);
+    setFollowupTreatmentDropdownOpen(false);
+    setFollowupTreatmentSearch('');
+    setFollowupRemark('');
+    setSelectedFollowupTreatmentKeys(new Set());
     setSelectedDoctor(defaultDoctor);
     setShowFollowupModal(true);
   };
+
+  const followupPlanTreatmentOptions = useMemo(
+    () => followupPlanGroups.flatMap(group => group.treatments),
+    [followupPlanGroups],
+  );
+
+  const hasAssignedFollowupTreatments = followupPlanGroups.length > 0;
+
+  const filteredFollowupPlanGroups = useMemo(() => {
+    const query = followupTreatmentSearch.trim().toLowerCase();
+    if (!query) return followupPlanGroups;
+    return followupPlanGroups
+      .map(group => ({
+        ...group,
+        treatments: group.treatments.filter(treatment =>
+          treatment.treatmentDesc.toLowerCase().includes(query),
+        ),
+      }))
+      .filter(group => group.treatments.length > 0);
+  }, [followupPlanGroups, followupTreatmentSearch]);
+
+  const filteredFollowupCatalogTreatments = useMemo(() => {
+    const query = followupTreatmentSearch.trim().toLowerCase();
+    if (!query) return followupCatalogTreatments;
+    return followupCatalogTreatments.filter(treatment =>
+      treatment.treatmentDesc.toLowerCase().includes(query),
+    );
+  }, [followupCatalogTreatments, followupTreatmentSearch]);
+
+  const selectedFollowupTreatmentSummaries = useMemo(() => {
+    const selected = new Set(selectedFollowupTreatmentKeys);
+    return [
+      ...followupPlanTreatmentOptions.filter(item => selected.has(item.key)),
+      ...followupCatalogTreatments.filter(item => selected.has(item.key)),
+    ];
+  }, [
+    selectedFollowupTreatmentKeys,
+    followupPlanTreatmentOptions,
+    followupCatalogTreatments,
+  ]);
+
+  const toggleFollowupTreatment = (key: string) => {
+    setSelectedFollowupTreatmentKeys(prev => {
+      const next = new Set(prev);
+      if (next.has(key)) {
+        next.delete(key);
+      } else {
+        next.add(key);
+      }
+      return next;
+    });
+  };
+
+  const followupTreatmentTriggerLabel = useMemo(() => {
+    const count = selectedFollowupTreatmentKeys.size;
+    if (count === 0) {
+      return hasAssignedFollowupTreatments || followupCatalogTreatments.length
+        ? 'Select treatments…'
+        : 'No treatments available';
+    }
+    if (count === 1) {
+      return selectedFollowupTreatmentSummaries[0]?.treatmentDesc || '1 treatment';
+    }
+    return `${count} treatments selected`;
+  }, [
+    selectedFollowupTreatmentKeys.size,
+    selectedFollowupTreatmentSummaries,
+    hasAssignedFollowupTreatments,
+    followupCatalogTreatments.length,
+  ]);
+
+  // Sync follow-up treatments from cached manage-service and treatment plans.
+  useEffect(() => {
+    if (!showFollowupModal) return;
+
+    setFollowupPlanGroups(mapPlanGroups(treatmentPlans));
+    setFollowupCatalogTreatments(
+      mapCatalogTreatments(
+        filterManageServicesByType(manageServiceRecords, 'treatment'),
+        'opd',
+      ),
+    );
+    setFollowupTreatmentsLoading(appDataLoading && manageServiceRecords.length === 0);
+  }, [
+    showFollowupModal,
+    treatmentPlans,
+    manageServiceRecords,
+    appDataLoading,
+  ]);
 
   // Load the doctor list the first time the modal is opened.
   useEffect(() => {
@@ -484,9 +666,15 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
     };
   }, [showFollowupModal, token, doctors.length, defaultDoctor]);
 
-  // Load slots whenever a doctor and date are both selected.
+  // Load slots whenever a slot-enabled doctor and date are both selected.
   useEffect(() => {
     if (!showFollowupModal || !token || !selectedDoctor || !followupDate) {
+      return;
+    }
+    if (selectedDoctor.isSlot === false) {
+      setSlots([]);
+      setSelectedSlot(null);
+      setSlotsLoading(false);
       return;
     }
     let active = true;
@@ -523,8 +711,21 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
       Alert.alert('Missing doctor', 'Please select a doctor.');
       return;
     }
-    if (!selectedSlot) {
+    if (selectedDoctor.isSlot !== false && !selectedSlot) {
       Alert.alert('Missing slot', 'Please pick a slot for the follow-up.');
+      return;
+    }
+    const followupDetails = collectSelectedFollowupDetails(
+      selectedFollowupTreatmentKeys,
+      followupPlanGroups,
+      followupCatalogTreatments,
+      followupDate ? toApiDate(followupDate) : null,
+    );
+    if (hasAssignedFollowupTreatments && followupDetails.length === 0) {
+      Alert.alert(
+        'Treatment required',
+        'Select at least one treatment for this follow-up.',
+      );
       return;
     }
     if (!patientId) {
@@ -543,26 +744,27 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
           doctorName: selectedDoctor.name,
           patientId,
           date: toApiDate(followupDate),
-          appointmentTime: selectedSlot.startTime,
-          tokenCount: selectedSlot.tokenCount,
+          appointmentTime: selectedSlot?.startTime,
+          tokenCount: selectedSlot?.tokenCount,
+          details: followupDetails.length ? followupDetails : undefined,
+          remark: followupRemark,
         },
         token,
       );
 
-      // Prefer the token returned by the server; fall back to the slot's token.
       const tokenNumber =
         result?.tokenCount ??
         result?.tokenNumber ??
         result?.token ??
-        selectedSlot.tokenCount;
+        selectedSlot?.tokenCount;
 
       setShowFollowupModal(false);
       Alert.alert(
         'Follow-up booked',
         `Token No: ${tokenNumber ?? '—'}\nDoctor: ${
           selectedDoctor.name
-        }\nDate: ${formatDate(followupDate.toISOString())}\nTime: ${
-          selectedSlot.startTime
+        }\nDate: ${formatDate(followupDate.toISOString())}${
+          selectedSlot?.startTime ? `\nTime: ${selectedSlot.startTime}` : ''
         }`,
       );
 
@@ -583,23 +785,27 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
     }
   };
 
-  useEffect(() => {
-    let active = true;
-    const load = async () => {
+  const loadOpdData = useCallback(
+    async (options?: { showInitialLoader?: boolean }) => {
       if (!token) return;
-      setLoading(true);
+
+      const showInitialLoader = options?.showInitialLoader ?? false;
+      if (showInitialLoader) {
+        setLoading(true);
+      } else {
+        setRefreshing(true);
+      }
+
       try {
         const realAuthService = (await import('../services/realAuthService'))
           .default;
 
-        // Prescription config (used when building a new prescription)
         realAuthService
           .fetchPrescriptionConfig(PRESCRIPTION_CATEGORIES, token)
-          .then(cfg => active && setConfig(cfg))
+          .then(cfg => setConfig(cfg))
           .catch(() => {});
 
-        // Prescription history and appointments for this patient
-        const [data, appts] = await Promise.all([
+        const [data, appts, plans] = await Promise.all([
           patientId
             ? realAuthService
                 .fetchPrescriptionHistory(patientId, 'opd', token)
@@ -610,20 +816,34 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
                 .fetchPatientAppointments(patientId, token)
                 .catch(() => [])
             : Promise.resolve([]),
+          patientId
+            ? realAuthService
+                .fetchTreatmentPlans(patientId, token, 'opd')
+                .catch(() => [])
+            : Promise.resolve([]),
         ]);
-        if (active) {
-          setHistory(data);
-          setPatientAppointments(appts || []);
-        }
+
+        setHistory(data);
+        setPatientAppointments(appts || []);
+        setTreatmentPlans(plans || []);
       } finally {
-        if (active) setLoading(false);
+        if (showInitialLoader) {
+          setLoading(false);
+        } else {
+          setRefreshing(false);
+        }
       }
-    };
-    load();
-    return () => {
-      active = false;
-    };
-  }, [token, patientId]);
+    },
+    [token, patientId],
+  );
+
+  useEffect(() => {
+    loadOpdData({ showInitialLoader: true });
+  }, [loadOpdData]);
+
+  const onRefresh = useCallback(() => {
+    loadOpdData({ showInitialLoader: false });
+  }, [loadOpdData]);
 
   const refreshPrescriptionHistory = useCallback(async () => {
     if (!token || !patientId) return;
@@ -632,6 +852,22 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
       .fetchPrescriptionHistory(patientId, 'opd', token)
       .catch(() => null);
     setHistory(data);
+  }, [token, patientId]);
+
+  const refreshTreatmentPlans = useCallback(async () => {
+    if (!token || !patientId) return;
+    try {
+      const realAuthService = (await import('../services/realAuthService'))
+        .default;
+      const plans = await realAuthService.fetchTreatmentPlans(
+        patientId,
+        token,
+        'opd',
+      );
+      setTreatmentPlans(plans || []);
+    } catch (error) {
+      console.error('Treatment plans refresh error:', error);
+    }
   }, [token, patientId]);
 
   const headerItem = (label: string, value: string) => (
@@ -671,23 +907,41 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
   );
 
   const renderUploadCard = (item: HistoryItem) => {
+    const isProcedure = item.uploadType === 'note';
     const isImage = (item.mimeType || '').startsWith('image/');
     const thumbUri = signedUrls[item.id];
+    const displayDate = formatDate(item.createdAt).replace(/-/g, '/');
+    const badgeText =
+      item.category ||
+      (item.status ? getApptStatusLabel(item.status) : undefined);
+
     return (
-      <View key={item.id} style={styles.uploadCard}>
-        <View style={styles.historyCardHeader}>
-          <Text style={styles.historyCardHeaderTitle}>Uploaded Prescription</Text>
-          {!!item.category && (
-            <View style={styles.uploadCategoryBadge}>
-              <Text style={styles.uploadCategoryBadgeText}>{item.category}</Text>
+      <View key={item.id} style={styles.styledUploadCard}>
+        <View style={styles.styledUploadHeader}>
+          <View style={styles.styledUploadHeaderLeft}>
+            <Icon name="upload-file" size={18} color={theme.colors.surface} />
+            <Text style={styles.styledUploadHeaderTitle}>
+              {isProcedure ? 'Uploaded Procedure' : 'Uploaded Prescription'}
+            </Text>
+          </View>
+          {!!badgeText && (
+            <View style={styles.styledUploadBadge}>
+              <Text style={styles.styledUploadBadgeText}>{badgeText}</Text>
             </View>
           )}
         </View>
 
-        <View style={styles.uploadCardPanel}>
-          <View style={styles.uploadCardContent}>
+        <View
+          style={[
+            styles.styledUploadPanel,
+            isProcedure
+              ? styles.styledUploadPanelProcedure
+              : styles.styledUploadPanelPrescription,
+          ]}
+        >
+          <View style={styles.styledUploadContent}>
             <TouchableOpacity
-              style={styles.thumbnail}
+              style={styles.styledUploadThumbnail}
               activeOpacity={0.8}
               onPress={() => openFile(item)}
             >
@@ -701,53 +955,71 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
                 <>
                   <Icon
                     name={isImage ? 'image' : 'picture-as-pdf'}
-                    size={40}
-                    color={isImage ? theme.colors.primary : '#E53935'}
+                    size={36}
+                    color={isImage ? '#8B5CF6' : '#E53935'}
                   />
-                  <Text style={styles.thumbnailLabel}>
+                  <Text style={styles.styledUploadThumbnailLabel}>
                     {isImage ? 'IMAGE' : 'PDF'}
                   </Text>
                 </>
               )}
             </TouchableOpacity>
 
-            <View style={styles.uploadCardInfo}>
+            <View style={styles.styledUploadInfo}>
               <TouchableOpacity activeOpacity={0.7} onPress={() => openFile(item)}>
-                <Text style={styles.uploadFileName} numberOfLines={2}>
-                  {item.fileName || 'Prescription file'}
+                <Text style={styles.styledUploadFileName} numberOfLines={2}>
+                  {item.fileName ||
+                    (isProcedure ? 'Procedure file' : 'Prescription file')}
                 </Text>
               </TouchableOpacity>
-              {metaField('DATE', formatDate(item.createdAt), 'muted')}
-              {metaField('TIME', formatTime(item.createdAt), 'muted')}
-              {metaField('BY', item.uploadedBy || '—', 'muted')}
+              <View style={styles.styledUploadMetaRow}>
+                <View style={styles.styledUploadMetaItem}>
+                  <Text style={styles.styledUploadMetaLabel}>DATE</Text>
+                  <Text style={styles.styledUploadMetaValue}>{displayDate}</Text>
+                </View>
+                <View style={styles.styledUploadMetaItem}>
+                  <Text style={styles.styledUploadMetaLabel}>BY</Text>
+                  <Text style={styles.styledUploadMetaValue} numberOfLines={1}>
+                    {item.uploadedBy || '—'}
+                  </Text>
+                </View>
+              </View>
             </View>
           </View>
 
-          <View style={styles.uploadCardActions}>
+          <View style={styles.styledUploadActions}>
             <TouchableOpacity
-              style={[styles.uploadActionBtn, styles.uploadActionPrint]}
+              style={[styles.styledUploadActionBtn, styles.styledUploadActionPrint]}
               activeOpacity={0.85}
               onPress={() => openFile(item)}
             >
-              <Icon name="print" size={18} color={theme.colors.surface} />
+              <Icon name="print" size={18} color="#6366F1" />
+              <Text style={styles.styledUploadActionText}>Print</Text>
             </TouchableOpacity>
             <TouchableOpacity
-              style={[styles.uploadActionBtn, styles.uploadActionDownload]}
+              style={[
+                styles.styledUploadActionBtn,
+                styles.styledUploadActionDownload,
+              ]}
               activeOpacity={0.85}
               onPress={() => openFile(item)}
             >
-              <Icon name="file-download" size={18} color={theme.colors.surface} />
+              <Icon name="file-download" size={18} color="#6366F1" />
+              <Text style={styles.styledUploadActionText}>Download</Text>
             </TouchableOpacity>
             <TouchableOpacity
-              style={[styles.uploadActionBtn, styles.uploadActionDelete]}
+              style={[styles.styledUploadActionBtn, styles.styledUploadActionDelete]}
               activeOpacity={0.85}
               disabled={deletingFileId === item.id}
               onPress={() => handleDeletePrescription(item)}
             >
               {deletingFileId === item.id ? (
-                <ActivityIndicator size="small" color={theme.colors.surface} />
+                <ActivityIndicator size="small" color="#EF4444" />
               ) : (
-                <Icon name="delete-outline" size={18} color={theme.colors.surface} />
+                <>
+                  <Icon name="delete-outline" size={18} color="#374151" />
+                  <Text style={styles.styledUploadActionDeleteText}>Delete</Text>
+                </>
               )}
             </TouchableOpacity>
           </View>
@@ -767,8 +1039,52 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
     </View>
   );
 
+  const openRemarkEditor = (item: HistoryItem) => {
+    setEditingRemarkId(item.id);
+    setRemarkDraft(item.remark || '');
+  };
+
+  const cancelRemarkEditor = () => {
+    setEditingRemarkId(null);
+    setRemarkDraft('');
+  };
+
+  const handleSaveAppointmentRemark = async (appointmentId: string) => {
+    if (!token) {
+      Alert.alert('Save Failed', 'Your session has expired. Please log in again.');
+      return;
+    }
+
+    setSavingRemarkId(appointmentId);
+    try {
+      const realAuthService = (await import('../services/realAuthService')).default;
+      await realAuthService.saveAppointmentRemark(
+        appointmentId,
+        remarkDraft.trim(),
+        token,
+      );
+      setPatientAppointments(prev =>
+        prev.map(appt =>
+          appt._id === appointmentId
+            ? { ...appt, remark: remarkDraft.trim() }
+            : appt,
+        ),
+      );
+      cancelRemarkEditor();
+    } catch (error) {
+      console.error('Appointment remark save error:', error);
+      Alert.alert('Save Failed', 'Could not save the appointment remark.');
+    } finally {
+      setSavingRemarkId(null);
+    }
+  };
+
   const renderAppointmentCard = (item: HistoryItem) => {
     const statusColor = getApptStatusColor(item.status);
+    const isEditingRemark = editingRemarkId === item.id;
+    const isSavingRemark = savingRemarkId === item.id;
+    const savedRemark = (item.remark || '').trim();
+
     return (
       <View key={item.id} style={styles.apptCard}>
         <View style={styles.historyCardHeader}>
@@ -796,7 +1112,7 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
               {metaField('TIME', item.appointmentTime || '—')}
             </View>
             <View style={styles.apptGridCell}>
-              {metaField('SLOT', item.slot != null ? `#${item.slot}` : '—')}
+              {metaField('TOKEN', formatApptToken(item.slot))}
             </View>
             <View style={styles.apptGridCell}>
               {metaField('VISIT', formatVisitType(item.visitType))}
@@ -804,6 +1120,64 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
             <View style={styles.apptGridCell}>
               {metaField('DOCTOR', item.doctorName || '—')}
             </View>
+          </View>
+
+          <View style={styles.apptRemarkBox}>
+            <View style={styles.apptRemarkHeader}>
+              <Text style={styles.apptRemarkLabel}>REMARK</Text>
+              {!isEditingRemark && (
+                <TouchableOpacity
+                  style={styles.apptRemarkAddBtn}
+                  activeOpacity={0.85}
+                  onPress={() => openRemarkEditor(item)}
+                >
+                  <Text style={styles.apptRemarkAddText}>
+                    {savedRemark ? 'Edit' : 'Add'}
+                  </Text>
+                </TouchableOpacity>
+              )}
+            </View>
+
+            {isEditingRemark ? (
+              <>
+                <TextInput
+                  style={styles.apptRemarkInput}
+                  value={remarkDraft}
+                  onChangeText={setRemarkDraft}
+                  placeholder="Add appointment remark..."
+                  placeholderTextColor={theme.colors.textSecondary}
+                  multiline
+                  editable={!isSavingRemark}
+                  textAlignVertical="top"
+                />
+                <View style={styles.apptRemarkActions}>
+                  <TouchableOpacity
+                    style={[styles.apptRemarkBtn, styles.apptRemarkCancelBtn]}
+                    activeOpacity={0.85}
+                    disabled={isSavingRemark}
+                    onPress={cancelRemarkEditor}
+                  >
+                    <Text style={styles.apptRemarkCancelText}>Cancel</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.apptRemarkBtn, styles.apptRemarkSaveBtn]}
+                    activeOpacity={0.85}
+                    disabled={isSavingRemark}
+                    onPress={() => handleSaveAppointmentRemark(item.id)}
+                  >
+                    {isSavingRemark ? (
+                      <ActivityIndicator size="small" color={theme.colors.surface} />
+                    ) : (
+                      <Text style={styles.apptRemarkSaveText}>Save</Text>
+                    )}
+                  </TouchableOpacity>
+                </View>
+              </>
+            ) : savedRemark ? (
+              <Text style={styles.apptRemarkText}>{savedRemark}</Text>
+            ) : (
+              <Text style={styles.apptRemarkEmpty}>No remark added yet</Text>
+            )}
           </View>
         </View>
       </View>
@@ -813,7 +1187,22 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
   const renderHistoryItem = (item: HistoryItem) => {
     if (item.kind === 'upload') return renderUploadCard(item);
     if (item.kind === 'appointment') return renderAppointmentCard(item);
+    if (item.kind === 'treatmentPlan' && item.treatmentPlan) {
+      return (
+        <TreatmentPlanCard
+          key={item.id}
+          plan={item.treatmentPlan}
+          patientId={patientId}
+          onCancelled={refreshTreatmentPlans}
+        />
+      );
+    }
     return renderLabCard(item);
+  };
+
+  const openUploadModal = (type: UploadFileType) => {
+    setUploadFileType(type);
+    setShowUploadModal(true);
   };
 
   const handleCameraCapture = async () => {
@@ -904,6 +1293,102 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
     setSelectedFile(null);
     setSelectedCategory(null);
     setCategoryDropdownOpen(false);
+    setUploadFileType('prescription');
+  };
+
+  const handleTreatmentPlanPress = () => {
+    setTreatmentPlanOpen(true);
+  };
+
+  const handleSaveTreatmentPlan = async (payload: {
+    treatments: Array<{
+      treatmentName: string;
+      serviceId?: string;
+      amountPerTooth: string;
+      selectedTeeth: number[];
+      note: string;
+      followUpDate: Date;
+    }>;
+    paidAmount: number;
+    discount: number;
+    paymentMode: string;
+    refId: string;
+    totalAmount: number;
+    advanced: boolean;
+  }) => {
+    if (!token || !patientId) {
+      Alert.alert(
+        'Save Failed',
+        'Patient or session information is missing.',
+      );
+      throw new Error('Missing patient or token');
+    }
+
+    const validRows = payload.treatments.filter(row => row.treatmentName.trim());
+    const title = validRows[0]?.treatmentName.trim() || 'Treatment Plan';
+
+    const items = validRows.map(row => {
+      const treatmentAmount = Number(row.amountPerTooth) || 0;
+      const qty = row.selectedTeeth.length;
+      const expenseAmount = treatmentAmount * qty;
+
+      const item: Record<string, unknown> = {
+        treatmentDesc: row.treatmentName.trim(),
+        isAdvanced: payload.advanced,
+        teeth: mapTeethForPlan(row.selectedTeeth),
+        description: row.note.trim(),
+        qty,
+        appointment: toApiDate(row.followUpDate),
+        treatmentAmount,
+        expenseAmount,
+        paidAmount: 0,
+        discount: 0,
+      };
+
+      if (row.serviceId) {
+        item.manageServiceId = row.serviceId;
+      }
+
+      return item;
+    });
+
+    const body = {
+      patientId,
+      patientName: name,
+      title,
+      items,
+      totalAmount: payload.totalAmount,
+      paidAmount: payload.paidAmount,
+      discount: payload.discount,
+      paymentMode: payload.paymentMode.toLowerCase(),
+      remark:
+        validRows
+          .map(row => row.note.trim())
+          .filter(Boolean)
+          .join('; ') || '',
+      refId: payload.refId,
+      doctorId: appointment?.doctorId || '',
+      doctorName: appointment?.doctorName || defaultDoctor?.name || '',
+      uhid: uhid === '—' ? '' : String(uhid),
+      type: 'opd',
+      noSession: true,
+      patientType: 'opd',
+    };
+
+    try {
+      const realAuthService = (await import('../services/realAuthService'))
+        .default;
+      await realAuthService.saveTreatmentPlan(body, token);
+      await refreshTreatmentPlans();
+      Alert.alert('Success', 'Treatment plan saved.');
+    } catch (error) {
+      console.error('Treatment plan save error:', error);
+      Alert.alert(
+        'Save Failed',
+        'Could not save the treatment plan. Please try again.',
+      );
+      throw error;
+    }
   };
 
   const openFile = (item: HistoryItem) => {
@@ -916,7 +1401,7 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
     if (!token || !patientId || deletingFileId) return;
 
     Alert.alert(
-      'Delete prescription',
+      item.uploadType === 'note' ? 'Delete procedure' : 'Delete prescription',
       `Remove "${item.fileName || 'this file'}"?`,
       [
         { text: 'Cancel', style: 'cancel' },
@@ -944,7 +1429,12 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
               });
 
               await refreshPrescriptionHistory();
-              Alert.alert('Deleted', 'Prescription removed successfully.');
+              Alert.alert(
+                'Deleted',
+                item.uploadType === 'note'
+                  ? 'Procedure removed successfully.'
+                  : 'Prescription removed successfully.',
+              );
             } catch (error) {
               console.error('Prescription delete error:', error);
               Alert.alert(
@@ -972,32 +1462,46 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
     }
 
     setUploading(true);
+    const uploadingType = uploadFileType;
     try {
       const realAuthService = (await import('../services/realAuthService'))
         .default;
       await realAuthService.uploadPatientFile(
         selectedFile,
         patientId,
-        'prescription',
+        uploadApiType(uploadingType),
         token,
         selectedCategory,
       );
 
       setSelectedFile(null);
       setSelectedCategory(null);
-      Alert.alert('Success', 'Prescription uploaded successfully.');
+      setUploadFileType('prescription');
+      Alert.alert(
+        'Success',
+        uploadingType === 'procedure'
+          ? 'Procedure uploaded successfully.'
+          : 'Prescription uploaded successfully.',
+      );
 
       await refreshPrescriptionHistory();
     } catch (error) {
-      console.error('Prescription upload error:', error);
+      console.error('File upload error:', error);
       Alert.alert(
         'Upload Failed',
-        'Could not upload the prescription. Please try again.',
+        uploadingType === 'procedure'
+          ? 'Could not upload the procedure. Please try again.'
+          : 'Could not upload the prescription. Please try again.',
       );
     } finally {
       setUploading(false);
     }
   };
+
+  const uploadModalTitle =
+    uploadFileType === 'procedure'
+      ? 'Upload Procedure'
+      : 'Upload Prescription';
 
   return (
     <View style={styles.container}>
@@ -1036,31 +1540,19 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
         </View>
       </View>
 
-      <ScrollView contentContainerStyle={styles.content}>
-        {/* Action buttons: Upload prescription + Add follow-up (inline) */}
-        <View style={styles.actionRow}>
-          <TouchableOpacity
-            style={[styles.uploadBtn, styles.actionBtn]}
-            activeOpacity={0.8}
-            onPress={() => setShowUploadModal(true)}
-          >
-            <Icon name="upload-file" size={20} color={theme.colors.surface} />
-            <Text style={styles.uploadText}>Upload Prescription</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={[styles.followupBtn, styles.actionBtn]}
-            activeOpacity={0.8}
-            onPress={openFollowupModal}
-          >
-            <Icon name="event-available" size={20} color={theme.colors.primary} />
-            <Text style={styles.followupText}>Add Follow-up</Text>
-          </TouchableOpacity>
-        </View>
-
-        {/* Prescriptions, labs, and appointments */}
-        <Text style={styles.historyTitle}>Prescriptions &amp; Labs</Text>
-        {loading ? (
+      <ScrollView
+        contentContainerStyle={styles.content}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={onRefresh}
+            colors={[theme.colors.primary]}
+            tintColor={theme.colors.primary}
+          />
+        }
+      >
+        <Text style={styles.historyTitle}>Patient History</Text>
+        {loading && !refreshing ? (
           <ActivityIndicator
             style={styles.historyLoader}
             color={theme.colors.primary}
@@ -1085,103 +1577,91 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
       </ScrollView>
 
       {/* Upload source modal */}
-      <Modal
+      <ModalBackdrop
         visible={showUploadModal}
-        transparent={true}
+        onClose={() => setShowUploadModal(false)}
         animationType="slide"
-        onRequestClose={() => setShowUploadModal(false)}
+        align="bottom"
       >
-        <TouchableOpacity
-          style={styles.modalOverlay}
-          activeOpacity={1}
-          onPress={() => setShowUploadModal(false)}
+        <View
+          style={[
+            styles.uploadModalContainer,
+            { paddingBottom: Math.max(insets.bottom, 20) },
+          ]}
         >
-          <View style={styles.uploadModalContainer}>
-            <TouchableOpacity activeOpacity={1} onPress={e => e.stopPropagation()}>
-              <View style={styles.uploadModalContent}>
-                <View style={styles.uploadModalHeader}>
-                  <Text style={styles.uploadModalTitle}>Upload Prescription</Text>
-                  <TouchableOpacity onPress={() => setShowUploadModal(false)}>
-                    <Icon name="close" size={24} color={theme.colors.text} />
-                  </TouchableOpacity>
-                </View>
+          <View style={styles.uploadModalContent}>
+            <View style={styles.uploadModalHeader}>
+              <Text style={styles.uploadModalTitle}>{uploadModalTitle}</Text>
+              <TouchableOpacity onPress={() => setShowUploadModal(false)}>
+                <Icon name="close" size={24} color={theme.colors.text} />
+              </TouchableOpacity>
+            </View>
 
-                <TouchableOpacity
-                  style={styles.uploadOption}
-                  activeOpacity={0.7}
-                  onPress={handleSelectCamera}
-                >
-                  <View style={styles.uploadOptionIcon}>
-                    <Icon
-                      name="photo-camera"
-                      size={24}
-                      color={theme.colors.primary}
-                    />
-                  </View>
-                  <View style={styles.uploadOptionTextWrap}>
-                    <Text style={styles.uploadOptionTitle}>Camera</Text>
-                    <Text style={styles.uploadOptionSubtitle}>
-                      Take a photo of the prescription
-                    </Text>
-                  </View>
-                  <Icon
-                    name="chevron-right"
-                    size={24}
-                    color={theme.colors.textSecondary}
-                  />
-                </TouchableOpacity>
-
-                <TouchableOpacity
-                  style={styles.uploadOption}
-                  activeOpacity={0.7}
-                  onPress={handleSelectFile}
-                >
-                  <View style={styles.uploadOptionIcon}>
-                    <Icon
-                      name="folder"
-                      size={24}
-                      color={theme.colors.primary}
-                    />
-                  </View>
-                  <View style={styles.uploadOptionTextWrap}>
-                    <Text style={styles.uploadOptionTitle}>File Manager</Text>
-                    <Text style={styles.uploadOptionSubtitle}>
-                      Choose an image or PDF file
-                    </Text>
-                  </View>
-                  <Icon
-                    name="chevron-right"
-                    size={24}
-                    color={theme.colors.textSecondary}
-                  />
-                </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.uploadOption}
+              activeOpacity={0.7}
+              onPress={handleSelectCamera}
+            >
+              <View style={styles.uploadOptionIcon}>
+                <Icon
+                  name="photo-camera"
+                  size={24}
+                  color={theme.colors.primary}
+                />
               </View>
+              <View style={styles.uploadOptionTextWrap}>
+                <Text style={styles.uploadOptionTitle}>Camera</Text>
+                <Text style={styles.uploadOptionSubtitle}>
+                  Take a photo of the prescription
+                </Text>
+              </View>
+              <Icon
+                name="chevron-right"
+                size={24}
+                color={theme.colors.textSecondary}
+              />
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.uploadOption}
+              activeOpacity={0.7}
+              onPress={handleSelectFile}
+            >
+              <View style={styles.uploadOptionIcon}>
+                <Icon
+                  name="folder"
+                  size={24}
+                  color={theme.colors.primary}
+                />
+              </View>
+              <View style={styles.uploadOptionTextWrap}>
+                <Text style={styles.uploadOptionTitle}>File Manager</Text>
+                <Text style={styles.uploadOptionSubtitle}>
+                  Choose an image or PDF file
+                </Text>
+              </View>
+              <Icon
+                name="chevron-right"
+                size={24}
+                color={theme.colors.textSecondary}
+              />
             </TouchableOpacity>
           </View>
-        </TouchableOpacity>
-      </Modal>
+        </View>
+      </ModalBackdrop>
 
       {/* Selected file → category + confirm upload popup */}
-      <Modal
+      <ModalBackdrop
         visible={!!selectedFile}
-        transparent
+        onClose={handleRemoveFile}
         animationType="fade"
-        onRequestClose={handleRemoveFile}
+        align="center"
+        dismissOnBackdropPress={!uploading}
       >
-        <TouchableOpacity
-          style={styles.followupModalOverlay}
-          activeOpacity={1}
-          onPress={() => {
-            if (!uploading) handleRemoveFile();
-          }}
-        >
-          <TouchableOpacity
-            activeOpacity={1}
-            onPress={e => e.stopPropagation()}
-            style={styles.followupCard}
-          >
+        <View style={styles.uploadPopupCard}>
+          <View style={styles.uploadPopupBody}>
             <View style={styles.followupHeader}>
-              <Text style={styles.followupTitle}>Upload Prescription</Text>
+              <Text style={styles.followupTitle}>{uploadModalTitle}</Text>
               <TouchableOpacity
                 style={styles.followupClose}
                 onPress={handleRemoveFile}
@@ -1192,7 +1672,6 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
               </TouchableOpacity>
             </View>
 
-            {/* Selected file */}
             <View style={styles.selectedFileRow}>
               <Icon
                 name="insert-drive-file"
@@ -1204,7 +1683,6 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
               </Text>
             </View>
 
-            {/* Category */}
             <Text style={styles.followupLabel}>Category</Text>
             <TouchableOpacity
               style={styles.categorySelect}
@@ -1228,7 +1706,10 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
             </TouchableOpacity>
             {categoryDropdownOpen && (
               <View style={styles.dropdownList}>
-                <ScrollView style={styles.categoryDropdownScroll} nestedScrollEnabled>
+                <ScrollView
+                  style={styles.categoryDropdownScroll}
+                  nestedScrollEnabled
+                >
                   {categoryOptions.map(cat => {
                     const active = cat === selectedCategory;
                     return (
@@ -1282,288 +1763,480 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
                 </>
               )}
             </TouchableOpacity>
-          </TouchableOpacity>
-        </TouchableOpacity>
-      </Modal>
+          </View>
+        </View>
+      </ModalBackdrop>
 
       {/* Book Follow-up modal (UI only) */}
-      <Modal
+      <ModalBackdrop
         visible={showFollowupModal}
-        transparent
+        onClose={() => setShowFollowupModal(false)}
         animationType="fade"
-        onRequestClose={() => setShowFollowupModal(false)}
+        align="center"
       >
-        <TouchableOpacity
-          style={styles.followupModalOverlay}
-          activeOpacity={1}
-          onPress={() => setShowFollowupModal(false)}
-        >
-          <TouchableOpacity
-            activeOpacity={1}
-            onPress={e => e.stopPropagation()}
-            style={styles.followupCard}
+        <View style={styles.followupCard}>
+          <ScrollView
+            showsVerticalScrollIndicator={false}
+            keyboardShouldPersistTaps="handled"
           >
-            <ScrollView
-              showsVerticalScrollIndicator={false}
-              keyboardShouldPersistTaps="handled"
-            >
-              {/* Header */}
-              <View style={styles.followupHeader}>
-                <Text style={styles.followupTitle}>Book Follow-up</Text>
-                <View style={styles.tokenBadge}>
-                  <Text style={styles.tokenBadgeText}>TOKEN ONLY</Text>
-                </View>
-                <TouchableOpacity
-                  style={styles.followupClose}
-                  onPress={() => setShowFollowupModal(false)}
-                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                >
-                  <Icon name="close" size={22} color={theme.colors.text} />
-                </TouchableOpacity>
-              </View>
-
-              <Text style={styles.followupSubtitle}>
-                Books a queue appointment only — no prescription is created.
-              </Text>
-
-              {/* Follow-up date */}
-              <Text style={styles.followupLabel}>Follow-up date</Text>
-              <TouchableOpacity
-                style={styles.followupField}
-                activeOpacity={0.7}
-                onPress={() => setShowFollowupDatePicker(true)}
-              >
-                <Text
-                  style={[
-                    styles.followupFieldText,
-                    !followupDate && styles.followupPlaceholder,
-                  ]}
-                >
-                  {followupDate ? formatDate(followupDate.toISOString()) : 'dd/mm/yyyy'}
-                </Text>
-                <Icon name="event" size={20} color={theme.colors.textSecondary} />
-              </TouchableOpacity>
-
-              {/* Doctor */}
-              <Text style={styles.followupLabel}>Doctor</Text>
-              <TouchableOpacity
-                style={styles.followupField}
-                activeOpacity={0.7}
-                disabled={doctorsLoading}
-                onPress={() => setDoctorDropdownOpen(o => !o)}
-              >
-                <Text
-                  style={[
-                    styles.followupFieldText,
-                    !selectedDoctor && styles.followupPlaceholder,
-                  ]}
-                >
-                  {selectedDoctor
-                    ? `${selectedDoctor.name}${
-                        selectedDoctor.doctorCode
-                          ? ` (${selectedDoctor.doctorCode})`
-                          : ''
-                      }`
-                    : 'Select doctor'}
-                </Text>
-                {doctorsLoading ? (
-                  <ActivityIndicator size="small" color={theme.colors.primary} />
-                ) : (
-                  <Icon
-                    name={doctorDropdownOpen ? 'expand-less' : 'expand-more'}
-                    size={22}
-                    color={theme.colors.textSecondary}
-                  />
-                )}
-              </TouchableOpacity>
-              {doctorDropdownOpen && (
-                <View style={styles.dropdownList}>
-                  {doctors.map(doc => {
-                    const active = doc._id === selectedDoctor?._id;
-                    return (
-                      <TouchableOpacity
-                        key={doc._id}
-                        style={styles.dropdownItem}
-                        activeOpacity={0.7}
-                        onPress={() => {
-                          setSelectedDoctor(doc);
-                          setDoctorDropdownOpen(false);
-                        }}
-                      >
-                        <Text
-                          style={[
-                            styles.dropdownItemText,
-                            active && styles.dropdownItemTextActive,
-                          ]}
-                        >
-                          {doc.name}
-                          {doc.doctorCode ? ` (${doc.doctorCode})` : ''}
-                        </Text>
-                        {active && (
-                          <Icon
-                            name="check"
-                            size={18}
-                            color={theme.colors.primary}
-                          />
-                        )}
-                      </TouchableOpacity>
-                    );
-                  })}
-                </View>
-              )}
-
-              {/* Slot */}
-              <Text style={styles.followupLabel}>Slot</Text>
-              <TouchableOpacity
-                style={styles.followupField}
-                activeOpacity={0.7}
-                disabled={!selectedDoctor || !followupDate || slotsLoading}
-                onPress={() => setSlotPickerOpen(true)}
-              >
-                <Text
-                  style={[
-                    styles.followupFieldText,
-                    !selectedSlot && styles.followupPlaceholder,
-                  ]}
-                >
-                  {selectedSlot
-                    ? selectedSlot.startTime
-                    : !followupDate
-                    ? 'Pick a date first'
-                    : 'Click to pick a slot'}
-                </Text>
-                {slotsLoading ? (
-                  <ActivityIndicator size="small" color={theme.colors.primary} />
-                ) : (
-                  <Icon
-                    name="expand-more"
-                    size={22}
-                    color={theme.colors.textSecondary}
-                  />
-                )}
-              </TouchableOpacity>
-
-              {/* Footer actions */}
-              <View style={styles.followupFooter}>
-                <TouchableOpacity
-                  style={[styles.followupFooterBtn, styles.followupCancelBtn]}
-                  activeOpacity={0.8}
-                  onPress={() => setShowFollowupModal(false)}
-                >
-                  <Text style={styles.followupCancelText}>Cancel</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={[
-                    styles.followupFooterBtn,
-                    styles.followupBookBtn,
-                    booking && styles.confirmBtnDisabled,
-                  ]}
-                  activeOpacity={0.8}
-                  onPress={handleBookFollowup}
-                  disabled={booking}
-                >
-                  {booking ? (
-                    <ActivityIndicator size="small" color={theme.colors.surface} />
-                  ) : (
-                    <Text style={styles.followupBookText}>Book follow-up</Text>
-                  )}
-                </TouchableOpacity>
-              </View>
-            </ScrollView>
-          </TouchableOpacity>
-        </TouchableOpacity>
-
-        <DatePicker
-          modal
-          open={showFollowupDatePicker}
-          date={followupDate || new Date()}
-          mode="date"
-          minimumDate={new Date()}
-          onConfirm={date => {
-            setShowFollowupDatePicker(false);
-            setFollowupDate(date);
-          }}
-          onCancel={() => setShowFollowupDatePicker(false)}
-          title="Follow-up date"
-        />
-      </Modal>
-
-      {/* Slot picker popup (cards grid, like the web app) */}
-      <Modal
-        visible={slotPickerOpen}
-        transparent
-        animationType="fade"
-        onRequestClose={() => setSlotPickerOpen(false)}
-      >
-        <TouchableOpacity
-          style={styles.followupModalOverlay}
-          activeOpacity={1}
-          onPress={() => setSlotPickerOpen(false)}
-        >
-          <TouchableOpacity
-            activeOpacity={1}
-            onPress={e => e.stopPropagation()}
-            style={styles.slotModalCard}
-          >
+            {/* Header */}
             <View style={styles.followupHeader}>
-              <Text style={styles.followupTitle}>Select Slots</Text>
+              <Text style={styles.followupTitle}>Book Follow-up</Text>
+              <View style={styles.tokenBadge}>
+                <Text style={styles.tokenBadgeText}>TOKEN ONLY</Text>
+              </View>
               <TouchableOpacity
                 style={styles.followupClose}
-                onPress={() => setSlotPickerOpen(false)}
+                onPress={() => setShowFollowupModal(false)}
                 hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
               >
                 <Icon name="close" size={22} color={theme.colors.text} />
               </TouchableOpacity>
             </View>
 
-            {slots.length === 0 ? (
-              <Text style={styles.followupSubtitle}>
-                No slots available for this doctor on the selected date.
+            <Text style={styles.followupSubtitle}>
+              Books a queue appointment only — no prescription is created.
+            </Text>
+
+            {/* Follow-up date */}
+            <Text style={styles.followupLabel}>Follow-up date</Text>
+            <TouchableOpacity
+              style={styles.followupField}
+              activeOpacity={0.7}
+              onPress={() => setShowFollowupDatePicker(true)}
+            >
+              <Text
+                style={[
+                  styles.followupFieldText,
+                  !followupDate && styles.followupPlaceholder,
+                ]}
+              >
+                {followupDate ? formatDate(followupDate.toISOString()) : 'dd/mm/yyyy'}
               </Text>
-            ) : (
-              <ScrollView showsVerticalScrollIndicator={false}>
-                <View style={styles.slotCardGrid}>
-                  {slots.map(slot => {
-                    const active = slot._id === selectedSlot?._id;
-                    const disabled = !!slot.isDisable;
-                    return (
-                      <TouchableOpacity
-                        key={slot._id}
+              <Icon name="event" size={20} color={theme.colors.textSecondary} />
+            </TouchableOpacity>
+
+            {/* Doctor */}
+            <Text style={styles.followupLabel}>Doctor</Text>
+            <TouchableOpacity
+              style={styles.followupField}
+              activeOpacity={0.7}
+              disabled={doctorsLoading}
+              onPress={() => setDoctorDropdownOpen(o => !o)}
+            >
+              <Text
+                style={[
+                  styles.followupFieldText,
+                  !selectedDoctor && styles.followupPlaceholder,
+                ]}
+              >
+                {selectedDoctor
+                  ? `${selectedDoctor.name}${
+                      selectedDoctor.doctorCode
+                        ? ` (${selectedDoctor.doctorCode})`
+                        : ''
+                    }`
+                  : 'Select doctor'}
+              </Text>
+              {doctorsLoading ? (
+                <ActivityIndicator size="small" color={theme.colors.primary} />
+              ) : (
+                <Icon
+                  name={doctorDropdownOpen ? 'expand-less' : 'expand-more'}
+                  size={22}
+                  color={theme.colors.textSecondary}
+                />
+              )}
+            </TouchableOpacity>
+            {doctorDropdownOpen && (
+              <View style={styles.dropdownList}>
+                {doctors.map(doc => {
+                  const active = doc._id === selectedDoctor?._id;
+                  return (
+                    <TouchableOpacity
+                      key={doc._id}
+                      style={styles.dropdownItem}
+                      activeOpacity={0.7}
+                      onPress={() => {
+                        setSelectedDoctor(doc);
+                        setDoctorDropdownOpen(false);
+                      }}
+                    >
+                      <Text
                         style={[
-                          styles.slotCard,
-                          active && styles.slotCardActive,
-                          disabled && styles.slotCardDisabled,
+                          styles.dropdownItemText,
+                          active && styles.dropdownItemTextActive,
                         ]}
-                        activeOpacity={0.8}
-                        disabled={disabled}
-                        onPress={() => {
-                          setSelectedSlot(slot);
-                          setSlotPickerOpen(false);
-                        }}
                       >
-                        <Text style={styles.slotCardLine}>
-                          Time: {slot.startTime}
-                        </Text>
-                        <Text style={styles.slotCardLine}>
-                          Duration: {slot.duration ?? 30}
-                        </Text>
-                        <Text style={styles.slotCardLine}>
-                          Token: {slot.tokenCount ?? '—'}
-                        </Text>
-                      </TouchableOpacity>
-                    );
-                  })}
-                </View>
-              </ScrollView>
+                        {doc.name}
+                        {doc.doctorCode ? ` (${doc.doctorCode})` : ''}
+                      </Text>
+                      {active && (
+                        <Icon
+                          name="check"
+                          size={18}
+                          color={theme.colors.primary}
+                        />
+                      )}
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
             )}
-          </TouchableOpacity>
-        </TouchableOpacity>
-      </Modal>
+
+            {/* Treatment (from Manage Service + treatment plans) */}
+            <Text style={styles.followupLabel}>
+              Treatment
+              {!hasAssignedFollowupTreatments && (
+                <Text style={styles.followupLabelOptional}> (optional)</Text>
+              )}
+            </Text>
+            <TouchableOpacity
+              style={styles.followupField}
+              activeOpacity={0.7}
+              disabled={
+                followupTreatmentsLoading ||
+                (!followupCatalogTreatments.length &&
+                  !followupPlanGroups.length)
+              }
+              onPress={() => setFollowupTreatmentDropdownOpen(open => !open)}
+            >
+              <Text
+                style={[
+                  styles.followupFieldText,
+                  selectedFollowupTreatmentKeys.size === 0 &&
+                    styles.followupPlaceholder,
+                ]}
+                numberOfLines={1}
+              >
+                {followupTreatmentTriggerLabel}
+              </Text>
+              {followupTreatmentsLoading ? (
+                <ActivityIndicator size="small" color={theme.colors.primary} />
+              ) : (
+                <Icon
+                  name={
+                    followupTreatmentDropdownOpen ? 'expand-less' : 'expand-more'
+                  }
+                  size={22}
+                  color={theme.colors.textSecondary}
+                />
+              )}
+            </TouchableOpacity>
+
+            {selectedFollowupTreatmentSummaries.length > 0 && (
+              <View style={styles.followupSelectedTreatments}>
+                {selectedFollowupTreatmentSummaries.map(treatment => (
+                  <View
+                    key={treatment.key}
+                    style={styles.followupSelectedTreatmentRow}
+                  >
+                    <Text
+                      style={styles.followupSelectedTreatmentText}
+                      numberOfLines={1}
+                    >
+                      {treatment.treatmentDesc}
+                    </Text>
+                    <TouchableOpacity
+                      onPress={() => toggleFollowupTreatment(treatment.key)}
+                      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                    >
+                      <Icon
+                        name="close"
+                        size={18}
+                        color={theme.colors.textSecondary}
+                      />
+                    </TouchableOpacity>
+                  </View>
+                ))}
+              </View>
+            )}
+
+            {followupTreatmentDropdownOpen && (
+              <View style={styles.followupTreatmentDropdown}>
+                <TextInput
+                  style={styles.followupTreatmentSearch}
+                  value={followupTreatmentSearch}
+                  onChangeText={setFollowupTreatmentSearch}
+                  placeholder="Search treatments"
+                  placeholderTextColor={theme.colors.placeholder}
+                />
+
+                {followupTreatmentsLoading ? (
+                  <ActivityIndicator
+                    size="small"
+                    color={theme.colors.primary}
+                    style={styles.followupTreatmentLoader}
+                  />
+                ) : filteredFollowupPlanGroups.length === 0 &&
+                  filteredFollowupCatalogTreatments.length === 0 ? (
+                  <Text style={styles.followupTreatmentEmpty}>
+                    {followupTreatmentSearch.trim()
+                      ? 'No treatments match your search'
+                      : 'No treatments available'}
+                  </Text>
+                ) : (
+                  <ScrollView
+                    nestedScrollEnabled
+                    keyboardShouldPersistTaps="handled"
+                    style={styles.followupTreatmentList}
+                  >
+                    {filteredFollowupPlanGroups.map(group => (
+                      <View key={group.planId}>
+                        <Text style={styles.followupTreatmentGroupTitle}>
+                          {group.planTitle}
+                        </Text>
+                        {group.treatments.map(treatment => {
+                          const active = selectedFollowupTreatmentKeys.has(
+                            treatment.key,
+                          );
+                          return (
+                            <TouchableOpacity
+                              key={treatment.key}
+                              style={styles.followupTreatmentOption}
+                              activeOpacity={0.7}
+                              onPress={() =>
+                                toggleFollowupTreatment(treatment.key)
+                              }
+                            >
+                              <Icon
+                                name={
+                                  active
+                                    ? 'check-box'
+                                    : 'check-box-outline-blank'
+                                }
+                                size={20}
+                                color={
+                                  active
+                                    ? theme.colors.primary
+                                    : theme.colors.textSecondary
+                                }
+                              />
+                              <View style={styles.followupTreatmentOptionBody}>
+                                <Text style={styles.followupTreatmentOptionName}>
+                                  {treatment.treatmentDesc}
+                                </Text>
+                                {!!treatment.date && (
+                                  <Text style={styles.followupTreatmentOptionMeta}>
+                                    {formatDate(treatment.date)}
+                                  </Text>
+                                )}
+                              </View>
+                            </TouchableOpacity>
+                          );
+                        })}
+                      </View>
+                    ))}
+
+                    {filteredFollowupCatalogTreatments.length > 0 && (
+                      <View>
+                        <Text style={styles.followupTreatmentGroupTitle}>
+                          Manage Service
+                        </Text>
+                        {filteredFollowupCatalogTreatments.map(treatment => {
+                          const active = selectedFollowupTreatmentKeys.has(
+                            treatment.key,
+                          );
+                          return (
+                            <TouchableOpacity
+                              key={treatment.key}
+                              style={styles.followupTreatmentOption}
+                              activeOpacity={0.7}
+                              onPress={() =>
+                                toggleFollowupTreatment(treatment.key)
+                              }
+                            >
+                              <Icon
+                                name={
+                                  active
+                                    ? 'check-box'
+                                    : 'check-box-outline-blank'
+                                }
+                                size={20}
+                                color={
+                                  active
+                                    ? theme.colors.primary
+                                    : theme.colors.textSecondary
+                                }
+                              />
+                              <View style={styles.followupTreatmentOptionBody}>
+                                <Text style={styles.followupTreatmentOptionName}>
+                                  {treatment.treatmentDesc}
+                                </Text>
+                                <Text style={styles.followupTreatmentOptionMeta}>
+                                  ₹ {treatment.expenseAmount}
+                                </Text>
+                              </View>
+                            </TouchableOpacity>
+                          );
+                        })}
+                      </View>
+                    )}
+                  </ScrollView>
+                )}
+              </View>
+            )}
+
+            {selectedDoctor?.isSlot !== false ? (
+              <>
+            {/* Slot */}
+            <Text style={styles.followupLabel}>Slot</Text>
+            <TouchableOpacity
+              style={styles.followupField}
+              activeOpacity={0.7}
+              disabled={!selectedDoctor || !followupDate || slotsLoading}
+              onPress={() => setSlotPickerOpen(true)}
+            >
+              <Text
+                style={[
+                  styles.followupFieldText,
+                  !selectedSlot && styles.followupPlaceholder,
+                ]}
+              >
+                {selectedSlot
+                  ? selectedSlot.startTime
+                  : !followupDate
+                  ? 'Pick a date first'
+                  : 'Click to pick a slot'}
+              </Text>
+              {slotsLoading ? (
+                <ActivityIndicator size="small" color={theme.colors.primary} />
+              ) : (
+                <Icon
+                  name="expand-more"
+                  size={22}
+                  color={theme.colors.textSecondary}
+                />
+              )}
+            </TouchableOpacity>
+              </>
+            ) : null}
+
+            <Text style={styles.followupLabel}>
+              Remark<Text style={styles.followupLabelOptional}> (optional)</Text>
+            </Text>
+            <TextInput
+              style={styles.followupRemarkInput}
+              value={followupRemark}
+              onChangeText={setFollowupRemark}
+              placeholder="Add a remark for this follow-up"
+              placeholderTextColor={theme.colors.placeholder}
+              multiline
+              textAlignVertical="top"
+            />
+
+            {/* Footer actions */}
+            <View style={styles.followupFooter}>
+              <TouchableOpacity
+                style={[styles.followupFooterBtn, styles.followupCancelBtn]}
+                activeOpacity={0.8}
+                onPress={() => setShowFollowupModal(false)}
+              >
+                <Text style={styles.followupCancelText}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[
+                  styles.followupFooterBtn,
+                  styles.followupBookBtn,
+                  booking && styles.confirmBtnDisabled,
+                ]}
+                activeOpacity={0.8}
+                onPress={handleBookFollowup}
+                disabled={booking}
+              >
+                {booking ? (
+                  <ActivityIndicator size="small" color={theme.colors.surface} />
+                ) : (
+                  <Text style={styles.followupBookText}>Book follow-up</Text>
+                )}
+              </TouchableOpacity>
+            </View>
+          </ScrollView>
+        </View>
+      </ModalBackdrop>
+
+      <DatePicker
+        modal
+        open={showFollowupDatePicker}
+        date={followupDate || new Date()}
+        mode="date"
+        minimumDate={new Date()}
+        onConfirm={date => {
+          setShowFollowupDatePicker(false);
+          setFollowupDate(date);
+        }}
+        onCancel={() => setShowFollowupDatePicker(false)}
+        title="Follow-up date"
+      />
+
+      {/* Slot picker popup (cards grid, like the web app) */}
+      <ModalBackdrop
+        visible={slotPickerOpen}
+        onClose={() => setSlotPickerOpen(false)}
+        animationType="fade"
+        align="center"
+      >
+        <View style={styles.slotModalCard}>
+          <View style={styles.followupHeader}>
+            <Text style={styles.followupTitle}>Select Slots</Text>
+            <TouchableOpacity
+              style={styles.followupClose}
+              onPress={() => setSlotPickerOpen(false)}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            >
+              <Icon name="close" size={22} color={theme.colors.text} />
+            </TouchableOpacity>
+          </View>
+
+          {slots.length === 0 ? (
+            <Text style={styles.followupSubtitle}>
+              No slots available for this doctor on the selected date.
+            </Text>
+          ) : (
+            <ScrollView showsVerticalScrollIndicator={false}>
+              <View style={styles.slotCardGrid}>
+                {slots.map(slot => {
+                  const active = slot._id === selectedSlot?._id;
+                  const disabled = !!slot.isDisable;
+                  return (
+                    <TouchableOpacity
+                      key={slot._id}
+                      style={[
+                        styles.slotCard,
+                        active && styles.slotCardActive,
+                        disabled && styles.slotCardDisabled,
+                      ]}
+                      activeOpacity={0.8}
+                      disabled={disabled}
+                      onPress={() => {
+                        setSelectedSlot(slot);
+                        setSlotPickerOpen(false);
+                      }}
+                    >
+                      <Text style={styles.slotCardLine}>
+                        Time: {slot.startTime}
+                      </Text>
+                      <Text style={styles.slotCardLine}>
+                        Duration: {slot.duration ?? 30}
+                      </Text>
+                      <Text style={styles.slotCardLine}>
+                        Token: {slot.tokenCount ?? '—'}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+            </ScrollView>
+          )}
+        </View>
+      </ModalBackdrop>
 
       {/* In-app file viewer with a bottom strip to move between prescriptions */}
       <Modal
         visible={viewerIndex != null}
         animationType="slide"
+        statusBarTranslucent
+        presentationStyle="overFullScreen"
         onRequestClose={() => setViewerIndex(null)}
       >
         {(() => {
@@ -1670,6 +2343,20 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
           );
         })()}
       </Modal>
+
+      <TreatmentPlanDrawer
+        visible={treatmentPlanOpen}
+        onClose={() => setTreatmentPlanOpen(false)}
+        onSave={handleSaveTreatmentPlan}
+        token={token}
+      />
+
+      <OPDActionsFab
+        onUploadPrescriptionPress={() => openUploadModal('prescription')}
+        onUploadProcedurePress={() => openUploadModal('procedure')}
+        onTreatmentPlanPress={handleTreatmentPlanPress}
+        onFollowupPress={openFollowupModal}
+      />
     </View>
   );
 };
@@ -1732,25 +2419,9 @@ const styles = StyleSheet.create({
     color: theme.colors.text,
   },
   content: {
+    flexGrow: 1,
     padding: theme.spacing.md,
-    paddingBottom: theme.spacing.xxl,
-  },
-  uploadBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderRadius: theme.borderRadius.md,
-    paddingVertical: theme.spacing.md,
-    paddingHorizontal: theme.spacing.md,
-    marginBottom: theme.spacing.md,
-    backgroundColor: theme.colors.primary,
-    ...theme.shadows.sm,
-  },
-  uploadText: {
-    fontSize: theme.typography.fontSizes.md,
-    fontWeight: theme.typography.fontWeights.semiBold,
-    color: theme.colors.surface,
-    marginLeft: theme.spacing.sm,
+    paddingBottom: 96,
   },
   selectedFileRow: {
     flexDirection: 'row',
@@ -1798,25 +2469,35 @@ const styles = StyleSheet.create({
     paddingHorizontal: theme.spacing.md,
     marginBottom: theme.spacing.lg,
     backgroundColor: '#4CAF50',
-    ...theme.shadows.sm,
   },
   confirmBtnDisabled: {
     opacity: 0.6,
+  },
+  uploadText: {
+    fontSize: theme.typography.fontSizes.md,
+    fontWeight: theme.typography.fontWeights.semiBold,
+    color: theme.colors.surface,
+    marginLeft: theme.spacing.sm,
   },
   uploadPopupConfirmBtn: {
     marginTop: theme.spacing.lg,
     marginBottom: 0,
   },
-  modalOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.5)',
-    justifyContent: 'flex-end',
+  uploadPopupCard: {
+    width: '100%',
+    maxWidth: 520,
+    backgroundColor: theme.colors.surface,
+    borderRadius: theme.borderRadius.xl,
+    overflow: 'hidden',
+    ...theme.shadows.sm,
+  },
+  uploadPopupBody: {
+    padding: theme.spacing.lg,
   },
   uploadModalContainer: {
     backgroundColor: theme.colors.surface,
     borderTopLeftRadius: theme.borderRadius.xl,
     borderTopRightRadius: theme.borderRadius.xl,
-    paddingBottom: 20,
   },
   uploadModalContent: {
     padding: theme.spacing.lg,
@@ -1949,87 +2630,149 @@ const styles = StyleSheet.create({
     fontWeight: theme.typography.fontWeights.bold,
     color: theme.colors.surface,
   },
-  // Uploaded prescription card
-  uploadCard: {
+  thumbnailImage: {
+    width: '100%',
+    height: '100%',
+  },
+  // Uploaded prescription / procedure cards
+  styledUploadCard: {
     backgroundColor: theme.colors.surface,
     borderRadius: theme.borderRadius.lg,
     overflow: 'hidden',
     marginBottom: theme.spacing.md,
     borderWidth: 1,
-    borderColor: theme.colors.border,
+    borderColor: '#E0E7FF',
     ...theme.shadows.sm,
   },
-  uploadCardPanel: {
-    backgroundColor: '#F5F6F8',
-    padding: theme.spacing.md,
+  styledUploadHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#8B5CF6',
+    paddingHorizontal: theme.spacing.md,
+    paddingVertical: 10,
   },
-  uploadCategoryBadge: {
-    backgroundColor: '#7E57C2',
-    borderRadius: theme.borderRadius.sm,
-    paddingVertical: 2,
-    paddingHorizontal: theme.spacing.sm,
-    marginLeft: theme.spacing.sm,
+  styledUploadHeaderLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 1,
+    gap: theme.spacing.sm,
   },
-  uploadCategoryBadgeText: {
-    fontSize: theme.typography.fontSizes.xs,
+  styledUploadHeaderTitle: {
+    fontSize: theme.typography.fontSizes.md,
     fontWeight: theme.typography.fontWeights.bold,
     color: theme.colors.surface,
   },
-  uploadCardContent: {
-    flexDirection: 'row',
+  styledUploadBadge: {
+    backgroundColor: 'rgba(255,255,255,0.25)',
+    borderRadius: theme.borderRadius.lg,
+    paddingVertical: 3,
+    paddingHorizontal: theme.spacing.sm,
+    marginLeft: theme.spacing.sm,
   },
-  uploadFileName: {
-    fontSize: theme.typography.fontSizes.md,
+  styledUploadBadgeText: {
+    fontSize: theme.typography.fontSizes.xs,
     fontWeight: theme.typography.fontWeights.bold,
-    color: theme.colors.text,
-    marginBottom: theme.spacing.sm,
+    color: theme.colors.surface,
+    textTransform: 'uppercase',
   },
-  uploadCardActions: {
+  styledUploadPanel: {
+    padding: theme.spacing.md,
+  },
+  styledUploadPanelPrescription: {
+    backgroundColor: theme.colors.surface,
+  },
+  styledUploadPanelProcedure: {
+    backgroundColor: '#F4F7FF',
+  },
+  styledUploadContent: {
     flexDirection: 'row',
-    justifyContent: 'flex-end',
-    marginTop: theme.spacing.md,
-    gap: theme.spacing.sm,
   },
-  uploadActionBtn: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  uploadActionPrint: {
-    backgroundColor: '#43A047',
-  },
-  uploadActionDownload: {
-    backgroundColor: theme.colors.primary,
-  },
-  uploadActionDelete: {
-    backgroundColor: '#E53935',
-  },
-  thumbnail: {
+  styledUploadThumbnail: {
     width: 96,
     height: 96,
     borderRadius: theme.borderRadius.md,
     borderWidth: 1,
-    borderColor: theme.colors.border,
-    backgroundColor: theme.colors.background,
+    borderColor: '#E0E7FF',
+    backgroundColor: theme.colors.surface,
     alignItems: 'center',
     justifyContent: 'center',
     marginRight: theme.spacing.md,
     overflow: 'hidden',
   },
-  thumbnailImage: {
-    width: '100%',
-    height: '100%',
-  },
-  thumbnailLabel: {
+  styledUploadThumbnailLabel: {
     fontSize: theme.typography.fontSizes.xs,
     fontWeight: theme.typography.fontWeights.semiBold,
-    color: theme.colors.textSecondary,
+    color: '#6366F1',
     marginTop: 4,
   },
-  uploadCardInfo: {
+  styledUploadInfo: {
     flex: 1,
+  },
+  styledUploadFileName: {
+    fontSize: theme.typography.fontSizes.lg,
+    fontWeight: theme.typography.fontWeights.bold,
+    color: '#1F2937',
+    marginBottom: theme.spacing.sm,
+  },
+  styledUploadMetaRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: theme.spacing.md,
+  },
+  styledUploadMetaItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.xs,
+  },
+  styledUploadMetaLabel: {
+    fontSize: theme.typography.fontSizes.xs,
+    fontWeight: theme.typography.fontWeights.semiBold,
+    color: '#8091F2',
+    letterSpacing: 0.4,
+  },
+  styledUploadMetaValue: {
+    fontSize: theme.typography.fontSizes.sm,
+    fontWeight: theme.typography.fontWeights.semiBold,
+    color: '#1F2937',
+  },
+  styledUploadActions: {
+    flexDirection: 'row',
+    marginTop: theme.spacing.md,
+    gap: theme.spacing.sm,
+  },
+  styledUploadActionBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: theme.borderRadius.lg,
+    paddingVertical: theme.spacing.sm,
+    paddingHorizontal: theme.spacing.xs,
+    gap: 4,
+    borderWidth: 1,
+  },
+  styledUploadActionPrint: {
+    backgroundColor: theme.colors.surface,
+    borderColor: '#C7D2FE',
+  },
+  styledUploadActionDownload: {
+    backgroundColor: theme.colors.surface,
+    borderColor: '#C7D2FE',
+  },
+  styledUploadActionDelete: {
+    backgroundColor: '#FFEBEE',
+    borderColor: '#FFCDD2',
+  },
+  styledUploadActionText: {
+    fontSize: theme.typography.fontSizes.sm,
+    fontWeight: theme.typography.fontWeights.semiBold,
+    color: '#6366F1',
+  },
+  styledUploadActionDeleteText: {
+    fontSize: theme.typography.fontSizes.sm,
+    fontWeight: theme.typography.fontWeights.semiBold,
+    color: '#EF4444',
   },
   // Lab report card
   labCard: {
@@ -2081,7 +2824,7 @@ const styles = StyleSheet.create({
     color: theme.colors.surface,
   },
   apptCardBody: {
-    backgroundColor: theme.colors.surface,
+    backgroundColor: '#F5F7FA',
     paddingHorizontal: theme.spacing.md,
     paddingVertical: theme.spacing.md,
   },
@@ -2093,6 +2836,92 @@ const styles = StyleSheet.create({
     width: '50%',
     paddingRight: theme.spacing.sm,
     marginBottom: theme.spacing.sm,
+  },
+  apptRemarkBox: {
+    marginTop: theme.spacing.sm,
+    borderWidth: 1,
+    borderColor: '#BBDEFB',
+    borderRadius: theme.borderRadius.lg,
+    backgroundColor: theme.colors.surface,
+    padding: theme.spacing.md,
+  },
+  apptRemarkHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: theme.spacing.sm,
+  },
+  apptRemarkLabel: {
+    fontSize: theme.typography.fontSizes.xs,
+    fontWeight: theme.typography.fontWeights.semiBold,
+    color: theme.colors.primary,
+    letterSpacing: 0.4,
+  },
+  apptRemarkAddBtn: {
+    borderWidth: 1,
+    borderColor: '#90CAF9',
+    borderRadius: theme.borderRadius.lg,
+    paddingVertical: 4,
+    paddingHorizontal: theme.spacing.md,
+    backgroundColor: theme.colors.surface,
+  },
+  apptRemarkAddText: {
+    fontSize: theme.typography.fontSizes.sm,
+    fontWeight: theme.typography.fontWeights.semiBold,
+    color: theme.colors.primary,
+  },
+  apptRemarkEmpty: {
+    fontSize: theme.typography.fontSizes.sm,
+    color: theme.colors.textSecondary,
+    fontStyle: 'italic',
+  },
+  apptRemarkText: {
+    fontSize: theme.typography.fontSizes.sm,
+    color: theme.colors.text,
+    lineHeight: 20,
+  },
+  apptRemarkInput: {
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    borderRadius: theme.borderRadius.lg,
+    paddingHorizontal: theme.spacing.md,
+    paddingVertical: theme.spacing.sm,
+    minHeight: 96,
+    fontSize: theme.typography.fontSizes.md,
+    color: theme.colors.text,
+    backgroundColor: theme.colors.surface,
+  },
+  apptRemarkActions: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    gap: theme.spacing.sm,
+    marginTop: theme.spacing.sm,
+  },
+  apptRemarkBtn: {
+    minWidth: 88,
+    borderRadius: theme.borderRadius.lg,
+    paddingVertical: theme.spacing.sm,
+    paddingHorizontal: theme.spacing.md,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  apptRemarkCancelBtn: {
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.surface,
+  },
+  apptRemarkCancelText: {
+    fontSize: theme.typography.fontSizes.sm,
+    fontWeight: theme.typography.fontWeights.semiBold,
+    color: theme.colors.text,
+  },
+  apptRemarkSaveBtn: {
+    backgroundColor: theme.colors.primary,
+  },
+  apptRemarkSaveText: {
+    fontSize: theme.typography.fontSizes.sm,
+    fontWeight: theme.typography.fontWeights.semiBold,
+    color: theme.colors.surface,
   },
   // In-app file viewer
   viewerContainer: {
@@ -2174,42 +3003,7 @@ const styles = StyleSheet.create({
     width: '100%',
     height: '100%',
   },
-  // Inline action buttons (Upload + Add follow-up)
-  actionRow: {
-    flexDirection: 'row',
-    marginBottom: theme.spacing.md,
-  },
-  actionBtn: {
-    flex: 1,
-    marginBottom: 0,
-  },
-  followupBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderRadius: theme.borderRadius.md,
-    paddingVertical: theme.spacing.md,
-    paddingHorizontal: theme.spacing.md,
-    marginLeft: theme.spacing.md,
-    borderWidth: 1,
-    borderColor: theme.colors.primary,
-    backgroundColor: theme.colors.surface,
-    ...theme.shadows.sm,
-  },
-  followupText: {
-    fontSize: theme.typography.fontSizes.md,
-    fontWeight: theme.typography.fontWeights.semiBold,
-    color: theme.colors.primary,
-    marginLeft: theme.spacing.sm,
-  },
-  // Book Follow-up modal
-  followupModalOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.5)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: theme.spacing.lg,
-  },
+  // Book follow-up modal
   followupCard: {
     width: '100%',
     maxWidth: 520,
@@ -2263,6 +3057,10 @@ const styles = StyleSheet.create({
     marginBottom: theme.spacing.sm,
     marginTop: theme.spacing.md,
   },
+  followupLabelOptional: {
+    fontWeight: theme.typography.fontWeights.normal,
+    color: theme.colors.textSecondary,
+  },
   followupField: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -2281,6 +3079,17 @@ const styles = StyleSheet.create({
   },
   followupPlaceholder: {
     color: theme.colors.textSecondary,
+  },
+  followupRemarkInput: {
+    minHeight: 72,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    borderRadius: theme.borderRadius.md,
+    paddingHorizontal: theme.spacing.md,
+    paddingVertical: theme.spacing.sm,
+    fontSize: theme.typography.fontSizes.md,
+    color: theme.colors.text,
+    backgroundColor: theme.colors.surface,
   },
   dropdownList: {
     borderWidth: 1,
@@ -2306,6 +3115,92 @@ const styles = StyleSheet.create({
   dropdownItemTextActive: {
     fontWeight: theme.typography.fontWeights.bold,
     color: theme.colors.primary,
+  },
+  followupSelectedTreatments: {
+    marginTop: theme.spacing.xs,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    borderRadius: theme.borderRadius.md,
+    backgroundColor: theme.colors.background,
+    paddingHorizontal: theme.spacing.sm,
+    paddingVertical: theme.spacing.xs,
+    maxHeight: 120,
+  },
+  followupSelectedTreatmentRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: theme.spacing.xs,
+  },
+  followupSelectedTreatmentText: {
+    flex: 1,
+    fontSize: theme.typography.fontSizes.sm,
+    color: theme.colors.text,
+    marginRight: theme.spacing.sm,
+  },
+  followupTreatmentDropdown: {
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    borderRadius: theme.borderRadius.md,
+    marginTop: theme.spacing.xs,
+    backgroundColor: theme.colors.surface,
+    overflow: 'hidden',
+  },
+  followupTreatmentSearch: {
+    margin: theme.spacing.sm,
+    paddingHorizontal: theme.spacing.md,
+    paddingVertical: theme.spacing.sm,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    borderRadius: theme.borderRadius.md,
+    fontSize: theme.typography.fontSizes.md,
+    color: theme.colors.text,
+    backgroundColor: theme.colors.background,
+  },
+  followupTreatmentLoader: {
+    paddingVertical: theme.spacing.lg,
+  },
+  followupTreatmentEmpty: {
+    textAlign: 'center',
+    color: theme.colors.textSecondary,
+    paddingVertical: theme.spacing.lg,
+    paddingHorizontal: theme.spacing.md,
+    fontSize: theme.typography.fontSizes.sm,
+  },
+  followupTreatmentList: {
+    maxHeight: 220,
+  },
+  followupTreatmentGroupTitle: {
+    paddingHorizontal: theme.spacing.md,
+    paddingTop: theme.spacing.sm,
+    paddingBottom: theme.spacing.xs,
+    fontSize: theme.typography.fontSizes.xs,
+    fontWeight: theme.typography.fontWeights.bold,
+    color: theme.colors.textSecondary,
+    textTransform: 'uppercase',
+    letterSpacing: 0.4,
+    backgroundColor: theme.colors.background,
+  },
+  followupTreatmentOption: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    paddingVertical: theme.spacing.md,
+    paddingHorizontal: theme.spacing.md,
+    borderBottomWidth: 1,
+    borderBottomColor: theme.colors.border,
+  },
+  followupTreatmentOptionBody: {
+    flex: 1,
+    marginLeft: theme.spacing.sm,
+  },
+  followupTreatmentOptionName: {
+    fontSize: theme.typography.fontSizes.md,
+    color: theme.colors.text,
+  },
+  followupTreatmentOptionMeta: {
+    marginTop: 2,
+    fontSize: theme.typography.fontSizes.sm,
+    color: theme.colors.textSecondary,
   },
   // Slot picker popup (cards grid)
   slotModalCard: {

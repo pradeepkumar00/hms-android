@@ -1,8 +1,8 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { NavigationContainer } from '@react-navigation/native';
 import { createStackNavigator } from '@react-navigation/stack';
 import { ActivityIndicator, View, StyleSheet } from 'react-native';
-import { useAppDispatch, useAppSelector, selectAuth } from '../store';
+import { useAppDispatch, useAppSelector, selectAuth, loadAppData, selectAppDataLoaded } from '../store';
 import { checkAuthState } from '../store/authSlice';
 import { RootStackParamList } from '../types';
 import { theme } from '../constants/theme';
@@ -22,13 +22,16 @@ import NotificationSettingsScreen from '../screens/NotificationSettingsScreen';
 import TaskListScreen from '../screens/TaskListScreen';
 import CalendarScreen from '../screens/CalendarScreen';
 import OPDScreen from '../screens/OPDScreen';
+import PatientListScreen from '../screens/PatientListScreen';
+import AddPatientScreen from '../screens/AddPatientScreen';
 
 const Stack = createStackNavigator<RootStackParamList>();
 
 const AppNavigator: React.FC = () => {
   const [isInitializing, setIsInitializing] = useState(true);
   const dispatch = useAppDispatch();
-  const { isAuthenticated, isLoading } = useAppSelector(selectAuth);
+  const { isAuthenticated, isLoading, token } = useAppSelector(selectAuth);
+  const appDataLoaded = useAppSelector(selectAppDataLoaded);
 
   useEffect(() => {
     // Log environment information on app start
@@ -78,6 +81,46 @@ const AppNavigator: React.FC = () => {
     initializeAuth();
   }, [dispatch]);
 
+  useEffect(() => {
+    if (
+      !isAuthenticated ||
+      !token ||
+      isInitializing ||
+      isLoading ||
+      appDataLoaded
+    ) {
+      return;
+    }
+
+    dispatch(loadAppData());
+  }, [
+    dispatch,
+    isAuthenticated,
+    token,
+    isInitializing,
+    isLoading,
+    appDataLoaded,
+  ]);
+
+  const prevAuthenticatedRef = useRef(isAuthenticated);
+
+  useEffect(() => {
+    if (isInitializing || isLoading || !navigationRef.isReady()) {
+      return;
+    }
+
+    if (prevAuthenticatedRef.current === isAuthenticated) {
+      return;
+    }
+
+    navigationRef.reset({
+      index: 0,
+      routes: [{ name: isAuthenticated ? 'Home' : 'Login' }],
+    });
+
+    prevAuthenticatedRef.current = isAuthenticated;
+  }, [isAuthenticated, isInitializing, isLoading]);
+
   // Show loading spinner while initializing
   if (isInitializing || isLoading) {
     console.log(
@@ -101,6 +144,7 @@ const AppNavigator: React.FC = () => {
   return (
     <NavigationContainer ref={navigationRef}>
       <Stack.Navigator
+        initialRouteName={isAuthenticated ? 'Home' : 'Login'}
         screenOptions={{
           headerShown: false, // We'll create custom headers in Phase 2
           cardStyle: { backgroundColor: theme.colors.background },
@@ -108,99 +152,104 @@ const AppNavigator: React.FC = () => {
           // If you want to control animation, use 'animationTypeForReplace' or per-screen options
         }}
       >
-        {isAuthenticated ? (
-          // User is authenticated - Home is the default landing screen
-          <Stack.Group>
-            <Stack.Screen
-              name="Home"
-              component={HomeScreen}
-              options={{
-                gestureEnabled: false, // Default screen - no swipe back
-              }}
-            />
-            <Stack.Screen
-              name="Calendar"
-              component={CalendarScreen}
-              options={{
-                gestureEnabled: true,
-              }}
-            />
-            <Stack.Screen
-              name="AllTasks"
-              component={AllTasksScreen}
-              options={{
-                gestureEnabled: false, // Prevent swipe back to login
-              }}
-            />
-            <Stack.Screen
-              name="Inbox"
-              component={InboxScreen}
-              options={{
-                gestureEnabled: true,
-              }}
-            />
-            <Stack.Screen
-              name="TaskDetails"
-              component={TaskDetailsScreen}
-              options={{
-                gestureEnabled: false, // Disable swipe gesture to prevent bad animation
-              }}
-            />
-            <Stack.Screen
-              name="AssignedTasks"
-              component={AssignedTasksScreen}
-              options={{
-                gestureEnabled: true,
-              }}
-            />
-            <Stack.Screen
-              name="History"
-              component={HistoryScreen}
-              options={{
-                gestureEnabled: true,
-              }}
-            />
-            <Stack.Screen
-              name="CreateTask"
-              component={CreateTaskScreen}
-              options={{
-                gestureEnabled: true,
-              }}
-            />
-            <Stack.Screen
-              name="NotificationSettings"
-              component={NotificationSettingsScreen}
-              options={{
-                gestureEnabled: true,
-              }}
-            />
-            <Stack.Screen
-              name="TaskList"
-              component={TaskListScreen}
-              options={{
-                gestureEnabled: true,
-              }}
-            />
-            <Stack.Screen
-              name="OPD"
-              component={OPDScreen}
-              options={{
-                gestureEnabled: true,
-              }}
-            />
-          </Stack.Group>
-        ) : (
-          // User is not authenticated - show auth screens
-          <Stack.Group>
-            <Stack.Screen
-              name="Login"
-              component={LoginScreen}
-              options={{
-                gestureEnabled: false, // Prevent swipe gestures on login
-              }}
-            />
-          </Stack.Group>
-        )}
+        <Stack.Screen
+          name="Login"
+          component={LoginScreen}
+          options={{
+            gestureEnabled: false, // Prevent swipe gestures on login
+          }}
+        />
+        <Stack.Screen
+          name="Home"
+          component={HomeScreen}
+          options={{
+            gestureEnabled: false, // Default screen - no swipe back
+          }}
+        />
+        <Stack.Screen
+          name="PatientList"
+          component={PatientListScreen}
+          options={{
+            gestureEnabled: true,
+          }}
+        />
+        <Stack.Screen
+          name="AddPatient"
+          component={AddPatientScreen}
+          options={{
+            gestureEnabled: true,
+          }}
+        />
+        <Stack.Screen
+          name="Calendar"
+          component={CalendarScreen}
+          options={{
+            gestureEnabled: true,
+          }}
+        />
+        <Stack.Screen
+          name="AllTasks"
+          component={AllTasksScreen}
+          options={{
+            gestureEnabled: false, // Prevent swipe back to login
+          }}
+        />
+        <Stack.Screen
+          name="Inbox"
+          component={InboxScreen}
+          options={{
+            gestureEnabled: true,
+          }}
+        />
+        <Stack.Screen
+          name="TaskDetails"
+          component={TaskDetailsScreen}
+          options={{
+            gestureEnabled: false, // Disable swipe gesture to prevent bad animation
+          }}
+        />
+        <Stack.Screen
+          name="AssignedTasks"
+          component={AssignedTasksScreen}
+          options={{
+            gestureEnabled: true,
+          }}
+        />
+        <Stack.Screen
+          name="History"
+          component={HistoryScreen}
+          options={{
+            gestureEnabled: true,
+          }}
+        />
+        <Stack.Screen
+          name="CreateTask"
+          component={CreateTaskScreen}
+          options={{
+            gestureEnabled: true,
+          }}
+        />
+        <Stack.Screen
+          name="NotificationSettings"
+          component={NotificationSettingsScreen}
+          options={{
+            gestureEnabled: true,
+          }}
+        />
+        <Stack.Screen
+          name="TaskList"
+          component={TaskListScreen}
+          options={{
+            gestureEnabled: true,
+          }}
+        />
+        <Stack.Screen
+          name="OPD"
+          component={OPDScreen}
+          options={{
+            gestureEnabled: true,
+          }}
+        />
       </Stack.Navigator>
     </NavigationContainer>
   );

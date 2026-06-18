@@ -1,0 +1,955 @@
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import {
+  View,
+  Text,
+  StyleSheet,
+  ScrollView,
+  TextInput,
+  TouchableOpacity,
+  ActivityIndicator,
+  Alert,
+  KeyboardAvoidingView,
+  Platform,
+  InteractionManager,
+  RefreshControl,
+} from 'react-native';
+import DatePicker from 'react-native-date-picker';
+import Icon from 'react-native-vector-icons/MaterialIcons';
+import { useAppDispatch, useAppSelector, selectAuthToken, selectAppConfig, selectAppDataLoading, loadAppData } from '../store';
+import { theme } from '../constants/theme';
+import { Header, ModalBackdrop } from '../components';
+import realAuthService from '../services/realAuthService';
+import { RegisField } from '../types';
+import {
+  buildInitialFormValues,
+  extractRegisFields,
+  formatDateForDisplay,
+  isCoDoctorField,
+  isDoctorField,
+} from '../utils/regisConfig';
+import { validateMobileNumber } from '../utils/validation';
+
+interface AddPatientScreenProps {
+  navigation: any;
+}
+
+interface DoctorOption {
+  _id: string;
+  name: string;
+  doctorCode?: string | null;
+  isSlot?: boolean;
+}
+
+interface Slot {
+  _id: string;
+  startTime: string;
+  endTime?: string;
+  duration?: number;
+  isDisable?: boolean;
+  tokenCount?: number;
+}
+
+const toApiDate = (d: Date) => {
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}`;
+};
+
+const AddPatientScreen: React.FC<AddPatientScreenProps> = ({ navigation }) => {
+  const dispatch = useAppDispatch();
+  const token = useAppSelector(selectAuthToken);
+  const appConfig = useAppSelector(selectAppConfig);
+  const appDataLoading = useAppSelector(selectAppDataLoading);
+
+  const [fields, setFields] = useState<RegisField[]>([]);
+  const [formValues, setFormValues] = useState<Record<string, string>>({});
+  const [doctors, setDoctors] = useState<DoctorOption[]>([]);
+  const [loadingConfig, setLoadingConfig] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [errors, setErrors] = useState<Record<string, string>>({});
+  const [openSelectKey, setOpenSelectKey] = useState<string | null>(null);
+  const [datePickerKey, setDatePickerKey] = useState<string | null>(null);
+  const [datePickerValue, setDatePickerValue] = useState(new Date());
+  const [slots, setSlots] = useState<Slot[]>([]);
+  const [slotsLoading, setSlotsLoading] = useState(false);
+  const [selectedSlot, setSelectedSlot] = useState<Slot | null>(null);
+  const [slotPickerOpen, setSlotPickerOpen] = useState(false);
+
+  const hasDateField = useMemo(
+    () => fields.some(field => field.type === 'date' || field.key === 'date'),
+    [fields],
+  );
+
+  const slotDate = useMemo(
+    () =>
+      hasDateField
+        ? (formValues.date || toApiDate(new Date()))
+        : toApiDate(new Date()),
+    [hasDateField, formValues.date],
+  );
+
+  const selectedDoctor = useMemo(
+    () => doctors.find(doc => doc._id === formValues.doctorId) ?? null,
+    [doctors, formValues.doctorId],
+  );
+
+  const doctorUsesSlots = selectedDoctor?.isSlot !== false;
+
+  const loadForm = useCallback(async () => {
+    if (!token) {
+      setLoadingConfig(false);
+      setFields([]);
+      return;
+    }
+
+    if (!appConfig) {
+      if (!appDataLoading) {
+        dispatch(loadAppData());
+      }
+      return;
+    }
+
+    setLoadingConfig(true);
+    try {
+      const doctorList = await realAuthService.fetchDoctors(token).catch(() => []);
+
+      const regisFields = extractRegisFields(appConfig).filter(
+        field => field.key !== 'visitType',
+      );
+      console.log(`📋 Registration fields loaded: ${regisFields.length}`);
+      setFields(regisFields);
+      setFormValues(buildInitialFormValues(regisFields));
+      setDoctors(
+        (doctorList || []).map((doc: any) => ({
+          _id: doc._id,
+          name: doc.name,
+          doctorCode: doc.doctorCode,
+          isSlot: doc.isSlot,
+        })),
+      );
+    } catch (err) {
+      console.error('Failed to load registration config:', err);
+      Alert.alert(
+        'Error',
+        err instanceof Error ? err.message : 'Failed to load registration form.',
+      );
+    } finally {
+      setLoadingConfig(false);
+    }
+  }, [token, appConfig, appDataLoading, dispatch]);
+
+  useEffect(() => {
+    loadForm();
+  }, [loadForm]);
+
+  const onRefresh = useCallback(async () => {
+    if (!token || refreshing) return;
+
+    setRefreshing(true);
+    try {
+      const result = await dispatch(loadAppData()).unwrap();
+      const config = result.config;
+      const doctorList = await realAuthService.fetchDoctors(token).catch(() => []);
+      const regisFields = extractRegisFields(config).filter(
+        field => field.key !== 'visitType',
+      );
+
+      setFields(regisFields);
+      setFormValues(prev => {
+        const initial = buildInitialFormValues(regisFields);
+        const allowedKeys = new Set(regisFields.map(field => field.key));
+        const merged = { ...initial, ...prev };
+        return Object.fromEntries(
+          Object.entries(merged).filter(([key]) => allowedKeys.has(key)),
+        );
+      });
+      setDoctors(
+        (doctorList || []).map((doc: any) => ({
+          _id: doc._id,
+          name: doc.name,
+          doctorCode: doc.doctorCode,
+          isSlot: doc.isSlot,
+        })),
+      );
+    } catch (err) {
+      console.error('Failed to refresh registration form:', err);
+    } finally {
+      setRefreshing(false);
+    }
+  }, [token, refreshing, dispatch]);
+
+  const doctorOptions = useMemo(
+    () =>
+      doctors.map(doc => ({
+        label: doc.doctorCode ? `${doc.name} (${doc.doctorCode})` : doc.name,
+        value: doc._id,
+      })),
+    [doctors],
+  );
+
+  const setFieldValue = (key: string, value: string) => {
+    setFormValues(prev => ({ ...prev, [key]: value }));
+    if (errors[key]) {
+      setErrors(prev => {
+        const next = { ...prev };
+        delete next[key];
+        return next;
+      });
+    }
+  };
+
+  const loadSlotsAndOpenPicker = useCallback(
+    async (doctorId: string, date: string) => {
+      if (!token) return;
+
+      const doctor = doctors.find(doc => doc._id === doctorId);
+      if (doctor?.isSlot === false) {
+        setSelectedSlot(null);
+        setSlots([]);
+        return;
+      }
+
+      setSlotPickerOpen(true);
+      setSlotsLoading(true);
+      setSlots([]);
+      setSelectedSlot(null);
+
+      try {
+        const list = await realAuthService.fetchDoctorSlots(doctorId, date, token);
+        setSlots(list);
+      } catch (err) {
+        console.error('Failed to load doctor slots:', err);
+        Alert.alert('Error', 'Could not load slots.');
+      } finally {
+        setSlotsLoading(false);
+      }
+    },
+    [token, doctors],
+  );
+
+  const handleSelectOption = (field: RegisField, optionValue: string) => {
+    setFieldValue(field.key, optionValue);
+    setOpenSelectKey(null);
+
+    const isPrimaryDoctor =
+      (field.type === 'doctor' || isDoctorField(field.key)) &&
+      !isCoDoctorField(field.key);
+
+    if (!hasDateField && isPrimaryDoctor && optionValue) {
+      const doctor = doctors.find(doc => doc._id === optionValue);
+      if (doctor?.isSlot === false) {
+        setSelectedSlot(null);
+        setSlots([]);
+        return;
+      }
+
+      const today = toApiDate(new Date());
+      setFieldValue('date', today);
+      InteractionManager.runAfterInteractions(() => {
+        loadSlotsAndOpenPicker(optionValue, today);
+      });
+    }
+  };
+
+  const getSelectOptions = (field: RegisField) => {
+    if (field.type === 'doctor' || isDoctorField(field.key) || isCoDoctorField(field.key)) {
+      return doctorOptions;
+    }
+    return field.options || [];
+  };
+
+  const getSelectedLabel = (field: RegisField) => {
+    const value = formValues[field.key];
+    if (!value) return field.placeholder || `Select ${field.label}`;
+
+    const options = getSelectOptions(field);
+    const match = options.find(option => option.value === value);
+    if (match) return match.label;
+
+    if (field.type === 'doctor' || isDoctorField(field.key) || isCoDoctorField(field.key)) {
+      const doctor = doctors.find(doc => doc._id === value);
+      if (doctor) {
+        return doctor.doctorCode
+          ? `${doctor.name} (${doctor.doctorCode})`
+          : doctor.name;
+      }
+    }
+
+    return value;
+  };
+
+  const validateForm = () => {
+    const nextErrors: Record<string, string> = {};
+
+    fields.forEach(field => {
+      if (!field.required) return;
+      const value = (formValues[field.key] ?? '').trim();
+      if (!value) {
+        nextErrors[field.key] = `${field.label} is required`;
+      }
+    });
+
+    if (fields.some(field => field.key === 'mobileNo')) {
+      const mobileError = validateMobileNumber(formValues.mobileNo ?? '');
+      if (mobileError) {
+        nextErrors.mobileNo = mobileError.message;
+      }
+    }
+
+    if (!hasDateField && doctorUsesSlots && !selectedSlot) {
+      nextErrors.slot = 'Please select a slot';
+    }
+
+    setErrors(nextErrors);
+    return Object.keys(nextErrors).length === 0;
+  };
+
+  const buildPayload = () => {
+    const getValue = (key: string) => (formValues[key] ?? '').trim();
+
+    const doctorId = getValue('doctorId');
+    const coDoctorId = getValue('coDoctorId');
+    const doctor = doctors.find(doc => doc._id === doctorId);
+    const appointmentDate = hasDateField
+      ? getValue('date')
+      : slotDate;
+    const visitTypeLabel = getValue('visitType') || 'Normal';
+
+    const patient: Record<string, string> = {
+      name: getValue('name'),
+      email: getValue('email'),
+      mobileNo: getValue('mobileNo'),
+      gender: getValue('gender'),
+      age: getValue('age'),
+      date: appointmentDate,
+      doctorId,
+      coDoctorId,
+      address: getValue('address'),
+      title: getValue('title'),
+      careType: getValue('careType'),
+      careTaker: getValue('careTaker'),
+      visitType: visitTypeLabel,
+      doctorName: doctor?.name ?? '',
+      patientType: getValue('patientType'),
+    };
+
+    // Include any custom dynamic fields inside patient.
+    fields.forEach(field => {
+      if (patient[field.key] !== undefined) return;
+      patient[field.key] = getValue(field.key);
+    });
+
+    return {
+      doctorId,
+      coDoctorId,
+      patient,
+      careTaker: getValue('careTaker'),
+      registerCharge: 0,
+      appointmentTime: selectedSlot?.startTime ?? null,
+      appointmentType: selectedSlot ? 'SLOT' : 'TOKEN',
+      ...(selectedSlot?.tokenCount != null
+        ? { tokenCount: selectedSlot.tokenCount }
+        : {}),
+      date: appointmentDate,
+      visitType: visitTypeLabel.toUpperCase().replace(/\s+/g, '_'),
+    };
+  };
+
+  const handleSubmit = async () => {
+    if (!token || submitting) return;
+    if (!validateForm()) return;
+
+    setSubmitting(true);
+    try {
+      await realAuthService.registerPatient(buildPayload(), token);
+      Alert.alert('Success', 'Patient registered successfully.', [
+        {
+          text: 'OK',
+          onPress: () => navigation.navigate('PatientList'),
+        },
+      ]);
+    } catch (err) {
+      Alert.alert(
+        'Registration Failed',
+        err instanceof Error ? err.message : 'Could not register patient.',
+      );
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const renderField = (field: RegisField) => {
+    const value = formValues[field.key] ?? '';
+    const error = errors[field.key];
+    const isMobileField = field.key === 'mobileNo';
+    const isSelectLike =
+      field.type === 'select' ||
+      field.type === 'doctor' ||
+      isDoctorField(field.key) ||
+      isCoDoctorField(field.key);
+
+    return (
+      <View key={field.key} style={styles.fieldBlock}>
+        <Text style={styles.fieldLabel}>
+          {field.label}
+          {field.required ? ' *' : ''}
+        </Text>
+
+        {isSelectLike ? (
+          <>
+            <TouchableOpacity
+              style={[styles.input, styles.selectInput, error && styles.inputError]}
+              activeOpacity={0.7}
+              onPress={() =>
+                setOpenSelectKey(openSelectKey === field.key ? null : field.key)
+              }
+            >
+              <Text
+                style={[
+                  styles.selectText,
+                  !value && styles.placeholderText,
+                ]}
+                numberOfLines={1}
+              >
+                {getSelectedLabel(field)}
+              </Text>
+              <Icon
+                name={openSelectKey === field.key ? 'expand-less' : 'expand-more'}
+                size={22}
+                color={theme.colors.textSecondary}
+              />
+            </TouchableOpacity>
+            {openSelectKey === field.key && (
+              <View style={styles.dropdownList}>
+                {getSelectOptions(field).map(option => {
+                  const active = option.value === value;
+                  return (
+                    <TouchableOpacity
+                      key={`${field.key}-${option.value}`}
+                      style={styles.dropdownItem}
+                      activeOpacity={0.7}
+                      onPress={() => handleSelectOption(field, option.value)}
+                    >
+                      <Text
+                        style={[
+                          styles.dropdownItemText,
+                          active && styles.dropdownItemTextActive,
+                        ]}
+                      >
+                        {option.label}
+                      </Text>
+                      {active && (
+                        <Icon name="check" size={18} color={theme.colors.primary} />
+                      )}
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+            )}
+          </>
+        ) : field.type === 'date' ? (
+          <TouchableOpacity
+            style={[styles.input, styles.selectInput, error && styles.inputError]}
+            activeOpacity={0.7}
+            onPress={() => {
+              setDatePickerKey(field.key);
+              setDatePickerValue(
+                value ? new Date(`${value}T00:00:00`) : new Date(),
+              );
+            }}
+          >
+            <Text style={styles.selectText}>{formatDateForDisplay(value)}</Text>
+            <Icon name="event" size={20} color={theme.colors.textSecondary} />
+          </TouchableOpacity>
+        ) : (
+          <TextInput
+            style={[
+              styles.input,
+              field.type === 'textarea' && styles.textArea,
+              error && styles.inputError,
+            ]}
+            value={value}
+            onChangeText={text => setFieldValue(field.key, text)}
+            placeholder={field.placeholder}
+            placeholderTextColor={theme.colors.placeholder}
+            keyboardType={
+              field.type === 'number'
+                ? 'numeric'
+                : field.type === 'email'
+                ? 'email-address'
+                : isMobileField
+                ? 'phone-pad'
+                : 'default'
+            }
+            maxLength={isMobileField ? 13 : undefined}
+            multiline={field.type === 'textarea'}
+            numberOfLines={field.type === 'textarea' ? 3 : 1}
+          />
+        )}
+
+        {error ? <Text style={styles.errorText}>{error}</Text> : null}
+      </View>
+    );
+  };
+
+  if (!token) {
+    return (
+      <View style={styles.container}>
+        <Header
+          title="Add Patient"
+          showHomeIcon
+          onHomePress={() => navigation.popToTop()}
+          onNotificationPress={() => navigation.navigate('Inbox')}
+        />
+        <View style={styles.centerState}>
+          <Icon name="lock-outline" size={48} color={theme.colors.error} />
+          <Text style={styles.emptyText}>Please log in to register a patient.</Text>
+        </View>
+      </View>
+    );
+  }
+
+  if (loadingConfig || appDataLoading || !appConfig) {
+    return (
+      <View style={styles.container}>
+        <Header
+          title="Add Patient"
+          showHomeIcon
+          onHomePress={() => navigation.popToTop()}
+          onNotificationPress={() => navigation.navigate('Inbox')}
+        />
+        <View style={styles.centerState}>
+          <ActivityIndicator size="large" color={theme.colors.primary} />
+          <Text style={styles.loadingText}>Loading registration form...</Text>
+        </View>
+      </View>
+    );
+  }
+
+  return (
+    <View style={styles.container}>
+      <Header
+        title="Add Patient"
+        showHomeIcon
+        onHomePress={() => navigation.popToTop()}
+        onNotificationPress={() => navigation.navigate('Inbox')}
+      />
+
+      <KeyboardAvoidingView
+        style={styles.flex}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      >
+        <ScrollView
+          contentContainerStyle={styles.scrollContent}
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={onRefresh}
+              colors={[theme.colors.primary]}
+              tintColor={theme.colors.primary}
+            />
+          }
+        >
+          <Text style={styles.pageTitle}>Add Patient</Text>
+          <Text style={styles.pageSubtitle}>
+            Register a new patient. Select the doctor in the form below.
+          </Text>
+
+          <View style={styles.formCard}>
+            <Text style={styles.formHeading}>Add Patient</Text>
+
+            {fields.length === 0 ? (
+              <View style={styles.centerState}>
+                <Icon name="info-outline" size={40} color={theme.colors.disabled} />
+                <Text style={styles.emptyText}>
+                  No registration fields were returned by the config API.
+                </Text>
+                <TouchableOpacity style={styles.retryButton} onPress={loadForm}>
+                  <Text style={styles.retryButtonText}>Retry</Text>
+                </TouchableOpacity>
+              </View>
+            ) : (
+              <>
+                {fields.map(renderField)}
+
+                {!hasDateField && formValues.doctorId && doctorUsesSlots ? (
+                  <View style={styles.fieldBlock}>
+                    <Text style={styles.fieldLabel}>Appointment Slot *</Text>
+                    <TouchableOpacity
+                      style={[
+                        styles.input,
+                        styles.selectInput,
+                        errors.slot && styles.inputError,
+                      ]}
+                      activeOpacity={0.7}
+                      disabled={slotsLoading}
+                      onPress={() =>
+                        loadSlotsAndOpenPicker(formValues.doctorId, slotDate)
+                      }
+                    >
+                      <Text
+                        style={[
+                          styles.selectText,
+                          !selectedSlot && styles.placeholderText,
+                        ]}
+                        numberOfLines={1}
+                      >
+                        {selectedSlot
+                          ? `${formatDateForDisplay(slotDate)} · ${selectedSlot.startTime}`
+                          : slotsLoading
+                          ? 'Loading slots...'
+                          : 'Select a slot for today'}
+                      </Text>
+                      {slotsLoading ? (
+                        <ActivityIndicator
+                          size="small"
+                          color={theme.colors.primary}
+                        />
+                      ) : (
+                        <Icon
+                          name="expand-more"
+                          size={22}
+                          color={theme.colors.textSecondary}
+                        />
+                      )}
+                    </TouchableOpacity>
+                    {errors.slot ? (
+                      <Text style={styles.errorText}>{errors.slot}</Text>
+                    ) : null}
+                  </View>
+                ) : null}
+              </>
+            )}
+
+            {fields.length > 0 && (
+              <TouchableOpacity
+                style={[styles.submitButton, submitting && styles.submitButtonDisabled]}
+                activeOpacity={0.85}
+                onPress={handleSubmit}
+                disabled={submitting}
+              >
+                {submitting ? (
+                  <ActivityIndicator size="small" color={theme.colors.surface} />
+                ) : (
+                  <Text style={styles.submitButtonText}>Submit</Text>
+                )}
+              </TouchableOpacity>
+            )}
+          </View>
+        </ScrollView>
+      </KeyboardAvoidingView>
+
+      <DatePicker
+        modal
+        open={datePickerKey != null}
+        date={datePickerValue}
+        mode="date"
+        onConfirm={date => {
+          if (datePickerKey) {
+            setFieldValue(datePickerKey, date.toISOString().slice(0, 10));
+          }
+          setDatePickerKey(null);
+        }}
+        onCancel={() => setDatePickerKey(null)}
+      />
+
+      <ModalBackdrop
+        visible={slotPickerOpen}
+        onClose={() => setSlotPickerOpen(false)}
+        animationType="fade"
+        align="center"
+      >
+        <View style={styles.slotModalCard}>
+          <View style={styles.slotModalHeader}>
+            <Text style={styles.slotModalTitle}>Select Slot</Text>
+            <TouchableOpacity
+              onPress={() => setSlotPickerOpen(false)}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            >
+              <Icon name="close" size={22} color={theme.colors.text} />
+            </TouchableOpacity>
+          </View>
+          <Text style={styles.slotModalSubtitle}>
+            {formatDateForDisplay(slotDate)}
+          </Text>
+
+          {slotsLoading ? (
+            <ActivityIndicator
+              style={styles.slotModalLoader}
+              size="large"
+              color={theme.colors.primary}
+            />
+          ) : slots.length === 0 ? (
+            <Text style={styles.slotModalEmpty}>
+              No slots available for this doctor today.
+            </Text>
+          ) : (
+            <ScrollView showsVerticalScrollIndicator={false}>
+              <View style={styles.slotCardGrid}>
+                {slots.map(slot => {
+                  const active = slot._id === selectedSlot?._id;
+                  const disabled = !!slot.isDisable;
+                  return (
+                    <TouchableOpacity
+                      key={slot._id}
+                      style={[
+                        styles.slotCard,
+                        active && styles.slotCardActive,
+                        disabled && styles.slotCardDisabled,
+                      ]}
+                      activeOpacity={0.8}
+                      disabled={disabled}
+                      onPress={() => {
+                        setSelectedSlot(slot);
+                        setSlotPickerOpen(false);
+                        if (errors.slot) {
+                          setErrors(prev => {
+                            const next = { ...prev };
+                            delete next.slot;
+                            return next;
+                          });
+                        }
+                      }}
+                    >
+                      <Text style={styles.slotCardLine}>
+                        Time: {slot.startTime}
+                      </Text>
+                      <Text style={styles.slotCardLine}>
+                        Duration: {slot.duration ?? 30}
+                      </Text>
+                      <Text style={styles.slotCardLine}>
+                        Token: {slot.tokenCount ?? '—'}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+            </ScrollView>
+          )}
+        </View>
+      </ModalBackdrop>
+    </View>
+  );
+};
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: theme.colors.background,
+  },
+  flex: {
+    flex: 1,
+  },
+  scrollContent: {
+    padding: theme.spacing.md,
+    paddingBottom: theme.spacing.xxl,
+  },
+  pageTitle: {
+    fontSize: theme.typography.fontSizes.xxxl,
+    fontWeight: theme.typography.fontWeights.bold,
+    color: theme.colors.text,
+    marginBottom: theme.spacing.xs,
+  },
+  pageSubtitle: {
+    fontSize: theme.typography.fontSizes.md,
+    color: theme.colors.textSecondary,
+    marginBottom: theme.spacing.lg,
+  },
+  formCard: {
+    backgroundColor: theme.colors.surface,
+    borderRadius: theme.borderRadius.lg,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    padding: theme.spacing.lg,
+    ...theme.shadows.sm,
+  },
+  formHeading: {
+    fontSize: theme.typography.fontSizes.xl,
+    fontWeight: theme.typography.fontWeights.semiBold,
+    color: theme.colors.text,
+    textAlign: 'center',
+    marginBottom: theme.spacing.lg,
+  },
+  fieldBlock: {
+    marginBottom: theme.spacing.md,
+  },
+  fieldLabel: {
+    fontSize: theme.typography.fontSizes.sm,
+    fontWeight: theme.typography.fontWeights.medium,
+    color: theme.colors.textSecondary,
+    marginBottom: theme.spacing.xs,
+  },
+  input: {
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    borderRadius: theme.borderRadius.md,
+    backgroundColor: theme.colors.surface,
+    paddingHorizontal: theme.spacing.md,
+    paddingVertical: theme.spacing.sm,
+    fontSize: theme.typography.fontSizes.md,
+    color: theme.colors.text,
+  },
+  textArea: {
+    minHeight: 88,
+    textAlignVertical: 'top',
+  },
+  inputError: {
+    borderColor: theme.colors.error,
+  },
+  selectInput: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  selectText: {
+    flex: 1,
+    fontSize: theme.typography.fontSizes.md,
+    color: theme.colors.text,
+    marginRight: theme.spacing.sm,
+  },
+  placeholderText: {
+    color: theme.colors.placeholder,
+  },
+  dropdownList: {
+    marginTop: theme.spacing.xs,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    borderRadius: theme.borderRadius.md,
+    backgroundColor: theme.colors.surface,
+    overflow: 'hidden',
+  },
+  dropdownItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: theme.spacing.md,
+    paddingVertical: theme.spacing.sm,
+    borderBottomWidth: 1,
+    borderBottomColor: theme.colors.border,
+  },
+  dropdownItemText: {
+    flex: 1,
+    fontSize: theme.typography.fontSizes.md,
+    color: theme.colors.text,
+  },
+  dropdownItemTextActive: {
+    color: theme.colors.primary,
+    fontWeight: theme.typography.fontWeights.semiBold,
+  },
+  errorText: {
+    marginTop: theme.spacing.xs,
+    fontSize: theme.typography.fontSizes.sm,
+    color: theme.colors.error,
+  },
+  submitButton: {
+    marginTop: theme.spacing.md,
+    alignSelf: 'center',
+    minWidth: 160,
+    backgroundColor: theme.colors.primary,
+    borderRadius: theme.borderRadius.md,
+    paddingVertical: theme.spacing.sm,
+    paddingHorizontal: theme.spacing.xl,
+    alignItems: 'center',
+  },
+  submitButtonDisabled: {
+    opacity: 0.7,
+  },
+  submitButtonText: {
+    fontSize: theme.typography.fontSizes.md,
+    fontWeight: theme.typography.fontWeights.semiBold,
+    color: theme.colors.surface,
+  },
+  centerState: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: theme.spacing.xl,
+  },
+  loadingText: {
+    marginTop: theme.spacing.md,
+    fontSize: theme.typography.fontSizes.md,
+    color: theme.colors.textSecondary,
+  },
+  emptyText: {
+    marginTop: theme.spacing.md,
+    fontSize: theme.typography.fontSizes.md,
+    color: theme.colors.textSecondary,
+    textAlign: 'center',
+  },
+  retryButton: {
+    marginTop: theme.spacing.md,
+    backgroundColor: theme.colors.primary,
+    paddingVertical: theme.spacing.sm,
+    paddingHorizontal: theme.spacing.lg,
+    borderRadius: theme.borderRadius.md,
+  },
+  retryButtonText: {
+    color: theme.colors.surface,
+    fontWeight: theme.typography.fontWeights.semiBold,
+  },
+  slotModalCard: {
+    width: '100%',
+    maxWidth: 560,
+    maxHeight: '85%',
+    backgroundColor: theme.colors.surface,
+    borderRadius: theme.borderRadius.xl,
+    padding: theme.spacing.lg,
+    ...theme.shadows.sm,
+  },
+  slotModalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: theme.spacing.xs,
+  },
+  slotModalTitle: {
+    fontSize: theme.typography.fontSizes.lg,
+    fontWeight: theme.typography.fontWeights.bold,
+    color: theme.colors.text,
+  },
+  slotModalSubtitle: {
+    fontSize: theme.typography.fontSizes.sm,
+    color: theme.colors.textSecondary,
+    marginBottom: theme.spacing.md,
+  },
+  slotModalLoader: {
+    marginVertical: theme.spacing.xl,
+  },
+  slotModalEmpty: {
+    fontSize: theme.typography.fontSizes.md,
+    color: theme.colors.textSecondary,
+    textAlign: 'center',
+    paddingVertical: theme.spacing.xl,
+  },
+  slotCardGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'space-between',
+  },
+  slotCard: {
+    width: '48%',
+    borderRadius: theme.borderRadius.md,
+    paddingVertical: theme.spacing.md,
+    paddingHorizontal: theme.spacing.md,
+    marginBottom: theme.spacing.md,
+    backgroundColor: '#86EFAC',
+  },
+  slotCardActive: {
+    borderWidth: 2,
+    borderColor: theme.colors.primary,
+  },
+  slotCardDisabled: {
+    backgroundColor: theme.colors.border,
+    opacity: 0.5,
+  },
+  slotCardLine: {
+    fontSize: theme.typography.fontSizes.md,
+    color: theme.colors.text,
+    marginBottom: 2,
+  },
+});
+
+export default AddPatientScreen;

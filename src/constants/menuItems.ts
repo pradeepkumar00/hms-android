@@ -8,8 +8,8 @@ export interface MenuItem {
   showBadge?: boolean;
 }
 
-// Shared menu definition used by both the side MenuDrawer and the HomeScreen tiles.
-export const MENU_ITEMS: MenuItem[] = [
+// Home screen tiles (main shortcuts only).
+export const HOME_MENU_ITEMS: MenuItem[] = [
   {
     key: 'calendar',
     label: 'Calendar',
@@ -22,6 +22,22 @@ export const MENU_ITEMS: MenuItem[] = [
     icon: 'check-circle-outline',
     screen: 'AllTasks',
   },
+  {
+    key: 'patients',
+    label: 'Patients',
+    icon: 'people',
+    screen: 'PatientList',
+  },
+  {
+    key: 'addPatient',
+    label: 'Add Patient',
+    icon: 'person-add',
+    screen: 'AddPatient',
+  },
+];
+
+// Extra items shown only in the side menu drawer.
+export const DRAWER_ONLY_MENU_ITEMS: MenuItem[] = [
   {
     key: 'inbox',
     label: 'Notifications',
@@ -36,3 +52,12 @@ export const MENU_ITEMS: MenuItem[] = [
     screen: 'NotificationSettings',
   },
 ];
+
+// Full drawer menu: home tiles + drawer-only items.
+export const DRAWER_MENU_ITEMS: MenuItem[] = [
+  ...HOME_MENU_ITEMS,
+  ...DRAWER_ONLY_MENU_ITEMS,
+];
+
+/** @deprecated Use HOME_MENU_ITEMS or DRAWER_MENU_ITEMS */
+export const MENU_ITEMS = HOME_MENU_ITEMS;
