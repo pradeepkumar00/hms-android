@@ -702,6 +702,25 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
     };
   }, [showFollowupModal, token, selectedDoctor, followupDate]);
 
+  // Open the slot picker once doctor and date are set and slots have loaded.
+  useEffect(() => {
+    if (
+      !showFollowupModal ||
+      !selectedDoctor ||
+      !followupDate ||
+      selectedDoctor.isSlot === false ||
+      slotsLoading
+    ) {
+      return;
+    }
+    setSlotPickerOpen(true);
+  }, [
+    showFollowupModal,
+    selectedDoctor,
+    followupDate,
+    slotsLoading,
+  ]);
+
   const handleBookFollowup = async () => {
     if (!followupDate) {
       Alert.alert('Missing date', 'Please pick a follow-up date.');
@@ -1884,6 +1903,44 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
               </View>
             )}
 
+            {selectedDoctor?.isSlot !== false ? (
+              <>
+                {/* Slot */}
+                <Text style={styles.followupLabel}>Slot</Text>
+                <TouchableOpacity
+                  style={styles.followupField}
+                  activeOpacity={0.7}
+                  disabled={!selectedDoctor || !followupDate || slotsLoading}
+                  onPress={() => setSlotPickerOpen(true)}
+                >
+                  <Text
+                    style={[
+                      styles.followupFieldText,
+                      !selectedSlot && styles.followupPlaceholder,
+                    ]}
+                  >
+                    {selectedSlot
+                      ? selectedSlot.startTime
+                      : !followupDate
+                      ? 'Pick a date first'
+                      : 'Click to pick a slot'}
+                  </Text>
+                  {slotsLoading ? (
+                    <ActivityIndicator
+                      size="small"
+                      color={theme.colors.primary}
+                    />
+                  ) : (
+                    <Icon
+                      name="expand-more"
+                      size={22}
+                      color={theme.colors.textSecondary}
+                    />
+                  )}
+                </TouchableOpacity>
+              </>
+            ) : null}
+
             {/* Treatment (from Manage Service + treatment plans) */}
             <Text style={styles.followupLabel}>
               Treatment
@@ -2076,41 +2133,6 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
                 )}
               </View>
             )}
-
-            {selectedDoctor?.isSlot !== false ? (
-              <>
-            {/* Slot */}
-            <Text style={styles.followupLabel}>Slot</Text>
-            <TouchableOpacity
-              style={styles.followupField}
-              activeOpacity={0.7}
-              disabled={!selectedDoctor || !followupDate || slotsLoading}
-              onPress={() => setSlotPickerOpen(true)}
-            >
-              <Text
-                style={[
-                  styles.followupFieldText,
-                  !selectedSlot && styles.followupPlaceholder,
-                ]}
-              >
-                {selectedSlot
-                  ? selectedSlot.startTime
-                  : !followupDate
-                  ? 'Pick a date first'
-                  : 'Click to pick a slot'}
-              </Text>
-              {slotsLoading ? (
-                <ActivityIndicator size="small" color={theme.colors.primary} />
-              ) : (
-                <Icon
-                  name="expand-more"
-                  size={22}
-                  color={theme.colors.textSecondary}
-                />
-              )}
-            </TouchableOpacity>
-              </>
-            ) : null}
 
             <Text style={styles.followupLabel}>
               Remark<Text style={styles.followupLabelOptional}> (optional)</Text>

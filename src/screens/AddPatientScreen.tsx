@@ -26,6 +26,7 @@ import {
   formatDateForDisplay,
   isCoDoctorField,
   isDoctorField,
+  isRegistrationRequiredField,
 } from '../utils/regisConfig';
 import { validateMobileNumber } from '../utils/validation';
 
@@ -82,20 +83,59 @@ const AddPatientScreen: React.FC<AddPatientScreenProps> = ({ navigation }) => {
     [fields],
   );
 
-  const slotDate = useMemo(
-    () =>
-      hasDateField
-        ? (formValues.date || toApiDate(new Date()))
-        : toApiDate(new Date()),
-    [hasDateField, formValues.date],
+  const dateFieldKey = useMemo(
+    () => fields.find(field => field.type === 'date' || field.key === 'date')?.key ?? 'date',
+    [fields],
   );
 
+  const primaryDoctorFieldKey = useMemo(
+    () =>
+      fields.find(
+        field =>
+          (field.type === 'doctor' || isDoctorField(field.key)) &&
+          !isCoDoctorField(field.key),
+      )?.key ?? 'doctorId',
+    [fields],
+  );
+
+  const primaryDoctorId = useMemo(
+    () => (formValues[primaryDoctorFieldKey] ?? '').trim(),
+    [formValues, primaryDoctorFieldKey],
+  );
+
+  const appointmentDate = useMemo(() => {
+    const configuredDate = (formValues[dateFieldKey] ?? '').trim();
+    if (hasDateField) return configuredDate;
+    return configuredDate || toApiDate(new Date());
+  }, [hasDateField, formValues, dateFieldKey]);
+
   const selectedDoctor = useMemo(
-    () => doctors.find(doc => doc._id === formValues.doctorId) ?? null,
-    [doctors, formValues.doctorId],
+    () => doctors.find(doc => doc._id === primaryDoctorId) ?? null,
+    [doctors, primaryDoctorId],
   );
 
   const doctorUsesSlots = selectedDoctor?.isSlot !== false;
+
+  const primaryDoctorField = useMemo(
+    () =>
+      fields.find(
+        field =>
+          (field.type === 'doctor' || isDoctorField(field.key)) &&
+          !isCoDoctorField(field.key),
+      ) ?? null,
+    [fields],
+  );
+
+  const slotSelectionRequired = useMemo(
+    () =>
+      Boolean(
+        primaryDoctorField &&
+          primaryDoctorId &&
+          doctorUsesSlots &&
+          appointmentDate,
+      ),
+    [primaryDoctorField, primaryDoctorId, doctorUsesSlots, appointmentDate],
+  );
 
   const loadForm = useCallback(async () => {
     if (!token) {
@@ -143,6 +183,57 @@ const AddPatientScreen: React.FC<AddPatientScreenProps> = ({ navigation }) => {
   useEffect(() => {
     loadForm();
   }, [loadForm]);
+
+  // Load slots whenever a slot-enabled doctor and appointment date are both set.
+  useEffect(() => {
+    if (!token || !primaryDoctorId || !appointmentDate) return;
+
+    const doctor = doctors.find(doc => doc._id === primaryDoctorId);
+    if (doctor?.isSlot === false) {
+      setSelectedSlot(null);
+      setSlots([]);
+      setSlotsLoading(false);
+      return;
+    }
+
+    let active = true;
+    (async () => {
+      setSlotsLoading(true);
+      setSlots([]);
+      setSelectedSlot(null);
+      try {
+        const list = await realAuthService.fetchDoctorSlots(
+          primaryDoctorId,
+          appointmentDate,
+          token,
+        );
+        if (active) setSlots(list);
+      } catch (err) {
+        console.error('Failed to load doctor slots:', err);
+        if (active) Alert.alert('Error', 'Could not load slots.');
+      } finally {
+        if (active) setSlotsLoading(false);
+      }
+    })();
+
+    return () => {
+      active = false;
+    };
+  }, [token, primaryDoctorId, appointmentDate, doctors]);
+
+  // Open the slot picker once doctor and date are set and slots have loaded.
+  useEffect(() => {
+    if (!primaryDoctorId || !appointmentDate || slotsLoading) return;
+
+    const doctor = doctors.find(doc => doc._id === primaryDoctorId);
+    if (doctor?.isSlot === false) return;
+
+    const task = InteractionManager.runAfterInteractions(() => {
+      setSlotPickerOpen(true);
+    });
+
+    return () => task.cancel();
+  }, [primaryDoctorId, appointmentDate, slotsLoading, doctors]);
 
   const onRefresh = useCallback(async () => {
     if (!token || refreshing) return;
@@ -201,10 +292,12 @@ const AddPatientScreen: React.FC<AddPatientScreenProps> = ({ navigation }) => {
   };
 
   const loadSlotsAndOpenPicker = useCallback(
-    async (doctorId: string, date: string) => {
-      if (!token) return;
+    async (doctorId?: string, date?: string) => {
+      const resolvedDoctorId = doctorId || primaryDoctorId;
+      const resolvedDate = date || appointmentDate;
+      if (!token || !resolvedDoctorId || !resolvedDate) return;
 
-      const doctor = doctors.find(doc => doc._id === doctorId);
+      const doctor = doctors.find(doc => doc._id === resolvedDoctorId);
       if (doctor?.isSlot === false) {
         setSelectedSlot(null);
         setSlots([]);
@@ -217,7 +310,11 @@ const AddPatientScreen: React.FC<AddPatientScreenProps> = ({ navigation }) => {
       setSelectedSlot(null);
 
       try {
-        const list = await realAuthService.fetchDoctorSlots(doctorId, date, token);
+        const list = await realAuthService.fetchDoctorSlots(
+          resolvedDoctorId,
+          resolvedDate,
+          token,
+        );
         setSlots(list);
       } catch (err) {
         console.error('Failed to load doctor slots:', err);
@@ -226,7 +323,7 @@ const AddPatientScreen: React.FC<AddPatientScreenProps> = ({ navigation }) => {
         setSlotsLoading(false);
       }
     },
-    [token, doctors],
+    [token, doctors, primaryDoctorId, appointmentDate],
   );
 
   const handleSelectOption = (field: RegisField, optionValue: string) => {
@@ -245,11 +342,7 @@ const AddPatientScreen: React.FC<AddPatientScreenProps> = ({ navigation }) => {
         return;
       }
 
-      const today = toApiDate(new Date());
-      setFieldValue('date', today);
-      InteractionManager.runAfterInteractions(() => {
-        loadSlotsAndOpenPicker(optionValue, today);
-      });
+      setFieldValue(dateFieldKey, toApiDate(new Date()));
     }
   };
 
@@ -284,21 +377,26 @@ const AddPatientScreen: React.FC<AddPatientScreenProps> = ({ navigation }) => {
     const nextErrors: Record<string, string> = {};
 
     fields.forEach(field => {
-      if (!field.required) return;
+      if (!isRegistrationRequiredField(field)) return;
+
       const value = (formValues[field.key] ?? '').trim();
       if (!value) {
         nextErrors[field.key] = `${field.label} is required`;
       }
     });
 
-    if (fields.some(field => field.key === 'mobileNo')) {
-      const mobileError = validateMobileNumber(formValues.mobileNo ?? '');
-      if (mobileError) {
-        nextErrors.mobileNo = mobileError.message;
+    const mobileField = fields.find(field => field.key === 'mobileNo');
+    if (mobileField) {
+      const mobile = (formValues.mobileNo ?? '').trim();
+      if (mobile) {
+        const mobileError = validateMobileNumber(mobile);
+        if (mobileError) {
+          nextErrors.mobileNo = mobileError.message;
+        }
       }
     }
 
-    if (!hasDateField && doctorUsesSlots && !selectedSlot) {
+    if (slotSelectionRequired && !selectedSlot) {
       nextErrors.slot = 'Please select a slot';
     }
 
@@ -312,9 +410,9 @@ const AddPatientScreen: React.FC<AddPatientScreenProps> = ({ navigation }) => {
     const doctorId = getValue('doctorId');
     const coDoctorId = getValue('coDoctorId');
     const doctor = doctors.find(doc => doc._id === doctorId);
-    const appointmentDate = hasDateField
-      ? getValue('date')
-      : slotDate;
+    const appointmentDateValue = hasDateField
+      ? getValue(dateFieldKey)
+      : appointmentDate;
     const visitTypeLabel = getValue('visitType') || 'Normal';
 
     const patient: Record<string, string> = {
@@ -323,7 +421,7 @@ const AddPatientScreen: React.FC<AddPatientScreenProps> = ({ navigation }) => {
       mobileNo: getValue('mobileNo'),
       gender: getValue('gender'),
       age: getValue('age'),
-      date: appointmentDate,
+      date: appointmentDateValue,
       doctorId,
       coDoctorId,
       address: getValue('address'),
@@ -352,7 +450,7 @@ const AddPatientScreen: React.FC<AddPatientScreenProps> = ({ navigation }) => {
       ...(selectedSlot?.tokenCount != null
         ? { tokenCount: selectedSlot.tokenCount }
         : {}),
-      date: appointmentDate,
+      date: appointmentDateValue,
       visitType: visitTypeLabel.toUpperCase().replace(/\s+/g, '_'),
     };
   };
@@ -394,7 +492,7 @@ const AddPatientScreen: React.FC<AddPatientScreenProps> = ({ navigation }) => {
       <View key={field.key} style={styles.fieldBlock}>
         <Text style={styles.fieldLabel}>
           {field.label}
-          {field.required ? ' *' : ''}
+          {isRegistrationRequiredField(field) ? ' *' : ''}
         </Text>
 
         {isSelectLike ? (
@@ -576,7 +674,7 @@ const AddPatientScreen: React.FC<AddPatientScreenProps> = ({ navigation }) => {
               <>
                 {fields.map(renderField)}
 
-                {!hasDateField && formValues.doctorId && doctorUsesSlots ? (
+                {slotSelectionRequired ? (
                   <View style={styles.fieldBlock}>
                     <Text style={styles.fieldLabel}>Appointment Slot *</Text>
                     <TouchableOpacity
@@ -587,9 +685,7 @@ const AddPatientScreen: React.FC<AddPatientScreenProps> = ({ navigation }) => {
                       ]}
                       activeOpacity={0.7}
                       disabled={slotsLoading}
-                      onPress={() =>
-                        loadSlotsAndOpenPicker(formValues.doctorId, slotDate)
-                      }
+                      onPress={() => loadSlotsAndOpenPicker()}
                     >
                       <Text
                         style={[
@@ -599,10 +695,10 @@ const AddPatientScreen: React.FC<AddPatientScreenProps> = ({ navigation }) => {
                         numberOfLines={1}
                       >
                         {selectedSlot
-                          ? `${formatDateForDisplay(slotDate)} · ${selectedSlot.startTime}`
+                          ? `${formatDateForDisplay(appointmentDate)} · ${selectedSlot.startTime}`
                           : slotsLoading
                           ? 'Loading slots...'
-                          : 'Select a slot for today'}
+                          : 'Select a slot'}
                       </Text>
                       {slotsLoading ? (
                         <ActivityIndicator
@@ -674,7 +770,7 @@ const AddPatientScreen: React.FC<AddPatientScreenProps> = ({ navigation }) => {
             </TouchableOpacity>
           </View>
           <Text style={styles.slotModalSubtitle}>
-            {formatDateForDisplay(slotDate)}
+            {formatDateForDisplay(appointmentDate)}
           </Text>
 
           {slotsLoading ? (
@@ -685,7 +781,7 @@ const AddPatientScreen: React.FC<AddPatientScreenProps> = ({ navigation }) => {
             />
           ) : slots.length === 0 ? (
             <Text style={styles.slotModalEmpty}>
-              No slots available for this doctor today.
+              No slots available for this doctor on the selected date.
             </Text>
           ) : (
             <ScrollView showsVerticalScrollIndicator={false}>

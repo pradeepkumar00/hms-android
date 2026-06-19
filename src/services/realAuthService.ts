@@ -811,6 +811,7 @@ class RealAuthService {
     total: number;
     page: number;
     limit: number;
+    totalPages: number;
     hasMore: boolean;
   }> {
     const page = params.page ?? 0;
@@ -844,20 +845,45 @@ class RealAuthService {
           body.result ??
           body.items ??
           body.users ??
-          body.data ??
+          (Array.isArray(body?.data) ? body.data : undefined) ??
           [];
 
       const patients = Array.isArray(rawList) ? rawList : [];
-      const totalSource = Array.isArray(body) ? root : body;
-      const total =
-        totalSource.total ??
-        totalSource.totalCount ??
-        totalSource.totalRecords ??
-        totalSource.count ??
+
+      const paginationSource =
+        root.totalPages != null ||
+        root.totalItems != null ||
+        root.currentPage != null
+          ? root
+          : body.totalPages != null ||
+              body.totalItems != null ||
+              body.currentPage != null
+            ? body
+            : Array.isArray(body)
+              ? root
+              : body;
+
+      const currentPage =
+        paginationSource.currentPage ??
+        paginationSource.page ??
+        page;
+
+      const totalItems =
+        paginationSource.totalItems ??
+        paginationSource.total ??
+        paginationSource.totalCount ??
+        paginationSource.totalRecords ??
+        paginationSource.count ??
+        root.totalItems ??
         root.total ??
         root.totalCount ??
         patients.length;
-      const hasMore = (page + 1) * limit < total;
+
+      const totalPages =
+        paginationSource.totalPages ??
+        Math.max(1, Math.ceil(totalItems / limit));
+
+      const hasMore = currentPage < totalPages - 1;
 
       if (patients.length === 0) {
         console.log('⚠️ Patient list empty — response keys:', {
@@ -866,8 +892,17 @@ class RealAuthService {
         });
       }
 
-      console.log(`✅ Patients fetched: ${patients.length} (total: ${total})`);
-      return { patients, total, page, limit, hasMore };
+      console.log(
+        `✅ Patients fetched: ${patients.length} (page ${currentPage + 1}/${totalPages}, total: ${totalItems})`,
+      );
+      return {
+        patients,
+        total: totalItems,
+        page: currentPage,
+        limit,
+        totalPages,
+        hasMore,
+      };
     } catch (error) {
       console.error('❌ Failed to fetch patients:', error);
       throw new Error(handleNetworkError(error));

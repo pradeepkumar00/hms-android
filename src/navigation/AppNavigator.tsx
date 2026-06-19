@@ -103,9 +103,23 @@ const AppNavigator: React.FC = () => {
   ]);
 
   const prevAuthenticatedRef = useRef(isAuthenticated);
+  const hasInitializedPrevAuthRef = useRef(false);
+
+  useEffect(() => {
+    if (isInitializing || hasInitializedPrevAuthRef.current) {
+      return;
+    }
+
+    prevAuthenticatedRef.current = isAuthenticated;
+    hasInitializedPrevAuthRef.current = true;
+  }, [isInitializing, isAuthenticated]);
 
   useEffect(() => {
     if (isInitializing || isLoading || !navigationRef.isReady()) {
+      return;
+    }
+
+    if (!hasInitializedPrevAuthRef.current) {
       return;
     }
 

@@ -9,7 +9,7 @@ const BASE_FORM_SCHEMA: Omit<RegisField, 'visible'>[] = [
     key: 'title',
     label: 'Title',
     type: 'select',
-    required: true,
+    required: false,
     placeholder: 'Select title',
     options: [
       { label: 'Mr', value: 'Mr' },
@@ -37,14 +37,14 @@ const BASE_FORM_SCHEMA: Omit<RegisField, 'visible'>[] = [
     key: 'email',
     label: 'Email Address',
     type: 'email',
-    required: true,
+    required: false,
     placeholder: 'Enter your email',
   },
   {
     key: 'gender',
     label: 'Gender',
     type: 'select',
-    required: true,
+    required: false,
     placeholder: 'Select Gender',
     options: [
       { label: 'Male', value: 'Male' },
@@ -56,14 +56,14 @@ const BASE_FORM_SCHEMA: Omit<RegisField, 'visible'>[] = [
     key: 'age',
     label: 'Age',
     type: 'number',
-    required: true,
+    required: false,
     placeholder: 'Enter Age',
   },
   {
     key: 'careType',
     label: 'Care Type',
     type: 'select',
-    required: true,
+    required: false,
     placeholder: 'Select Care Type',
     options: [
       { label: 'S/o', value: 'S/o' },
@@ -76,7 +76,7 @@ const BASE_FORM_SCHEMA: Omit<RegisField, 'visible'>[] = [
     key: 'careTaker',
     label: 'Care Of',
     type: 'text',
-    required: true,
+    required: false,
     placeholder: 'Name of caretaker',
   },
   {
@@ -104,7 +104,7 @@ const BASE_FORM_SCHEMA: Omit<RegisField, 'visible'>[] = [
     key: 'address',
     label: 'Address',
     type: 'textarea',
-    required: true,
+    required: false,
     placeholder: 'Enter address',
   },
   {
@@ -177,11 +177,27 @@ const mapCustomField = (raw: any): RegisField | null => {
     key,
     label: raw?.label ?? raw?.labelName ?? key,
     type,
-    required: raw?.required !== false,
+    required: false,
     placeholder: raw?.placeholder,
     options: type === 'select' ? normalizeOptions(raw?.dropdown ?? raw?.options) : undefined,
     visible: raw?.assign?.isAdmin !== false,
   };
+};
+
+export const isDoctorField = (key: string) => DOCTOR_FIELD_KEYS.test(key);
+export const isCoDoctorField = (key: string) => CO_DOCTOR_FIELD_KEYS.test(key);
+
+/** Only core registration fields are required when enabled; everything else is optional. */
+export const isRegistrationRequiredField = (field: RegisField): boolean => {
+  if (field.key === 'name' || field.key === 'mobileNo') return true;
+  if (field.type === 'date' || field.key === 'date') return true;
+  if (
+    (field.type === 'doctor' || isDoctorField(field.key)) &&
+    !isCoDoctorField(field.key)
+  ) {
+    return true;
+  }
+  return false;
 };
 
 /**
@@ -194,6 +210,7 @@ export const extractRegisFields = (config: any): RegisField[] => {
 
   const fields: RegisField[] = BASE_FORM_SCHEMA.map(field => ({
     ...field,
+    required: isRegistrationRequiredField(field),
     visible: isFieldVisible(field.key, regisConfig),
   })).filter(field => field.visible !== false);
 
@@ -207,9 +224,6 @@ export const extractRegisFields = (config: any): RegisField[] => {
 
   return fields;
 };
-
-export const isDoctorField = (key: string) => DOCTOR_FIELD_KEYS.test(key);
-export const isCoDoctorField = (key: string) => CO_DOCTOR_FIELD_KEYS.test(key);
 
 export const buildInitialFormValues = (fields: RegisField[]): Record<string, string> => {
   const values: Record<string, string> = {};

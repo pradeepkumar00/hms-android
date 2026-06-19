@@ -9,7 +9,6 @@ import {
   setNotificationSound,
   setVibrationEnabled,
 } from './src/store/settingsSlice';
-import { checkAuthState } from './src/store/authSlice';
 
 import { theme } from './src/constants/theme';
 import AppNavigator from './src/navigation/AppNavigator';
@@ -116,8 +115,7 @@ const AppContent: React.FC = () => {
         // Load settings
         dispatch(loadSettings());
 
-        // Check authentication state
-        dispatch(checkAuthState());
+        // Auth state is initialized in AppNavigator
 
         // Initialize notification service (will handle permissions internally)
         await notificationService.initialize();

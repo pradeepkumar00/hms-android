@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useMemo, useEffect } from 'react';
+import React, { useState, useCallback, useEffect, useMemo, useRef } from 'react';
 import {
   View,
   Text,
@@ -10,8 +10,12 @@ import {
   TextInput,
   Linking,
   Alert,
+  Pressable,
+  Modal,
+  Dimensions,
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { useAppSelector, selectAuthToken } from '../store';
 import { theme } from '../constants/theme';
 import { Header } from '../components';
@@ -20,6 +24,21 @@ import realAuthService from '../services/realAuthService';
 import { Appointment, Patient } from '../types';
 
 const PAGE_SIZE = 20;
+const PAGE_OPTION_HEIGHT = 36;
+const PAGE_DROPDOWN_FOOTER_HEIGHT = 34;
+const PAGE_DROPDOWN_LIST_HEIGHT = Math.min(
+  Dimensions.get('window').height * 0.42,
+  PAGE_OPTION_HEIGHT * 12,
+);
+const PAGE_DROPDOWN_TOTAL_HEIGHT =
+  PAGE_DROPDOWN_LIST_HEIGHT + PAGE_DROPDOWN_FOOTER_HEIGHT;
+
+interface PagePickerAnchor {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
 
 interface PatientListScreenProps {
   navigation: any;
@@ -59,23 +78,36 @@ const PatientListScreen: React.FC<PatientListScreenProps> = ({ navigation }) => 
   const [patients, setPatients] = useState<Patient[]>([]);
   const [page, setPage] = useState(0);
   const [total, setTotal] = useState(0);
+  const [totalPages, setTotalPages] = useState(1);
   const [hasMore, setHasMore] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
+  const [pagePickerOpen, setPagePickerOpen] = useState(false);
+  const [pagePickerAnchor, setPagePickerAnchor] = useState<PagePickerAnchor | null>(
+    null,
+  );
   const [movingPatientId, setMovingPatientId] = useState<string | null>(null);
+  const pageListRef = useRef<FlatList<number>>(null);
+  const pageSelectRef = useRef<View>(null);
 
   useEffect(() => {
     const timer = setTimeout(() => setDebouncedSearch(searchQuery.trim()), 400);
     return () => clearTimeout(timer);
   }, [searchQuery]);
 
-  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const pageOptions = useMemo(
+    () => Array.from({ length: totalPages }, (_, index) => index + 1),
+    [totalPages],
+  );
+
+  const canGoBack = page > 0;
+  const canGoForward = page < totalPages - 1;
 
   const fetchPatients = useCallback(
-    async (pageToLoad: number, search: string, replace = true) => {
+    async (pageToLoad: number, search: string) => {
       if (!token) {
         setError('Authentication required');
         return;
@@ -95,15 +127,17 @@ const PatientListScreen: React.FC<PatientListScreenProps> = ({ navigation }) => 
         setPatients(normalized);
         setPage(result.page);
         setTotal(result.total);
+        setTotalPages(result.totalPages);
         setHasMore(result.hasMore);
       } catch (err) {
         console.error('Error fetching patients:', err);
         setError(
           err instanceof Error ? err.message : 'Failed to fetch patients',
         );
-        if (replace) {
-          setPatients([]);
-        }
+        setPatients([]);
+        setTotal(0);
+        setTotalPages(1);
+        setHasMore(false);
       } finally {
         setIsLoading(false);
       }
@@ -117,37 +151,240 @@ const PatientListScreen: React.FC<PatientListScreenProps> = ({ navigation }) => 
         setError('Authentication required');
         return;
       }
-      fetchPatients(0, debouncedSearch);
-    }, [token, fetchPatients, debouncedSearch]),
+      fetchPatients(page, debouncedSearch);
+    }, [token, fetchPatients, page, debouncedSearch]),
   );
+
+  useEffect(() => {
+    setPage(0);
+  }, [debouncedSearch]);
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
-    await fetchPatients(page, debouncedSearch);
+    setPage(0);
+    await fetchPatients(0, debouncedSearch);
     setRefreshing(false);
-  }, [fetchPatients, page, debouncedSearch]);
+  }, [fetchPatients, debouncedSearch]);
 
   const goToPage = useCallback(
     (nextPage: number) => {
       if (nextPage < 0 || nextPage >= totalPages || isLoading) return;
-      fetchPatients(nextPage, debouncedSearch);
+      setPage(nextPage);
     },
-    [fetchPatients, debouncedSearch, totalPages, isLoading],
+    [totalPages, isLoading],
   );
 
-  const filteredPatients = useMemo(() => {
-    if (!debouncedSearch) return patients;
+  const togglePagePicker = useCallback(() => {
+    if (totalPages <= 1 || isLoading) return;
 
-    const query = debouncedSearch.toLowerCase();
-    return patients.filter(patient => {
-      const name = (patient.name || '').toLowerCase();
-      const mobile = (patient.mobileNo || '').toLowerCase();
-      const uhid = String(patient.uhid ?? '').toLowerCase();
-      return (
-        name.includes(query) || mobile.includes(query) || uhid.includes(query)
-      );
+    if (pagePickerOpen) {
+      setPagePickerOpen(false);
+      return;
+    }
+
+    pageSelectRef.current?.measureInWindow((x, y, width, height) => {
+      setPagePickerAnchor({ x, y, width, height });
+      setPagePickerOpen(true);
+      setTimeout(() => {
+        pageListRef.current?.scrollToIndex({
+          index: Math.min(page, Math.max(totalPages - 1, 0)),
+          animated: false,
+          viewPosition: 0.5,
+        });
+      }, 100);
     });
-  }, [patients, debouncedSearch]);
+  }, [totalPages, isLoading, pagePickerOpen, page]);
+
+  const closePagePicker = useCallback(() => {
+    setPagePickerOpen(false);
+  }, []);
+
+  const handleSelectPage = useCallback(
+    (pageNumber: number) => {
+      closePagePicker();
+      goToPage(pageNumber - 1);
+    },
+    [closePagePicker, goToPage],
+  );
+
+  const renderPageDropdown = () => {
+    if (!pagePickerAnchor) return null;
+
+    const dropdownTop = Math.max(
+      theme.spacing.sm,
+      pagePickerAnchor.y - PAGE_DROPDOWN_TOTAL_HEIGHT - theme.spacing.xs,
+    );
+
+    return (
+      <View
+        style={[
+          styles.pageDropdown,
+          {
+            top: dropdownTop,
+            left: pagePickerAnchor.x,
+          },
+        ]}
+      >
+        <FlatList
+          ref={pageListRef}
+          data={pageOptions}
+          keyExtractor={item => `page-option-${item}`}
+          style={styles.pageDropdownList}
+          contentContainerStyle={styles.pageDropdownListContent}
+          scrollEnabled
+          nestedScrollEnabled
+          showsVerticalScrollIndicator
+          bounces
+          keyboardShouldPersistTaps="handled"
+          initialNumToRender={24}
+          maxToRenderPerBatch={32}
+          windowSize={12}
+          removeClippedSubviews={false}
+          getItemLayout={(_, index) => ({
+            length: PAGE_OPTION_HEIGHT,
+            offset: PAGE_OPTION_HEIGHT * index,
+            index,
+          })}
+          onScrollToIndexFailed={info => {
+            pageListRef.current?.scrollToOffset({
+              offset: PAGE_OPTION_HEIGHT * info.index,
+              animated: false,
+            });
+          }}
+          renderItem={({ item }) => {
+            const isActive = item === page + 1;
+            return (
+              <Pressable
+                style={({ pressed }) => [
+                  styles.pageDropdownItem,
+                  isActive && styles.pageDropdownItemActive,
+                  pressed && styles.pageDropdownItemPressed,
+                ]}
+                onPress={() => handleSelectPage(item)}
+              >
+                <Text
+                  style={[
+                    styles.pageDropdownItemText,
+                    isActive && styles.pageDropdownItemTextActive,
+                  ]}
+                >
+                  {item}
+                </Text>
+              </Pressable>
+            );
+          }}
+        />
+        <View style={styles.pageDropdownFooter}>
+          <Icon name="expand-more" size={18} color={theme.colors.textInverse} />
+          <Text style={styles.pageDropdownFooterText}>
+            1–{totalPages.toLocaleString()}
+          </Text>
+        </View>
+      </View>
+    );
+  };
+
+  const renderPageNavigator = () => (
+    <SafeAreaView edges={['bottom']} style={styles.pageNavigatorSafeArea}>
+      <View style={styles.pageNavigator}>
+        <Text style={styles.pageNavigatorSummary}>
+          {total > 0
+            ? `${total.toLocaleString()} patient${total === 1 ? '' : 's'}`
+            : 'No patients'}
+        </Text>
+
+        <View style={styles.pageNavigatorControls}>
+          <TouchableOpacity
+            style={[styles.pageButton, !canGoBack && styles.pageButtonDisabled]}
+            onPress={() => goToPage(0)}
+            disabled={!canGoBack || isLoading}
+            accessibilityLabel="First page"
+          >
+            <Icon
+              name="first-page"
+              size={22}
+              color={canGoBack ? theme.colors.primary : theme.colors.disabled}
+            />
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[styles.pageButton, !canGoBack && styles.pageButtonDisabled]}
+            onPress={() => goToPage(page - 1)}
+            disabled={!canGoBack || isLoading}
+            accessibilityLabel="Previous page"
+          >
+            <Icon
+              name="chevron-left"
+              size={24}
+              color={canGoBack ? theme.colors.primary : theme.colors.disabled}
+            />
+          </TouchableOpacity>
+
+          <View ref={pageSelectRef} collapsable={false} style={styles.pageSelectGroup}>
+            <View style={styles.pageNumberBox}>
+              <Text style={styles.pageNumberText}>{page + 1}</Text>
+            </View>
+
+            <TouchableOpacity
+              style={[
+                styles.pageDropdownTrigger,
+                (totalPages <= 1 || isLoading) && styles.pageDropdownTriggerDisabled,
+              ]}
+              onPress={togglePagePicker}
+              disabled={totalPages <= 1 || isLoading}
+              accessibilityLabel="Select page"
+            >
+              <Icon
+                name={pagePickerOpen ? 'expand-less' : 'expand-more'}
+                size={22}
+                color={
+                  totalPages <= 1 || isLoading
+                    ? theme.colors.disabled
+                    : theme.colors.primary
+                }
+              />
+            </TouchableOpacity>
+          </View>
+
+          <TouchableOpacity
+            style={[
+              styles.pageButton,
+              !canGoForward && styles.pageButtonDisabled,
+            ]}
+            onPress={() => goToPage(page + 1)}
+            disabled={!canGoForward || isLoading}
+            accessibilityLabel="Next page"
+          >
+            <Icon
+              name="chevron-right"
+              size={24}
+              color={
+                canGoForward ? theme.colors.primary : theme.colors.disabled
+              }
+            />
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={[
+              styles.pageButton,
+              !canGoForward && styles.pageButtonDisabled,
+            ]}
+            onPress={() => goToPage(totalPages - 1)}
+            disabled={!canGoForward || isLoading}
+            accessibilityLabel="Last page"
+          >
+            <Icon
+              name="last-page"
+              size={22}
+              color={
+                canGoForward ? theme.colors.primary : theme.colors.disabled
+              }
+            />
+          </TouchableOpacity>
+        </View>
+      </View>
+    </SafeAreaView>
+  );
 
   const handleCall = useCallback((mobileNo?: string) => {
     const phone = mobileNo?.trim();
@@ -317,12 +554,12 @@ const PatientListScreen: React.FC<PatientListScreenProps> = ({ navigation }) => 
 
         <FlatList
           style={styles.list}
-          data={filteredPatients}
+          data={patients}
           renderItem={renderPatientRow}
           keyExtractor={(item, index) => item._id || item.id || `patient-${index}`}
           contentContainerStyle={[
             styles.listContainer,
-            filteredPatients.length === 0 && styles.emptyListContainer,
+            patients.length === 0 && styles.emptyListContainer,
           ]}
           showsVerticalScrollIndicator={false}
           refreshControl={
@@ -337,67 +574,22 @@ const PatientListScreen: React.FC<PatientListScreenProps> = ({ navigation }) => 
         />
       </View>
 
-      {total > 0 && (
-        <View style={styles.pagination}>
-          <TouchableOpacity
-            style={[styles.pageButton, page === 0 && styles.pageButtonDisabled]}
-            onPress={() => goToPage(0)}
-            disabled={page === 0 || isLoading}
-          >
-            <Icon
-              name="first-page"
-              size={22}
-              color={page === 0 ? theme.colors.disabled : theme.colors.primary}
-            />
-          </TouchableOpacity>
+      {renderPageNavigator()}
 
-          <TouchableOpacity
-            style={[styles.pageButton, page === 0 && styles.pageButtonDisabled]}
-            onPress={() => goToPage(page - 1)}
-            disabled={page === 0 || isLoading}
-          >
-            <Icon
-              name="chevron-left"
-              size={24}
-              color={page === 0 ? theme.colors.disabled : theme.colors.primary}
-            />
-          </TouchableOpacity>
-
-          <Text style={styles.pageIndicator}>
-            {page + 1} / {totalPages}
-          </Text>
-
-          <TouchableOpacity
-            style={[
-              styles.pageButton,
-              !hasMore && styles.pageButtonDisabled,
-            ]}
-            onPress={() => goToPage(page + 1)}
-            disabled={!hasMore || isLoading}
-          >
-            <Icon
-              name="chevron-right"
-              size={24}
-              color={!hasMore ? theme.colors.disabled : theme.colors.primary}
-            />
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={[
-              styles.pageButton,
-              !hasMore && styles.pageButtonDisabled,
-            ]}
-            onPress={() => goToPage(totalPages - 1)}
-            disabled={!hasMore || isLoading}
-          >
-            <Icon
-              name="last-page"
-              size={22}
-              color={!hasMore ? theme.colors.disabled : theme.colors.primary}
-            />
-          </TouchableOpacity>
+      <Modal
+        visible={pagePickerOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={closePagePicker}
+      >
+        <View style={styles.pagePickerModalRoot}>
+          <Pressable
+            style={styles.pagePickerModalBackdrop}
+            onPress={closePagePicker}
+          />
+          {renderPageDropdown()}
         </View>
-      )}
+      </Modal>
 
       {isLoading && !refreshing && (
         <View style={styles.loadingOverlay}>
@@ -434,6 +626,7 @@ const styles = StyleSheet.create({
   listSection: {
     flex: 1,
     marginHorizontal: theme.spacing.md,
+    marginBottom: theme.spacing.xs,
   },
   list: {
     flex: 1,
@@ -524,31 +717,126 @@ const styles = StyleSheet.create({
     color: theme.colors.textSecondary,
     textAlign: 'center',
   },
-  pagination: {
+  pageNavigatorSafeArea: {
+    backgroundColor: theme.colors.surface,
+    borderTopWidth: 1,
+    borderTopColor: theme.colors.border,
+    ...theme.shadows.md,
+  },
+  pageNavigator: {
+    paddingTop: theme.spacing.sm,
+    paddingBottom: theme.spacing.sm,
+    paddingHorizontal: theme.spacing.md,
+  },
+  pageNavigatorSummary: {
+    fontSize: theme.typography.fontSizes.sm,
+    color: theme.colors.textSecondary,
+    textAlign: 'center',
+    marginBottom: theme.spacing.sm,
+  },
+  pageNavigatorControls: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: theme.spacing.md,
     gap: theme.spacing.sm,
   },
-  pageButton: {
-    width: 36,
-    height: 36,
-    borderRadius: theme.borderRadius.full,
-    backgroundColor: theme.colors.surface,
+  pageSelectGroup: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  pagePickerModalRoot: {
+    flex: 1,
+  },
+  pagePickerModalBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0, 0, 0, 0.08)',
+  },
+  pageDropdown: {
+    position: 'absolute',
+    width: 64,
+    height: PAGE_DROPDOWN_TOTAL_HEIGHT,
+    backgroundColor: '#4A4A4A',
+    borderRadius: theme.borderRadius.md,
+    overflow: 'hidden',
+    elevation: 12,
+    zIndex: 2,
+    ...theme.shadows.lg,
+  },
+  pageDropdownList: {
+    height: PAGE_DROPDOWN_LIST_HEIGHT,
+    flexGrow: 0,
+  },
+  pageDropdownListContent: {
+    paddingVertical: 2,
+  },
+  pageDropdownItem: {
+    height: PAGE_OPTION_HEIGHT,
     alignItems: 'center',
     justifyContent: 'center',
-    ...theme.shadows.sm,
+  },
+  pageDropdownItemActive: {
+    backgroundColor: 'rgba(255, 255, 255, 0.12)',
+  },
+  pageDropdownItemPressed: {
+    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+  },
+  pageDropdownItemText: {
+    fontSize: theme.typography.fontSizes.md,
+    fontWeight: theme.typography.fontWeights.medium,
+    color: theme.colors.textInverse,
+  },
+  pageDropdownItemTextActive: {
+    fontWeight: theme.typography.fontWeights.bold,
+  },
+  pageDropdownFooter: {
+    height: PAGE_DROPDOWN_FOOTER_HEIGHT,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: 'rgba(255, 255, 255, 0.15)',
+    paddingHorizontal: theme.spacing.xs,
+  },
+  pageDropdownFooterText: {
+    fontSize: theme.typography.fontSizes.xs,
+    color: 'rgba(255, 255, 255, 0.75)',
+    marginBottom: 1,
+  },
+  pageNumberBox: {
+    minWidth: 40,
+    height: 36,
+    borderRadius: theme.borderRadius.md,
+    backgroundColor: theme.colors.primary,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: theme.spacing.sm,
+  },
+  pageNumberText: {
+    fontSize: theme.typography.fontSizes.md,
+    fontWeight: theme.typography.fontWeights.bold,
+    color: theme.colors.textInverse,
+  },
+  pageDropdownTrigger: {
+    width: 32,
+    height: 36,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginLeft: 2,
+  },
+  pageDropdownTriggerDisabled: {
+    opacity: 0.45,
+  },
+  pageButton: {
+    width: 40,
+    height: 40,
+    borderRadius: theme.borderRadius.full,
+    backgroundColor: theme.colors.background,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: theme.colors.border,
   },
   pageButtonDisabled: {
-    opacity: 0.5,
-  },
-  pageIndicator: {
-    fontSize: theme.typography.fontSizes.md,
-    fontWeight: theme.typography.fontWeights.semiBold,
-    color: theme.colors.text,
-    minWidth: 64,
-    textAlign: 'center',
+    opacity: 0.45,
   },
   errorContainer: {
     flex: 1,

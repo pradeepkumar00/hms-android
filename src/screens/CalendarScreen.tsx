@@ -8,7 +8,6 @@ import {
   ScrollView,
   RefreshControl,
   Alert,
-  Dimensions,
   TextInput,
   FlatList,
   Linking,
@@ -28,18 +27,7 @@ interface CalendarScreenProps {
 }
 
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-
-// Timeline layout constants
-const HOUR_MIN_HEIGHT = 72; // px for an empty hour row
-const EVENT_MIN_HEIGHT = 30; // px per appointment card
-const EVENT_GAP = 6; // px between stacked cards in the same hour
-const GUTTER = 80; // px reserved for the TOKENS / hour-label column on the left
-const DEFAULT_DURATION = 30; // minutes when the API gives no duration
-const DAY_START_HOUR = 7; // timeline starts at 7 AM
-const DAY_END_HOUR = 23; // timeline ends at 11 PM
-const SHEET_MAX_HEIGHT = Math.round(Dimensions.get('window').height * 0.88);
-
-// Fallback card color when a doctor has no assigned color (matches the web app)
+const GUTTER = 80; // px reserved for the TOKENS label column on the left
 const DEFAULT_EVENT_COLOR = '#7CB342';
 
 // Local YYYY-MM-DD key for a Date
@@ -70,24 +58,111 @@ const parseTime = (time?: string | null): number | null => {
   return hours * 60 + minutes;
 };
 
-const formatHour = (h: number) => {
-  const period = h < 12 || h === 24 ? 'AM' : 'PM';
-  let display = h % 12;
-  if (display === 0) display = 12;
-  return `${display} ${period}`;
+// "11:00 am" style for the appointment list
+const formatListTime = (time?: string | null): string => {
+  const mins = parseTime(time);
+  if (mins == null) return time?.trim() || '—';
+  const h = Math.floor(mins / 60);
+  const m = mins % 60;
+  const period = h < 12 ? 'am' : 'pm';
+  let displayH = h % 12;
+  if (displayH === 0) displayH = 12;
+  return `${displayH}:${String(m).padStart(2, '0')} ${period}`;
 };
 
-// "03 Jun 2026" (optionally with time) for the all-appointments list
-const formatApptListDate = (date?: string, time?: string | null) => {
+const getAppointmentSubtitle = (appt: Appointment): string => {
+  if (appt.doctorName?.trim()) return appt.doctorName.trim();
+  if (appt.visitType?.trim()) {
+    const v = appt.visitType.trim();
+    return v.charAt(0).toUpperCase() + v.slice(1).toLowerCase();
+  }
+  if (appt.appointmentType?.trim()) {
+    const t = appt.appointmentType.trim();
+    return t.charAt(0).toUpperCase() + t.slice(1).toLowerCase();
+  }
+  return 'Consultation';
+};
+
+// "03 Jun 2026" for appointment cards
+const formatApptCardDate = (date?: string) => {
   const key = appointmentKey(date);
   if (!key) return date || '—';
   const [y, m, d] = key.split('-').map(Number);
-  const formatted = new Date(y, m - 1, d).toLocaleDateString('en-GB', {
+  return new Date(y, m - 1, d).toLocaleDateString('en-GB', {
     day: '2-digit',
     month: 'short',
     year: 'numeric',
   });
-  return time ? `${formatted} ${time}` : formatted;
+};
+
+interface AppointmentTreatmentItem {
+  treatmentDesc: string;
+  date?: string;
+}
+
+const extractAppointmentTreatments = (appt: any): AppointmentTreatmentItem[] => {
+  const rawLists = [
+    appt.details,
+    appt.treatments,
+    appt.treatmentDetails,
+    appt.followupDetails,
+  ].filter(Array.isArray);
+
+  const raw = rawLists.find(list => list.length > 0) ?? [];
+  if (!Array.isArray(raw)) return [];
+
+  return raw
+    .map((item: any) => ({
+      treatmentDesc: String(
+        item?.treatmentDesc ??
+          item?.treatmentName ??
+          item?.name ??
+          item?.title ??
+          '',
+      ).trim(),
+      date: item?.date ?? appt.date,
+    }))
+    .filter(item => item.treatmentDesc.length > 0);
+};
+
+const getAppointmentReason = (appt: Appointment): string => {
+  if (appt.reason?.trim()) return appt.reason.trim();
+
+  const rawLists = [
+    appt.details,
+    appt.treatments,
+    (appt as any).treatmentDetails,
+    (appt as any).followupDetails,
+  ].filter(Array.isArray);
+
+  for (const list of rawLists) {
+    for (const item of list) {
+      const reason = String(item?.reason ?? '').trim();
+      if (reason) return reason;
+    }
+  }
+
+  return '—';
+};
+
+const getStatusBadgeColors = (status?: string) => {
+  switch ((status || '').toLowerCase()) {
+    case 'waiting':
+      return { bg: '#FFF8E1', text: '#B7791F' };
+    case 'confirmed':
+      return { bg: '#E3F2FD', text: '#1565C0' };
+    case 'arrived':
+      return { bg: '#F3E5F5', text: '#7B1FA2' };
+    case 'completed':
+      return { bg: '#E8F5E9', text: '#2E7D32' };
+    case 'absent':
+      return { bg: '#FFEBEE', text: '#C62828' };
+    case 'cancelled':
+    case 'canceled':
+      return { bg: '#FFEBEE', text: '#C62828' };
+    default:
+      return { bg: '#F5F5F5', text: theme.colors.textSecondary };
+  }
 };
 
 const getStatusColor = (status?: string) => {
@@ -113,80 +188,6 @@ const getStatusLabel = (status?: string) => {
   return status.charAt(0).toUpperCase() + status.slice(1);
 };
 
-// Pick black or white text for best contrast against a hex background color.
-const contrastText = (bg: string): string => {
-  let hex = (bg || '').replace('#', '');
-  if (hex.length === 3) {
-    hex = hex
-      .split('')
-      .map(c => c + c)
-      .join('');
-  }
-  if (hex.length !== 6) return '#FFFFFF';
-  const r = parseInt(hex.slice(0, 2), 16);
-  const g = parseInt(hex.slice(2, 4), 16);
-  const b = parseInt(hex.slice(4, 6), 16);
-  // Perceived brightness (0–1); bright backgrounds get dark text.
-  const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
-  return luminance > 0.6 ? '#1A1A1A' : '#FFFFFF';
-};
-
-interface HourEventLayout {
-  appt: Appointment;
-  start: number; // minutes from midnight
-  end: number; // minutes from midnight
-  top: number; // px from top of hour slot
-  height: number; // px
-}
-
-interface HourSlot {
-  hour: number;
-  height: number;
-  events: HourEventLayout[];
-}
-
-// Stack appointments from the top of each hour slot; expand height as needed.
-const layoutHourSlots = (
-  events: { appt: Appointment; start: number; end: number }[],
-  minHour: number,
-  maxHour: number,
-): HourSlot[] => {
-  const slots: HourSlot[] = [];
-
-  for (let hour = minHour; hour <= maxHour; hour++) {
-    const inHour = events
-      .filter(e => Math.floor(e.start / 60) === hour)
-      .sort((a, b) => a.start - b.start || a.end - b.end);
-
-    if (inHour.length === 0) {
-      slots.push({ hour, height: HOUR_MIN_HEIGHT, events: [] });
-      continue;
-    }
-
-    const laidOut: HourEventLayout[] = [];
-    let lastBottom = 8;
-
-    inHour.forEach((event, index) => {
-      const top = index === 0 ? 8 : lastBottom + EVENT_GAP;
-
-      laidOut.push({
-        ...event,
-        top,
-        height: EVENT_MIN_HEIGHT,
-      });
-      lastBottom = top + EVENT_MIN_HEIGHT;
-    });
-
-    slots.push({
-      hour,
-      height: Math.max(HOUR_MIN_HEIGHT, lastBottom + 8),
-      events: laidOut,
-    });
-  }
-
-  return slots;
-};
-
 const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation }) => {
   const token = useAppSelector(selectAuthToken);
 
@@ -209,19 +210,17 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation }) => {
   const [doctorModalOpen, setDoctorModalOpen] = useState(false);
   // Whether the date picker is open
   const [showDatePicker, setShowDatePicker] = useState(false);
-  // Appointment shown in the bottom details sheet (null = closed)
+  // Appointment shown in the details modal (null = closed)
   const [selectedAppt, setSelectedAppt] = useState<Appointment | null>(null);
   // Whether the "Move to OPD" request is in flight
   const [movingToOpd, setMovingToOpd] = useState(false);
   // Which status update is in flight (e.g. 'completed'), null when idle
   const [statusUpdating, setStatusUpdating] = useState<string | null>(null);
-  // Patient history shown in the details sheet
+  // Patient history shown in the details modal
   const [patientAppointments, setPatientAppointments] = useState<Appointment[]>(
     [],
   );
   const [patientApptsLoading, setPatientApptsLoading] = useState(false);
-  // Measured height of the fixed sheet header/details/actions block
-  const [sheetTopHeight, setSheetTopHeight] = useState(0);
   // Patient search modal
   const [patientSearchOpen, setPatientSearchOpen] = useState(false);
   const [patientSearchQuery, setPatientSearchQuery] = useState('');
@@ -285,8 +284,6 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation }) => {
     };
   }, [token]);
 
-  // Resolve an appointment's card color: the doctor's assigned color (by id or
-  // code), then any color already on the appointment, then the default green.
   const colorForAppt = useCallback(
     (appt: Appointment) =>
       doctorColors[appt.doctorId || ''] ||
@@ -450,25 +447,63 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation }) => {
   }, [selectedAppt?.patientId, selectedAppt?._id, token]);
 
   const sortedPatientAppointments = useMemo(() => {
-    return [...patientAppointments]
-      .filter(appt => appt._id !== selectedAppt?._id)
-      .sort((a, b) => {
-        const dateCmp = (b.date || '').localeCompare(a.date || '');
-        if (dateCmp !== 0) return dateCmp;
-        return (parseTime(b.time) ?? 0) - (parseTime(a.time) ?? 0);
-      });
-  }, [patientAppointments, selectedAppt?._id]);
+    return [...patientAppointments].sort((a, b) => {
+      const dateCmp = (b.date || '').localeCompare(a.date || '');
+      if (dateCmp !== 0) return dateCmp;
+      return (parseTime(b.time) ?? 0) - (parseTime(a.time) ?? 0);
+    });
+  }, [patientAppointments]);
 
-  const allApptsListHeight = useMemo(() => {
-    const topHeight = sheetTopHeight || 460;
-    const sectionHeader = 52;
-    const bottomPad = theme.spacing.lg;
-    return Math.max(96, SHEET_MAX_HEIGHT - topHeight - sectionHeader - bottomPad);
-  }, [sheetTopHeight]);
+  const renderAllAppointmentCard = (appt: Appointment) => {
+    const statusBadge = getStatusBadgeColors(appt.status);
+    const treatments = extractAppointmentTreatments(appt);
 
-  useEffect(() => {
-    setSheetTopHeight(0);
-  }, [selectedAppt?._id]);
+    return (
+      <View key={appt._id} style={styles.allApptCard}>
+        <View style={styles.allApptCardHeader}>
+          <View style={styles.allApptCardDateRow}>
+            <Text style={styles.allApptCardDate}>
+              {formatApptCardDate(appt.date)}
+            </Text>
+            {appt.time ? (
+              <Text style={styles.allApptCardTime}> {appt.time}</Text>
+            ) : null}
+          </View>
+          <View
+            style={[
+              styles.allApptStatusBadge,
+              { backgroundColor: statusBadge.bg },
+            ]}
+          >
+            <Text
+              style={[styles.allApptStatusText, { color: statusBadge.text }]}
+            >
+              {getStatusLabel(appt.status)}
+            </Text>
+          </View>
+        </View>
+
+        <Text style={styles.allApptDoctorLabel}>DOCTOR</Text>
+        <Text style={styles.allApptDoctorName} numberOfLines={1}>
+          {appt.doctorName || '—'}
+        </Text>
+
+        {treatments.map((treatment, index) => (
+          <View
+            key={`${appt._id}-treatment-${index}`}
+            style={styles.allApptTreatmentBox}
+          >
+            <Text style={styles.allApptTreatmentName} numberOfLines={2}>
+              {treatment.treatmentDesc}
+            </Text>
+            <Text style={styles.allApptTreatmentDate}>
+              {formatApptCardDate(treatment.date)}
+            </Text>
+          </View>
+        ))}
+      </View>
+    );
+  };
 
   const onRefresh = useCallback(async () => {
     setRefreshing(true);
@@ -535,8 +570,7 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation }) => {
     setWeekStart(sunday);
     setSelectedKey(toKey(day));
   };
-  // Split the selected day's appointments into hour slots and untimed tokens
-  const { hourSlots, untimed, timelineHeight } = useMemo(() => {
+  const { timedAppointments, untimedAppointments } = useMemo(() => {
     let dayAppointments = appointmentsByDate[selectedKey] || [];
     if (selectedDoctorId) {
       dayAppointments = dayAppointments.filter(
@@ -544,30 +578,27 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation }) => {
       );
     }
 
-    const timedRaw: { appt: Appointment; start: number; end: number }[] = [];
-    const untimedList: Appointment[] = [];
+    const timed: Appointment[] = [];
+    const untimed: Appointment[] = [];
 
     dayAppointments.forEach(appt => {
-      const startMin = parseTime(appt.time);
-      if (startMin == null) {
-        untimedList.push(appt);
+      if (parseTime(appt.time) == null) {
+        untimed.push(appt);
       } else {
-        const dur =
-          typeof appt.duration === 'number' && appt.duration > 0
-            ? appt.duration
-            : DEFAULT_DURATION;
-        timedRaw.push({ appt, start: startMin, end: startMin + dur });
+        timed.push(appt);
       }
     });
 
-    const slots = layoutHourSlots(timedRaw, DAY_START_HOUR, DAY_END_HOUR);
-    const totalHeight = slots.reduce((sum, slot) => sum + slot.height, 0);
+    timed.sort((a, b) => {
+      const aTime = parseTime(a.time)!;
+      const bTime = parseTime(b.time)!;
+      if (aTime !== bTime) return aTime - bTime;
+      return (a.patientName || '').localeCompare(b.patientName || '');
+    });
 
-    return {
-      hourSlots: slots,
-      untimed: untimedList,
-      timelineHeight: totalHeight,
-    };
+    untimed.sort((a, b) => (a.tokenCount ?? 0) - (b.tokenCount ?? 0));
+
+    return { timedAppointments: timed, untimedAppointments: untimed };
   }, [appointmentsByDate, selectedKey, selectedDoctorId]);
 
   // The currently selected doctor option (null = all doctors)
@@ -576,43 +607,35 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation }) => {
     [doctorOptions, selectedDoctorId],
   );
 
-  const renderEventBlock = (e: HourEventLayout) => {
-    const { appt } = e;
-    const accent = colorForAppt(appt);
-    const textColor = contrastText(accent);
+  const renderAppointmentRow = (appt: Appointment) => {
+    const dotColor = colorForAppt(appt);
+    const subtitle = getAppointmentSubtitle(appt);
+
     return (
       <TouchableOpacity
         key={appt._id}
-        activeOpacity={0.8}
+        activeOpacity={0.7}
         onPress={() => setSelectedAppt(appt)}
-        style={[
-          styles.eventBlock,
-          {
-            top: e.top,
-            height: e.height,
-            backgroundColor: accent,
-          },
-        ]}
+        style={styles.apptRow}
       >
-        <Text style={[styles.eventText, { color: textColor }]} numberOfLines={2}>
-          <Text style={[styles.eventTime, { color: textColor }]}>
-            {appt.time}
-          </Text>
-          <Text style={[styles.eventName, { color: textColor }]}>
-            {'  '}
+        <Text style={styles.apptRowTime}>{formatListTime(appt.time)}</Text>
+        <View style={styles.apptRowMain}>
+          <Text style={styles.apptRowName} numberOfLines={1}>
             {appt.patientName || 'Unknown'}
           </Text>
-          {appt.doctorName ? (
-            <Text style={[styles.eventDoctor, { color: textColor }]}>
-              {`  · ${appt.doctorName}`}
+          <View style={styles.apptRowMeta}>
+            <View
+              style={[styles.apptRowDot, { backgroundColor: dotColor }]}
+            />
+            <Text style={styles.apptRowSubtitle} numberOfLines={1}>
+              {subtitle}
             </Text>
-          ) : null}
-        </Text>
+          </View>
+        </View>
       </TouchableOpacity>
     );
   };
 
-  // Compact chip for a token (untimed) appointment in the timeline's TOKENS column
   const renderTokenChip = (appt: Appointment) => {
     const accent = colorForAppt(appt);
     return (
@@ -820,41 +843,44 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation }) => {
           <ActivityIndicator size="large" color={theme.colors.primary} />
         </View>
       ) : (
-        /* Calendar — timeline with the TOKENS column */
         <ScrollView
-          contentContainerStyle={styles.timelineScroll}
+          style={styles.apptListScroll}
+          contentContainerStyle={[
+            styles.apptListContent,
+            timedAppointments.length === 0 &&
+              untimedAppointments.length === 0 &&
+              styles.apptListContentEmpty,
+          ]}
           refreshControl={
             <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
           }
         >
-          {/* TOKENS section — unscheduled (token) appointments as a vertical list */}
           <View style={styles.gridHeader}>
             <View style={styles.gridHeaderTokens}>
               <Text style={styles.gridHeaderText}>TOKENS</Text>
             </View>
             <View style={styles.tokenListColumn}>
-              {untimed.length > 0 ? (
-                untimed.map(renderTokenChip)
+              {untimedAppointments.length > 0 ? (
+                untimedAppointments.map(renderTokenChip)
               ) : (
                 <Text style={styles.tokenRowEmpty}>No tokens</Text>
               )}
             </View>
           </View>
 
-          <View style={[styles.timeline, { minHeight: timelineHeight }]}>
-            {hourSlots.map(slot => (
-              <View
-                key={slot.hour}
-                style={[styles.hourSlot, { height: slot.height }]}
-              >
-                <Text style={styles.hourLabel}>{formatHour(slot.hour)}</Text>
-                <View style={styles.hourEventsArea}>
-                  {slot.events.map(renderEventBlock)}
-                </View>
-              </View>
-            ))}
-
-          </View>
+          {timedAppointments.length === 0 &&
+          untimedAppointments.length === 0 ? (
+            <View style={styles.centerBox}>
+              <Icon
+                name="event-busy"
+                size={48}
+                color={theme.colors.disabled}
+              />
+              <Text style={styles.emptyText}>No appointments for this day</Text>
+            </View>
+          ) : (
+            timedAppointments.map(renderAppointmentRow)
+          )}
         </ScrollView>
       )}
 
@@ -1085,175 +1111,182 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation }) => {
         </View>
       </ModalBackdrop>
 
-      {/* Appointment details bottom sheet */}
+      {/* Appointment details modal */}
       <ModalBackdrop
         visible={selectedAppt != null}
         onClose={() => setSelectedAppt(null)}
         animationType="slide"
-        align="bottom"
+        align="full"
+        dismissOnBackdropPress={false}
       >
-        <View style={styles.sheet}>
+        <View style={styles.apptDetailsModal}>
+          <StatusBar
+            barStyle="light-content"
+            backgroundColor={theme.colors.primary}
+            translucent={false}
+          />
+          <SafeAreaView edges={['top']} style={styles.apptDetailsHeaderSafeArea}>
+            <View style={styles.apptDetailsHeader}>
+              <Text style={styles.apptDetailsHeaderTitle}>Appointment Details</Text>
+              <TouchableOpacity
+                onPress={() => setSelectedAppt(null)}
+                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+              >
+                <Icon name="close" size={24} color={theme.colors.textInverse} />
+              </TouchableOpacity>
+            </View>
+          </SafeAreaView>
+
+          <SafeAreaView edges={['bottom']} style={styles.apptDetailsContentSafeArea}>
             {selectedAppt && (
-              <>
-                <View
-                  style={styles.sheetTop}
-                  onLayout={event =>
-                    setSheetTopHeight(event.nativeEvent.layout.height)
-                  }
-                >
-                  {/* Header: name + mobile */}
-                  <View style={styles.sheetHeader}>
-                    <View style={styles.sheetAvatar}>
-                      <Icon
-                        name="person"
-                        size={26}
-                        color={theme.colors.textSecondary}
-                      />
-                    </View>
-                    <View style={styles.sheetHeaderCol}>
-                      <Text style={styles.sheetHeaderLabel}>NAME</Text>
-                      <Text style={styles.sheetHeaderValue} numberOfLines={1}>
-                        {selectedAppt.patientName || 'Unknown'}
-                      </Text>
-                    </View>
-                    <View style={styles.sheetHeaderColDivider} />
-                    <View style={styles.sheetHeaderCol}>
-                      <Text style={styles.sheetHeaderLabel}>MOBILE</Text>
-                      <Text style={styles.sheetHeaderValue} numberOfLines={1}>
-                        {selectedAppt.mobileNo || '—'}
-                      </Text>
-                    </View>
-                    <View style={styles.sheetStatusDot} />
-                    <TouchableOpacity
-                      style={styles.sheetClose}
-                      onPress={() => setSelectedAppt(null)}
-                    >
-                      <Icon name="close" size={20} color={theme.colors.text} />
-                    </TouchableOpacity>
+              <ScrollView
+                style={styles.apptDetailsScroll}
+                contentContainerStyle={styles.apptDetailsScrollContent}
+                showsVerticalScrollIndicator={false}
+                keyboardShouldPersistTaps="handled"
+              >
+                <View style={styles.sheetHeader}>
+                  <View style={styles.sheetAvatar}>
+                    <Icon
+                      name="person"
+                      size={26}
+                      color={theme.colors.textSecondary}
+                    />
                   </View>
-
-                  {/* Details */}
-                  <View style={styles.sheetBody}>
-                    <Text style={styles.sheetSectionTitle}>
-                      APPOINTMENT DETAILS
+                  <View style={styles.sheetHeaderCol}>
+                    <Text style={styles.sheetHeaderLabel}>NAME</Text>
+                    <Text style={styles.sheetHeaderValue} numberOfLines={1}>
+                      {selectedAppt.patientName || 'Unknown'}
                     </Text>
+                  </View>
+                  <View style={styles.sheetHeaderColDivider} />
+                  <View style={styles.sheetHeaderCol}>
+                    <Text style={styles.sheetHeaderLabel}>MOBILE</Text>
+                    <Text style={styles.sheetHeaderValue} numberOfLines={1}>
+                      {selectedAppt.mobileNo || '—'}
+                    </Text>
+                  </View>
+                  <View style={styles.sheetStatusDot} />
+                </View>
 
-                    <View style={styles.detailRow}>
-                      <Text style={styles.detailLabel}>Doctor</Text>
-                      <Text style={styles.detailValue}>
-                        {selectedAppt.doctorName || '—'}
-                      </Text>
-                    </View>
+                <View style={styles.sheetBody}>
+                  <Text style={styles.sheetSectionTitle}>APPOINTMENT DETAILS</Text>
 
-                    <View style={styles.detailRow}>
-                      <Text style={styles.detailLabel}>Type</Text>
-                      {renderPill(selectedAppt.appointmentType || '—', '#B7791F')}
-                    </View>
-
-                    <View style={styles.detailRow}>
-                      <Text style={styles.detailLabel}>Visit</Text>
-                      {renderPill(
-                        selectedAppt.visitType || 'Normal',
-                        theme.colors.textSecondary,
-                      )}
-                    </View>
-
-                    <View style={styles.detailRow}>
-                      <Text style={styles.detailLabel}>Token</Text>
-                      <Text style={styles.detailValue}>
-                        {selectedAppt.tokenCount != null
-                          ? `T${selectedAppt.tokenCount}`
-                          : '—'}
-                      </Text>
-                    </View>
-
-                    <View style={styles.detailRow}>
-                      <Text style={styles.detailLabel}>Status</Text>
-                      {renderPill(
-                        getStatusLabel(selectedAppt.status),
-                        getStatusColor(selectedAppt.status),
-                      )}
-                    </View>
-
-                    <View style={styles.detailRow}>
-                      <Text style={styles.detailLabel}>Arrival</Text>
-                      {renderPill(
-                        arrivalInfo(selectedAppt).label,
-                        arrivalInfo(selectedAppt).color,
-                      )}
-                    </View>
-
-                    <View style={styles.detailRow}>
-                      <Text style={styles.detailLabel}>Fee</Text>
-                      <Text style={styles.detailValue}>
-                        ₹{selectedAppt.doctorFee ?? selectedAppt.expenseAmount ?? 0}
-                      </Text>
-                    </View>
+                  <View style={styles.detailRow}>
+                    <Text style={styles.detailLabel}>Doctor</Text>
+                    <Text style={styles.detailValue}>
+                      {selectedAppt.doctorName || '—'}
+                    </Text>
                   </View>
 
-                  {/* Actions */}
-                  <View style={styles.sheetActions}>
-                    <TouchableOpacity
-                      style={[
-                        styles.sheetPrimaryBtn,
-                        movingToOpd && styles.sheetPrimaryBtnDisabled,
-                      ]}
-                      activeOpacity={0.85}
-                      disabled={movingToOpd}
-                      onPress={handleMoveToOpd}
-                    >
-                      {movingToOpd ? (
-                        <ActivityIndicator size="small" color={theme.colors.surface} />
-                      ) : (
-                        <Text style={styles.sheetPrimaryText}>Move to OPD</Text>
-                      )}
-                    </TouchableOpacity>
-                    <View style={styles.sheetOutlineRow}>
-                      <TouchableOpacity
-                        style={[
-                          styles.sheetOutlineBtn,
-                          styles.sheetCompleteBtn,
-                          statusUpdating != null && styles.sheetPrimaryBtnDisabled,
-                        ]}
-                        activeOpacity={0.85}
-                        disabled={statusUpdating != null}
-                        onPress={() => handleStatusUpdate('completed', 'Completed')}
-                      >
-                        {statusUpdating === 'completed' ? (
-                          <ActivityIndicator size="small" color="#2E7D32" />
-                        ) : (
-                          <Text
-                            style={[styles.sheetOutlineText, { color: '#2E7D32' }]}
-                          >
-                            Complete
-                          </Text>
-                        )}
-                      </TouchableOpacity>
-                      <TouchableOpacity
-                        style={[
-                          styles.sheetOutlineBtn,
-                          styles.sheetAbsentBtn,
-                          statusUpdating != null && styles.sheetPrimaryBtnDisabled,
-                        ]}
-                        activeOpacity={0.85}
-                        disabled={statusUpdating != null}
-                        onPress={() => handleStatusUpdate('absent', 'Absent')}
-                      >
-                        {statusUpdating === 'absent' ? (
-                          <ActivityIndicator size="small" color="#C62828" />
-                        ) : (
-                          <Text
-                            style={[styles.sheetOutlineText, { color: '#C62828' }]}
-                          >
-                            Absent
-                          </Text>
-                        )}
-                      </TouchableOpacity>
-                    </View>
+                  <View style={styles.detailRow}>
+                    <Text style={styles.detailLabel}>Treatment</Text>
+                    <Text style={styles.detailValue} numberOfLines={3}>
+                      {getAppointmentReason(selectedAppt)}
+                    </Text>
+                  </View>
+
+                  <View style={styles.detailRow}>
+                    <Text style={styles.detailLabel}>Visit</Text>
+                    {renderPill(
+                      selectedAppt.visitType || 'Normal',
+                      theme.colors.textSecondary,
+                    )}
+                  </View>
+
+                  <View style={styles.detailRow}>
+                    <Text style={styles.detailLabel}>Token</Text>
+                    <Text style={styles.detailValue}>
+                      {selectedAppt.tokenCount != null
+                        ? `T${selectedAppt.tokenCount}`
+                        : '—'}
+                    </Text>
+                  </View>
+
+                  <View style={styles.detailRow}>
+                    <Text style={styles.detailLabel}>Status</Text>
+                    {renderPill(
+                      getStatusLabel(selectedAppt.status),
+                      getStatusColor(selectedAppt.status),
+                    )}
+                  </View>
+
+                  <View style={styles.detailRow}>
+                    <Text style={styles.detailLabel}>Arrival</Text>
+                    {renderPill(
+                      arrivalInfo(selectedAppt).label,
+                      arrivalInfo(selectedAppt).color,
+                    )}
+                  </View>
+
+                  <View style={styles.detailRow}>
+                    <Text style={styles.detailLabel}>Fee</Text>
+                    <Text style={styles.detailValue}>
+                      ₹{selectedAppt.doctorFee ?? selectedAppt.expenseAmount ?? 0}
+                    </Text>
                   </View>
                 </View>
 
-                {/* All appointments for this patient — list scrolls independently */}
+                <View style={styles.sheetActions}>
+                  <TouchableOpacity
+                    style={[
+                      styles.sheetPrimaryBtn,
+                      movingToOpd && styles.sheetPrimaryBtnDisabled,
+                    ]}
+                    activeOpacity={0.85}
+                    disabled={movingToOpd}
+                    onPress={handleMoveToOpd}
+                  >
+                    {movingToOpd ? (
+                      <ActivityIndicator size="small" color={theme.colors.surface} />
+                    ) : (
+                      <Text style={styles.sheetPrimaryText}>Move to OPD</Text>
+                    )}
+                  </TouchableOpacity>
+                  <View style={styles.sheetOutlineRow}>
+                    <TouchableOpacity
+                      style={[
+                        styles.sheetOutlineBtn,
+                        styles.sheetCompleteBtn,
+                        statusUpdating != null && styles.sheetPrimaryBtnDisabled,
+                      ]}
+                      activeOpacity={0.85}
+                      disabled={statusUpdating != null}
+                      onPress={() => handleStatusUpdate('completed', 'Completed')}
+                    >
+                      {statusUpdating === 'completed' ? (
+                        <ActivityIndicator size="small" color="#2E7D32" />
+                      ) : (
+                        <Text
+                          style={[styles.sheetOutlineText, { color: '#2E7D32' }]}
+                        >
+                          Complete
+                        </Text>
+                      )}
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={[
+                        styles.sheetOutlineBtn,
+                        styles.sheetAbsentBtn,
+                        statusUpdating != null && styles.sheetPrimaryBtnDisabled,
+                      ]}
+                      activeOpacity={0.85}
+                      disabled={statusUpdating != null}
+                      onPress={() => handleStatusUpdate('absent', 'Absent')}
+                    >
+                      {statusUpdating === 'absent' ? (
+                        <ActivityIndicator size="small" color="#C62828" />
+                      ) : (
+                        <Text
+                          style={[styles.sheetOutlineText, { color: '#C62828' }]}
+                        >
+                          Absent
+                        </Text>
+                      )}
+                    </TouchableOpacity>
+                  </View>
+                </View>
+
                 <View style={styles.sheetAllAppts}>
                   <Text style={styles.sheetSectionTitle}>ALL APPOINTMENTS</Text>
                   {patientApptsLoading ? (
@@ -1263,44 +1296,15 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation }) => {
                     />
                   ) : sortedPatientAppointments.length === 0 ? (
                     <Text style={styles.sheetAllApptsEmpty}>
-                      No other appointments found
+                      No appointments found
                     </Text>
                   ) : (
-                    <ScrollView
-                      style={{ maxHeight: allApptsListHeight }}
-                      contentContainerStyle={styles.sheetAllApptsScrollContent}
-                      nestedScrollEnabled
-                      showsVerticalScrollIndicator
-                      keyboardShouldPersistTaps="handled"
-                    >
-                      {sortedPatientAppointments.map(appt => (
-                        <View key={appt._id} style={styles.allApptRow}>
-                          <View style={styles.allApptRowMain}>
-                            <Text style={styles.allApptDate} numberOfLines={1}>
-                              {formatApptListDate(appt.date, appt.time)}
-                            </Text>
-                            {appt.doctorName ? (
-                              <Text
-                                style={styles.allApptDoctor}
-                                numberOfLines={1}
-                              >
-                                {appt.doctorName}
-                              </Text>
-                            ) : null}
-                          </View>
-                          <View style={styles.allApptPillWrap}>
-                            {renderPill(
-                              getStatusLabel(appt.status),
-                              getStatusColor(appt.status),
-                            )}
-                          </View>
-                        </View>
-                      ))}
-                    </ScrollView>
+                    sortedPatientAppointments.map(renderAllAppointmentCard)
                   )}
                 </View>
-              </>
+              </ScrollView>
             )}
+          </SafeAreaView>
         </View>
       </ModalBackdrop>
     </View>
@@ -1465,14 +1469,6 @@ const styles = StyleSheet.create({
     color: theme.colors.textSecondary,
     letterSpacing: 0.5,
   },
-  timelineDivider: {
-    position: 'absolute',
-    top: 0,
-    bottom: 0,
-    left: GUTTER,
-    width: 1,
-    backgroundColor: theme.colors.border,
-  },
   tokenListColumn: {
     flex: 1,
     paddingVertical: theme.spacing.sm,
@@ -1508,6 +1504,57 @@ const styles = StyleSheet.create({
     fontSize: theme.typography.fontSizes.sm,
     fontWeight: theme.typography.fontWeights.bold,
     color: theme.colors.primary,
+  },
+  apptListScroll: {
+    flex: 1,
+    backgroundColor: theme.colors.surface,
+  },
+  apptListContent: {
+    paddingBottom: theme.spacing.xxl,
+  },
+  apptListContentEmpty: {
+    flexGrow: 1,
+  },
+  apptRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: theme.spacing.md,
+    paddingHorizontal: theme.spacing.md,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: theme.colors.border,
+    backgroundColor: theme.colors.surface,
+  },
+  apptRowTime: {
+    width: 72,
+    fontSize: theme.typography.fontSizes.md,
+    fontWeight: theme.typography.fontWeights.medium,
+    color: theme.colors.text,
+  },
+  apptRowMain: {
+    flex: 1,
+    minWidth: 0,
+    paddingRight: theme.spacing.sm,
+  },
+  apptRowName: {
+    fontSize: theme.typography.fontSizes.lg,
+    fontWeight: theme.typography.fontWeights.semiBold,
+    color: theme.colors.text,
+    marginBottom: 4,
+  },
+  apptRowMeta: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  apptRowDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    marginRight: theme.spacing.sm,
+  },
+  apptRowSubtitle: {
+    flex: 1,
+    fontSize: theme.typography.fontSizes.sm,
+    color: theme.colors.textSecondary,
   },
   queueScroll: {
     paddingTop: theme.spacing.sm,
@@ -1676,13 +1723,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 6,
     lineHeight: 22,
   },
-  timelineScroll: {
-    paddingTop: theme.spacing.sm,
-    paddingBottom: theme.spacing.xxl,
-  },
-  emptyScroll: {
-    flexGrow: 1,
-  },
   sectionLabel: {
     fontSize: theme.typography.fontSizes.sm,
     fontWeight: theme.typography.fontWeights.bold,
@@ -1763,62 +1803,6 @@ const styles = StyleSheet.create({
   statusPillText: {
     fontSize: theme.typography.fontSizes.xs,
     fontWeight: theme.typography.fontWeights.bold,
-  },
-  timeline: {
-    position: 'relative',
-    marginTop: theme.spacing.xs,
-    borderLeftWidth: 1,
-    borderLeftColor: theme.colors.border,
-    marginLeft: GUTTER,
-  },
-  hourSlot: {
-    flexDirection: 'row',
-    alignItems: 'stretch',
-    borderBottomWidth: 1,
-    borderBottomColor: theme.colors.border,
-  },
-  hourLabel: {
-    position: 'absolute',
-    left: -GUTTER,
-    width: GUTTER - theme.spacing.sm,
-    textAlign: 'right',
-    top: 6,
-    fontSize: theme.typography.fontSizes.xs,
-    color: theme.colors.textSecondary,
-  },
-  hourEventsArea: {
-    flex: 1,
-    position: 'relative',
-    marginLeft: theme.spacing.sm,
-    marginRight: theme.spacing.md,
-  },
-  eventBlock: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    borderRadius: theme.borderRadius.lg,
-    paddingHorizontal: theme.spacing.md,
-    paddingVertical: 8,
-    justifyContent: 'center',
-    overflow: 'hidden',
-  },
-  eventText: {
-    fontSize: theme.typography.fontSizes.sm,
-    color: theme.colors.surface,
-  },
-  eventTime: {
-    fontSize: theme.typography.fontSizes.sm,
-    fontWeight: theme.typography.fontWeights.bold,
-    color: theme.colors.surface,
-  },
-  eventName: {
-    fontSize: theme.typography.fontSizes.sm,
-    fontWeight: theme.typography.fontWeights.bold,
-    color: theme.colors.surface,
-  },
-  eventDoctor: {
-    fontSize: theme.typography.fontSizes.sm,
-    opacity: 0.9,
   },
   centerBox: {
     flex: 1,
@@ -2049,24 +2033,50 @@ const styles = StyleSheet.create({
   patientSearchCallBtnDisabled: {
     opacity: 0.5,
   },
-  sheet: {
-    backgroundColor: theme.colors.surface,
-    borderTopLeftRadius: theme.borderRadius.xl,
-    borderTopRightRadius: theme.borderRadius.xl,
-    maxHeight: SHEET_MAX_HEIGHT,
-    overflow: 'hidden',
-    paddingBottom: theme.spacing.lg,
+  apptDetailsModal: {
+    flex: 1,
+    width: '100%',
+    backgroundColor: theme.colors.background,
   },
-  sheetTop: {
-    flexShrink: 0,
+  apptDetailsHeaderSafeArea: {
+    backgroundColor: theme.colors.primary,
+  },
+  apptDetailsContentSafeArea: {
+    flex: 1,
+    backgroundColor: theme.colors.background,
+  },
+  apptDetailsHeader: {
+    height: theme.headerHeight,
+    backgroundColor: theme.colors.primary,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: theme.spacing.md,
+    ...theme.shadows.md,
+  },
+  apptDetailsHeaderTitle: {
+    fontSize: theme.typography.fontSizes.xl,
+    fontWeight: theme.typography.fontWeights.bold,
+    color: theme.colors.textInverse,
+  },
+  apptDetailsScroll: {
+    flex: 1,
+  },
+  apptDetailsScrollContent: {
+    paddingBottom: theme.spacing.lg,
   },
   sheetHeader: {
     flexDirection: 'row',
     alignItems: 'center',
     paddingHorizontal: theme.spacing.md,
     paddingVertical: theme.spacing.md,
-    borderBottomWidth: 1,
-    borderBottomColor: theme.colors.border,
+    marginHorizontal: theme.spacing.md,
+    marginTop: theme.spacing.sm,
+    borderRadius: theme.borderRadius.md,
+    backgroundColor: theme.colors.surface,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    ...theme.shadows.sm,
   },
   sheetAvatar: {
     width: 40,
@@ -2104,15 +2114,6 @@ const styles = StyleSheet.create({
     borderRadius: 5,
     backgroundColor: '#4CAF50',
     marginLeft: 'auto',
-  },
-  sheetClose: {
-    width: 32,
-    height: 32,
-    borderRadius: theme.borderRadius.sm,
-    backgroundColor: theme.colors.background,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginLeft: theme.spacing.sm,
   },
   sheetBody: {
     paddingHorizontal: theme.spacing.md,
@@ -2152,23 +2153,23 @@ const styles = StyleSheet.create({
   },
   sheetActions: {
     paddingHorizontal: theme.spacing.md,
-    paddingTop: theme.spacing.md,
+    paddingTop: theme.spacing.sm,
     marginTop: theme.spacing.sm,
     borderTopWidth: 1,
     borderTopColor: theme.colors.border,
   },
   sheetPrimaryBtn: {
     backgroundColor: theme.colors.primary,
-    borderRadius: theme.borderRadius.md,
-    paddingVertical: theme.spacing.md,
+    borderRadius: theme.borderRadius.sm,
+    paddingVertical: theme.spacing.sm,
     alignItems: 'center',
-    marginBottom: theme.spacing.sm,
+    marginBottom: theme.spacing.xs,
   },
   sheetPrimaryBtnDisabled: {
     opacity: 0.6,
   },
   sheetPrimaryText: {
-    fontSize: theme.typography.fontSizes.md,
+    fontSize: theme.typography.fontSizes.sm,
     fontWeight: theme.typography.fontWeights.bold,
     color: theme.colors.surface,
   },
@@ -2179,26 +2180,25 @@ const styles = StyleSheet.create({
   sheetOutlineBtn: {
     flex: 1,
     borderWidth: 1,
-    borderRadius: theme.borderRadius.md,
-    paddingVertical: theme.spacing.md,
+    borderRadius: theme.borderRadius.sm,
+    paddingVertical: theme.spacing.sm,
     alignItems: 'center',
   },
   sheetCompleteBtn: {
     borderColor: '#2E7D32',
-    marginRight: theme.spacing.sm,
+    marginRight: theme.spacing.xs,
   },
   sheetAbsentBtn: {
     borderColor: '#C62828',
-    marginLeft: theme.spacing.sm,
+    marginLeft: theme.spacing.xs,
   },
   sheetOutlineText: {
-    fontSize: theme.typography.fontSizes.md,
+    fontSize: theme.typography.fontSizes.sm,
     fontWeight: theme.typography.fontWeights.bold,
   },
   sheetAllAppts: {
-    flexShrink: 1,
-    minHeight: 0,
     paddingHorizontal: theme.spacing.md,
+    paddingTop: theme.spacing.sm,
   },
   sheetAllApptsScrollContent: {
     paddingBottom: theme.spacing.xs,
@@ -2211,40 +2211,79 @@ const styles = StyleSheet.create({
     color: theme.colors.textSecondary,
     marginTop: theme.spacing.sm,
   },
-  allApptRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
+  allApptCard: {
     borderWidth: 1,
     borderColor: theme.colors.border,
-    borderRadius: theme.borderRadius.md,
+    borderRadius: theme.borderRadius.lg,
     paddingHorizontal: theme.spacing.md,
-    paddingVertical: theme.spacing.sm,
+    paddingVertical: theme.spacing.md,
     marginTop: theme.spacing.sm,
     backgroundColor: theme.colors.surface,
   },
-  allApptRowMain: {
-    flex: 1,
+  allApptCardHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginRight: theme.spacing.sm,
-    minWidth: 0,
+    justifyContent: 'space-between',
+    marginBottom: theme.spacing.sm,
   },
-  allApptDate: {
-    flexShrink: 1,
+  allApptCardDateRow: {
+    flex: 1,
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    marginRight: theme.spacing.sm,
+  },
+  allApptCardDate: {
     fontSize: theme.typography.fontSizes.md,
     fontWeight: theme.typography.fontWeights.bold,
     color: theme.colors.text,
-    marginRight: theme.spacing.sm,
   },
-  allApptDoctor: {
-    flex: 1,
-    flexShrink: 1,
+  allApptCardTime: {
     fontSize: theme.typography.fontSizes.md,
     color: theme.colors.textSecondary,
   },
-  allApptPillWrap: {
-    flexShrink: 0,
+  allApptStatusBadge: {
+    paddingHorizontal: theme.spacing.md,
+    paddingVertical: 6,
+    borderRadius: theme.borderRadius.xl,
+  },
+  allApptStatusText: {
+    fontSize: theme.typography.fontSizes.sm,
+    fontWeight: theme.typography.fontWeights.bold,
+  },
+  allApptDoctorLabel: {
+    fontSize: theme.typography.fontSizes.xs,
+    fontWeight: theme.typography.fontWeights.semiBold,
+    color: theme.colors.textSecondary,
+    letterSpacing: 0.5,
+    marginBottom: 2,
+  },
+  allApptDoctorName: {
+    fontSize: theme.typography.fontSizes.lg,
+    fontWeight: theme.typography.fontWeights.bold,
+    color: theme.colors.text,
+    marginBottom: theme.spacing.sm,
+  },
+  allApptTreatmentBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: theme.colors.background,
+    borderRadius: theme.borderRadius.md,
+    paddingHorizontal: theme.spacing.md,
+    paddingVertical: theme.spacing.sm,
+    marginTop: theme.spacing.xs,
+  },
+  allApptTreatmentName: {
+    flex: 1,
+    fontSize: theme.typography.fontSizes.md,
+    fontWeight: theme.typography.fontWeights.semiBold,
+    color: '#7E57C2',
+    marginRight: theme.spacing.sm,
+  },
+  allApptTreatmentDate: {
+    fontSize: theme.typography.fontSizes.sm,
+    color: theme.colors.textSecondary,
   },
 });
 

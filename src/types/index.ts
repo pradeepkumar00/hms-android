@@ -148,6 +148,7 @@ export interface PatientListResult {
   total: number;
   page: number;
   limit: number;
+  totalPages: number;
   hasMore: boolean;
 }
 
@@ -198,6 +199,24 @@ export interface Appointment {
   uhid?: string | null;
   isPaymentDone?: boolean;
   remark?: string;
+  reason?: string;
+  details?: Array<{
+    treatmentDesc?: string;
+    treatmentName?: string;
+    name?: string;
+    title?: string;
+    reason?: string;
+    date?: string;
+    manageServiceId?: string;
+    expenseAmount?: number;
+  }>;
+  treatments?: Array<{
+    treatmentDesc?: string;
+    treatmentName?: string;
+    name?: string;
+    reason?: string;
+    date?: string;
+  }>;
 }
 
 // Notification Types
