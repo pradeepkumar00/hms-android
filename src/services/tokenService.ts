@@ -34,7 +34,7 @@ export interface StoredUserData {
   };
   route?: string[];
   consultFees?: number;
-  isSlot?: boolean;
+  bookingMode?: string;
   updatedAt?: string;
   __v?: number;
 }

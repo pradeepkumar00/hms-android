@@ -7,6 +7,8 @@ import {
 import { tokenService, StoredUserData } from './tokenService';
 import { LoginCredentials, LoginResponse, User, ApiResponse } from '../types';
 import { validateEmail, validatePassword } from '../utils/validation';
+import { mergeQueueIntoSlots } from '../utils/slot.util';
+import ReactNativeBlobUtil from 'react-native-blob-util';
 
 /**
  * Real Authentication Service
@@ -36,7 +38,7 @@ interface LoginApiResponse {
     };
     route: string[];
     consultFees: number;
-    isSlot: boolean;
+    bookingMode?: string;
     createdAt: string;
     updatedAt: string;
     __v: number;
@@ -121,7 +123,7 @@ class RealAuthService {
         child: apiUser.child,
         route: apiUser.route,
         consultFees: apiUser.consultFees,
-        isSlot: apiUser.isSlot,
+        bookingMode: apiUser.bookingMode,
         updatedAt: apiUser.updatedAt,
         __v: apiUser.__v,
       };
@@ -220,7 +222,7 @@ class RealAuthService {
         child: apiUser.child,
         route: apiUser.route,
         consultFees: apiUser.consultFees,
-        isSlot: apiUser.isSlot,
+        bookingMode: apiUser.bookingMode,
         updatedAt: apiUser.updatedAt,
         __v: apiUser.__v,
       };
@@ -769,6 +771,44 @@ class RealAuthService {
   }
 
   /**
+   * Book an appointment (admin calendar / counter).
+   * POST /api/admin/book-appointment
+   */
+  async bookAdminAppointment(
+    payload: {
+      doctorId: string;
+      phone: string;
+      patientName: string;
+      date: string;
+      paymentMode?: string;
+      patientId?: string;
+      slotTokenCount?: number;
+      appointmentTime?: string;
+      duration?: number;
+    },
+    token: string,
+  ): Promise<any> {
+    try {
+      const response = await apiClient.post('/admin/book-appointment', payload, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+      });
+
+      const body = response.data ?? {};
+      if (body.status >= 400) {
+        throw new Error(body.message || 'Failed to book appointment');
+      }
+
+      return body.data ?? body;
+    } catch (error) {
+      console.error('❌ Failed to book appointment:', error);
+      throw new Error(handleNetworkError(error));
+    }
+  }
+
+  /**
    * Register a new patient.
    * POST /api/add/patient
    */
@@ -800,12 +840,99 @@ class RealAuthService {
   }
 
   /**
+   * Admin booking availability dates for reschedule.
+   * GET /appointments/booking-availability/:doctorId
+   */
+  async fetchBookingAvailability(
+    doctorId: string,
+    token: string,
+  ): Promise<Array<{ date: string; label?: string }>> {
+    try {
+      const response = await apiClient.get(
+        `/appointments/booking-availability/${doctorId}`,
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+        },
+      );
+      const body = response.data?.data ?? response.data ?? {};
+      const dates = body?.dates ?? [];
+      return Array.isArray(dates) ? dates : [];
+    } catch (error) {
+      console.error('❌ Failed to fetch booking availability:', error);
+      throw new Error(handleNetworkError(error));
+    }
+  }
+
+  /**
+   * Reschedule an appointment (admin panel).
+   * POST /appointments/reschedule
+   */
+  async rescheduleAppointment(
+    payload: Record<string, unknown>,
+    token: string,
+  ): Promise<any> {
+    try {
+      const response = await apiClient.post('/appointments/reschedule', payload, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+      });
+      const body = response.data ?? {};
+      if (body.status >= 400) {
+        throw new Error(body.message || 'Failed to reschedule appointment');
+      }
+      return body.data ?? body;
+    } catch (error) {
+      console.error('❌ Failed to reschedule appointment:', error);
+      throw new Error(handleNetworkError(error));
+    }
+  }
+
+  /**
+   * Cancel an appointment.
+   * POST /appointments/cancel
+   */
+  async cancelAppointment(
+    payload: Record<string, unknown>,
+    token: string,
+  ): Promise<any> {
+    try {
+      const response = await apiClient.post('/appointments/cancel', payload, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+      });
+      const body = response.data ?? {};
+      if (body.status >= 400) {
+        throw new Error(body.message || 'Failed to cancel appointment');
+      }
+      return body.data ?? body;
+    } catch (error) {
+      console.error('❌ Failed to cancel appointment:', error);
+      throw new Error(handleNetworkError(error));
+    }
+  }
+
+  /**
    * Fetch paginated patient list.
    * GET /api/patient?page=0&limit=20
    */
   async fetchPatients(
     token: string,
-    params: { page?: number; limit?: number; search?: string } = {},
+    params: {
+      page?: number;
+      limit?: number;
+      search?: string;
+      name?: string;
+      mobileNo?: string;
+      type?: string;
+      doctorId?: string;
+    } = {},
   ): Promise<{
     patients: any[];
     total: number;
@@ -820,12 +947,26 @@ class RealAuthService {
     try {
       console.log(`👥 Fetching patients page=${page} limit=${limit}`);
 
+      const queryParams: Record<string, string | number> = { page, limit };
+
+      if (params.type?.trim()) {
+        queryParams.type = params.type.trim();
+      }
+      if (params.doctorId?.trim()) {
+        queryParams.doctorId = params.doctorId.trim();
+      }
+      if (params.name?.trim()) {
+        queryParams.name = params.name.trim();
+      }
+      if (params.mobileNo?.trim()) {
+        queryParams.mobileNo = params.mobileNo.trim();
+      }
+      if (params.search?.trim()) {
+        queryParams.search = params.search.trim();
+      }
+
       const response = await apiClient.get('/patient', {
-        params: {
-          page,
-          limit,
-          ...(params.search?.trim() ? { search: params.search.trim() } : {}),
-        },
+        params: queryParams,
         headers: {
           Authorization: `Bearer ${token}`,
           'Content-Type': 'application/json',
@@ -845,6 +986,7 @@ class RealAuthService {
           body.result ??
           body.items ??
           body.users ??
+          (Array.isArray(root.users) ? root.users : undefined) ??
           (Array.isArray(body?.data) ? body.data : undefined) ??
           [];
 
@@ -916,7 +1058,7 @@ class RealAuthService {
   async fetchPatientAppointments(
     patientId: string,
     token: string,
-  ): Promise<any[]> {
+  ): Promise<{ appointments: any[]; patient: any | null }> {
     try {
       console.log(`📅 Fetching appointments for patient ${patientId}`);
 
@@ -928,16 +1070,68 @@ class RealAuthService {
         },
       });
 
-      const appointments = response.data?.data ?? response.data ?? [];
+      const body = response.data ?? {};
+      const appointments = body.data ?? [];
+      const patient = body.patient ?? null;
       console.log(
         `✅ Patient appointments fetched: ${
           Array.isArray(appointments) ? appointments.length : 0
         }`,
       );
-      return Array.isArray(appointments) ? appointments : [];
+      return {
+        appointments: Array.isArray(appointments) ? appointments : [],
+        patient,
+      };
     } catch (error) {
       console.error('❌ Failed to fetch patient appointments:', error);
       throw error;
+    }
+  }
+
+  /**
+   * Fetch a single patient record.
+   * GET /patient/:id
+   */
+  async fetchPatientById(patientId: string, token: string): Promise<any> {
+    try {
+      const response = await apiClient.get(`/patient/${patientId}`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+      });
+      const body = response.data?.data ?? response.data ?? {};
+      return body.user ?? body.patient ?? body ?? null;
+    } catch (error) {
+      console.error('❌ Failed to fetch patient:', error);
+      throw new Error(handleNetworkError(error));
+    }
+  }
+
+  /**
+   * Update an existing patient.
+   * POST /patient/:id/edit
+   */
+  async editPatient(
+    patientId: string,
+    payload: Record<string, unknown>,
+    token: string,
+  ): Promise<any> {
+    try {
+      const response = await apiClient.post(`/patient/${patientId}/edit`, payload, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+      });
+      const body = response.data ?? {};
+      if (body.status >= 400) {
+        throw new Error(body.message || 'Failed to update patient');
+      }
+      return body.data ?? body;
+    } catch (error) {
+      console.error('❌ Failed to update patient:', error);
+      throw new Error(handleNetworkError(error));
     }
   }
 
@@ -948,17 +1142,9 @@ class RealAuthService {
     try {
       console.log(`🏥 Move to OPD for patient ${patientId}`);
 
-      const response = await apiClient.get(`/patient/${patientId}`, {
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json',
-        },
-      });
-
+      const patient = await this.fetchPatientById(patientId, token);
       console.log('✅ Move to OPD request succeeded');
-      // The patient record is nested under `user` (response shape: { status, user }).
-      const body = response.data?.data ?? response.data ?? {};
-      return body.user ?? body ?? null;
+      return patient;
     } catch (error) {
       console.error('❌ Move to OPD failed:', error);
       throw error;
@@ -1110,11 +1296,131 @@ class RealAuthService {
     }
   }
 
+  /** All patient bucket uploads (includes session-linked rows). */
+  async fetchPatientUploads(patientId: string, token: string): Promise<any[]> {
+    try {
+      const response = await apiClient.get('/file/patient/list', {
+        params: { patientId, limit: 500 },
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+      });
+      return response.data?.data ?? [];
+    } catch (error) {
+      console.error('❌ Failed to fetch patient uploads:', error);
+      return [];
+    }
+  }
+
   /**
-   * Upload a patient file (e.g. a prescription) using the presigned-URL flow:
-   *   1. POST /file/patient/upload-url to get a presigned upload URL.
-   *   2. PUT the file bytes directly to that URL.
-   * Returns the metadata object from step 1 (key/url/etc.).
+   * PUT a local file to GCS using a signed URL. Uses react-native-blob-util so
+   * content:// URIs on Android work reliably (fetch(blob) often fails there).
+   */
+  private async putLocalFileToStorage(
+    file: { uri: string; name: string; type: string },
+    uploadUrl: string,
+    method: string,
+    uploadHeaders: Record<string, string>,
+  ): Promise<number> {
+    const httpMethod = (method || 'PUT').toUpperCase() as 'PUT' | 'POST';
+    const response = await ReactNativeBlobUtil.fetch(
+      httpMethod,
+      uploadUrl,
+      uploadHeaders,
+      ReactNativeBlobUtil.wrap(file.uri),
+    );
+    const status = response.info().status;
+    if (status < 200 || status >= 300) {
+      const rawText = response.text();
+      const errorBody =
+        rawText instanceof Promise
+          ? await rawText.catch(() => '')
+          : String(rawText || '');
+      console.error('❌ Storage upload rejected:', errorBody);
+      throw new Error(`File upload failed (status ${status})`);
+    }
+    try {
+      const path = file.uri.replace(/^file:\/\//, '');
+      const stat = await ReactNativeBlobUtil.fs.stat(path);
+      return Number(stat.size) || 0;
+    } catch {
+      return 0;
+    }
+  }
+
+  private parseUploadInstructions(
+    meta: any,
+    fallbackMime: string,
+  ): { uploadUrl: string; method: string; uploadHeaders: Record<string, string> } {
+    const instructions = meta.instructions ?? {};
+    const uploadUrl =
+      instructions.url ||
+      meta.uploadUrl ||
+      meta.url ||
+      meta.signedUrl ||
+      meta.presignedUrl;
+    const method = (instructions.method || 'PUT').toUpperCase();
+    const uploadHeaders = instructions.headers || {
+      'Content-Type': fallbackMime,
+    };
+    if (!uploadUrl) {
+      throw new Error('Upload URL was not returned by the server');
+    }
+    return { uploadUrl, method, uploadHeaders };
+  }
+
+  private async stagePatientFile(
+    file: { uri: string; name: string; type: string },
+    patientId: string,
+    fileType: string,
+    token: string,
+  ): Promise<{
+    filePath: string;
+    fileName: string;
+    originalName: string;
+    mimeType: string;
+    sizeBytes: number;
+  }> {
+    const urlResponse = await apiClient.post(
+      '/file/patient/upload-url',
+      {
+        patientId,
+        type: fileType,
+        originalName: file.name,
+        mimeType: file.type,
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+      },
+    );
+
+    const meta = urlResponse.data?.data ?? urlResponse.data ?? {};
+    const { uploadUrl, method, uploadHeaders } = this.parseUploadInstructions(
+      meta,
+      file.type,
+    );
+    const sizeBytes = await this.putLocalFileToStorage(
+      file,
+      uploadUrl,
+      method,
+      uploadHeaders,
+    );
+
+    return {
+      filePath: meta.filePath,
+      fileName: meta.fileName || file.name,
+      originalName: meta.originalName || file.name,
+      mimeType: meta.mimeType || file.type,
+      sizeBytes,
+    };
+  }
+
+  /**
+   * Upload a patient file (e.g. a prescription) using the presigned-URL flow.
    */
   async uploadPatientFile(
     file: { uri: string; name: string; type: string },
@@ -1126,76 +1432,25 @@ class RealAuthService {
     try {
       console.log(`📤 Requesting upload URL for ${fileType}: ${file.name}`);
 
-      // 1. Ask the backend for a presigned upload URL.
-      const urlResponse = await apiClient.post(
-        '/file/patient/upload-url',
-        {
-          patientId,
-          type: fileType,
-          originalName: file.name,
-          mimeType: file.type,
-        },
-        {
-          headers: {
-            Authorization: `Bearer ${token}`,
-            'Content-Type': 'application/json',
-          },
-        },
+      const staged = await this.stagePatientFile(
+        file,
+        patientId,
+        fileType,
+        token,
       );
-
-      const meta = urlResponse.data?.data ?? urlResponse.data ?? {};
-
-      // The backend returns `instructions` describing exactly how to upload:
-      // the HTTP method, the signed URL, and the full set of headers that were
-      // signed (Content-Type + x-goog-meta-*). The signed URL only validates if
-      // every signed header is sent verbatim, so use them as-is.
-      const instructions = meta.instructions ?? {};
-      const uploadUrl =
-        instructions.url ||
-        meta.uploadUrl ||
-        meta.url ||
-        meta.signedUrl ||
-        meta.presignedUrl;
-      const method = (instructions.method || 'PUT').toUpperCase();
-      const uploadHeaders = instructions.headers || {
-        'Content-Type': file.type,
-      };
-
-      if (!uploadUrl) {
-        throw new Error('Upload URL was not returned by the server');
-      }
-
-      // 2. Read the local file and upload it to the presigned URL.
-      // Use the global fetch (not apiClient) so the auth header / baseURL are
-      // not attached to the storage provider's signed URL.
-      const fileResponse = await fetch(file.uri);
-      const blob = await fileResponse.blob();
-
-      const putResponse = await fetch(uploadUrl, {
-        method,
-        headers: uploadHeaders,
-        body: blob,
-      });
-
-      if (!putResponse.ok) {
-        const errorBody = await putResponse.text().catch(() => '');
-        console.error('❌ Storage upload rejected:', errorBody);
-        throw new Error(`File upload failed (status ${putResponse.status})`);
-      }
 
       console.log('✅ File uploaded to storage, confirming…');
 
-      // 3. Confirm the upload so the backend records the prescription/file.
       const confirmResponse = await apiClient.post(
         '/file/patient/confirm-upload',
         {
           patientId,
           type: fileType,
-          filePath: meta.filePath,
-          fileName: meta.fileName,
-          originalName: meta.originalName || file.name,
-          mimeType: meta.mimeType || file.type,
-          sizeBytes: blob.size,
+          filePath: staged.filePath,
+          fileName: staged.fileName,
+          originalName: staged.originalName,
+          mimeType: staged.mimeType,
+          sizeBytes: staged.sizeBytes,
           category: category || '',
           sessionId: '',
           prescriptionId: '',
@@ -1209,9 +1464,77 @@ class RealAuthService {
       );
 
       console.log('✅ Upload confirmed');
-      return confirmResponse.data?.data ?? confirmResponse.data ?? meta;
+      return confirmResponse.data?.data ?? confirmResponse.data ?? staged;
     } catch (error) {
       console.error('❌ Failed to upload patient file:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Upload one or more patient files (batch uses confirm-batch-upload).
+   */
+  async uploadPatientFiles(
+    files: Array<{ uri: string; name: string; type: string }>,
+    patientId: string,
+    fileType: string,
+    token: string,
+    category?: string,
+  ): Promise<any> {
+    if (!files.length) {
+      throw new Error('No files selected');
+    }
+    if (files.length === 1) {
+      return this.uploadPatientFile(
+        files[0],
+        patientId,
+        fileType,
+        token,
+        category,
+      );
+    }
+
+    try {
+      const staged: Array<{
+        filePath: string;
+        fileName: string;
+        originalName: string;
+        mimeType: string;
+        sizeBytes: number;
+      }> = [];
+
+      for (const file of files) {
+        staged.push(await this.stagePatientFile(file, patientId, fileType, token));
+      }
+
+      const common = {
+        patientId,
+        type: fileType,
+        category: category || 'COMMON',
+        sessionId: '',
+        prescriptionId: '',
+      };
+
+      const confirmResponse = await apiClient.post(
+        '/file/patient/confirm-batch-upload',
+        { ...common, files: staged },
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+        },
+      );
+
+      const body = confirmResponse.data ?? {};
+      if (body.status >= 400 || body.success === false) {
+        throw new Error(body.message || 'Failed to confirm batch upload');
+      }
+
+      console.log(`✅ Batch upload confirmed (${staged.length} files)`);
+      return body.data ?? body;
+    } catch (error) {
+      console.error('❌ Failed to upload patient files:', error);
       throw error;
     }
   }
@@ -1270,6 +1593,32 @@ class RealAuthService {
       return response.data?.data ?? response.data ?? null;
     } catch (error) {
       console.error('❌ Failed to delete patient file:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Remove one file from a multi-file upload row.
+   */
+  async deletePatientFilePart(
+    uploadId: string,
+    filePath: string,
+    token: string,
+  ): Promise<any> {
+    try {
+      const qs = `filePath=${encodeURIComponent(filePath)}`;
+      const response = await apiClient.delete(
+        `/file/patient/${uploadId}/file?${qs}`,
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+        },
+      );
+      return response.data?.data ?? response.data ?? null;
+    } catch (error) {
+      console.error('❌ Failed to remove file from upload:', error);
       throw error;
     }
   }
@@ -1335,8 +1684,36 @@ class RealAuthService {
   }
 
   /**
+   * Doctor schedule meta (booking mode, default custom duration).
+   * GET /slot?doctorId=
+   */
+  async fetchDoctorBookingProfile(
+    doctorId: string,
+    token: string,
+  ): Promise<{ bookingMode?: string; customBookingDuration?: number }> {
+    try {
+      const response = await apiClient.get('/slot', {
+        params: { doctorId },
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+      });
+      const body = response.data?.data ?? response.data ?? {};
+      return {
+        bookingMode: body?.bookingMode,
+        customBookingDuration: body?.customBookingDuration,
+      };
+    } catch (error) {
+      console.error('❌ Failed to fetch doctor booking profile:', error);
+      return {};
+    }
+  }
+
+  /**
    * Fetch a doctor's bookable slots for a given day. Hits
-   * GET /slot?doctorId=&date=YYYY-MM-DD&forBooking=1 and returns the slots array.
+   * GET /slot?doctorId=&date=YYYY-MM-DD&forBooking=1 and merges queue into slots
+   * (same as web book-appointment).
    */
   async fetchDoctorSlots(
     doctorId: string,
@@ -1355,11 +1732,61 @@ class RealAuthService {
       });
 
       const body = response.data?.data ?? response.data ?? {};
-      const slots = body?.slots ?? [];
-      return Array.isArray(slots) ? slots : [];
+      const slots = Array.isArray(body?.slots) ? body.slots : [];
+      const queue = Array.isArray(body?.queue) ? body.queue : [];
+      return mergeQueueIntoSlots(slots, queue);
     } catch (error) {
       console.error('❌ Failed to fetch doctor slots:', error);
       throw error;
+    }
+  }
+
+  /**
+   * Load bill/patient matches before confirming arrival.
+   * GET /whatsapp/confirm-arrival-preview
+   */
+  async fetchConfirmArrivalPreview(
+    params: { queueId: string; tenantId: string; mobileNo?: string },
+    token: string,
+  ): Promise<any> {
+    try {
+      const response = await apiClient.get('/whatsapp/confirm-arrival-preview', {
+        params,
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+      });
+      return response.data?.data ?? response.data ?? {};
+    } catch (error) {
+      console.error('❌ Failed to load confirm-arrival preview:', error);
+      throw new Error(handleNetworkError(error));
+    }
+  }
+
+  /**
+   * Confirm patient arrival for a queue entry.
+   * POST /whatsapp/confirm-arrival
+   */
+  async confirmArrival(
+    payload: Record<string, unknown>,
+    token: string,
+  ): Promise<any> {
+    try {
+      const response = await apiClient.post('/whatsapp/confirm-arrival', payload, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+      });
+      const body = response.data ?? {};
+      if (body.status >= 400) {
+        throw new Error(body.message || 'Failed to confirm arrival');
+      }
+      return body.data ?? body;
+    } catch (error) {
+      console.error('❌ Failed to confirm arrival:', error);
+      throw new Error(handleNetworkError(error));
     }
   }
 
@@ -1600,6 +2027,33 @@ class RealAuthService {
       return response.data?.data ?? response.data;
     } catch (error) {
       console.error('❌ Failed to save treatment plan:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Update an existing treatment plan.
+   * PUT /treatment-plan/:id
+   */
+  async updateTreatmentPlan(
+    planId: string,
+    payload: Record<string, unknown>,
+    token: string,
+  ): Promise<any> {
+    try {
+      console.log(`🦷 Updating treatment plan ${planId}`);
+
+      const response = await apiClient.put(`/treatment-plan/${planId}`, payload, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+      });
+
+      console.log('✅ Treatment plan updated');
+      return response.data?.data ?? response.data;
+    } catch (error) {
+      console.error('❌ Failed to update treatment plan:', error);
       throw error;
     }
   }

@@ -17,38 +17,52 @@ import DatePicker from 'react-native-date-picker';
 import Icon from 'react-native-vector-icons/MaterialIcons';
 import { useAppDispatch, useAppSelector, selectAuthToken, selectAppConfig, selectAppDataLoading, loadAppData } from '../store';
 import { theme } from '../constants/theme';
-import { Header, ModalBackdrop } from '../components';
+import { Header, ModalBackdrop, SlotPickerGrid, CustomBookingTimeFields } from '../components';
 import realAuthService from '../services/realAuthService';
 import { RegisField } from '../types';
+import { BookableSlot, isSlotSelectable } from '../utils/slot.util';
+import {
+  getDoctorBookingMode,
+  isCustomBookingMode,
+  isSlotBookingMode,
+  DEFAULT_CUSTOM_BOOKING_DURATION_MINUTES,
+  resolveCustomBookingDuration,
+} from '../utils/doctorBookingMode.util';
 import {
   buildInitialFormValues,
   extractRegisFields,
   formatDateForDisplay,
+  isBookingRegistrationField,
   isCoDoctorField,
   isDoctorField,
   isRegistrationRequiredField,
+  prefillPatientFormValues,
 } from '../utils/regisConfig';
 import { validateMobileNumber } from '../utils/validation';
+import { snapCustomBookingDuration } from '../constants/customBookingDurationOptions';
+import { defaultCustomStartTime } from '../utils/customBookingTime.util';
 
 interface AddPatientScreenProps {
   navigation: any;
+  route: {
+    params?: {
+      patientData?: Record<string, unknown>;
+      bookingMode?: 'appointment';
+      presetDoctorId?: string;
+      presetDate?: string;
+    };
+  };
 }
 
 interface DoctorOption {
   _id: string;
   name: string;
   doctorCode?: string | null;
-  isSlot?: boolean;
+  bookingMode?: string;
+  customBookingDuration?: number;
 }
 
-interface Slot {
-  _id: string;
-  startTime: string;
-  endTime?: string;
-  duration?: number;
-  isDisable?: boolean;
-  tokenCount?: number;
-}
+interface Slot extends BookableSlot {}
 
 const toApiDate = (d: Date) => {
   const yyyy = d.getFullYear();
@@ -57,11 +71,19 @@ const toApiDate = (d: Date) => {
   return `${yyyy}-${mm}-${dd}`;
 };
 
-const AddPatientScreen: React.FC<AddPatientScreenProps> = ({ navigation }) => {
+const AddPatientScreen: React.FC<AddPatientScreenProps> = ({ navigation, route }) => {
   const dispatch = useAppDispatch();
   const token = useAppSelector(selectAuthToken);
   const appConfig = useAppSelector(selectAppConfig);
   const appDataLoading = useAppSelector(selectAppDataLoading);
+  const editPatientData = route.params?.patientData;
+  const isAppointmentBooking =
+    route.params?.bookingMode === 'appointment' &&
+    !Boolean(editPatientData?._id || editPatientData?.id);
+  const presetDoctorId = String(route.params?.presetDoctorId || '').trim();
+  const presetDate = String(route.params?.presetDate || '').trim();
+  const isEditMode = Boolean(editPatientData?._id || editPatientData?.id);
+  const editPatientId = String(editPatientData?._id || editPatientData?.id || '');
 
   const [fields, setFields] = useState<RegisField[]>([]);
   const [formValues, setFormValues] = useState<Record<string, string>>({});
@@ -76,7 +98,45 @@ const AddPatientScreen: React.FC<AddPatientScreenProps> = ({ navigation }) => {
   const [slots, setSlots] = useState<Slot[]>([]);
   const [slotsLoading, setSlotsLoading] = useState(false);
   const [selectedSlot, setSelectedSlot] = useState<Slot | null>(null);
+  const [customStartTime, setCustomStartTime] = useState(defaultCustomStartTime());
+  const [customDuration, setCustomDuration] = useState(
+    String(DEFAULT_CUSTOM_BOOKING_DURATION_MINUTES),
+  );
   const [slotPickerOpen, setSlotPickerOpen] = useState(false);
+  const [bookingPatientMatches, setBookingPatientMatches] = useState<
+    Array<{ _id: string; name: string; mobileNo: string; uhid?: string | null }>
+  >([]);
+  const [bookingSelectedPatientId, setBookingSelectedPatientId] = useState<string | null>(
+    null,
+  );
+  const [bookingSelectedPatient, setBookingSelectedPatient] = useState<{
+    _id: string;
+    name: string;
+    mobileNo: string;
+    uhid?: string | null;
+  } | null>(null);
+  const [bookingPatientsLoading, setBookingPatientsLoading] = useState(false);
+  const [debouncedBookingMobile, setDebouncedBookingMobile] = useState('');
+
+  const screenTitle = isEditMode ? 'Edit Patient' : 'Add Patient';
+
+  const visibleFields = useMemo(
+    () => {
+      const base = isEditMode
+        ? fields.filter(field => !isBookingRegistrationField(field))
+        : fields;
+      if (!isAppointmentBooking) return base;
+      const allowed = new Set(['mobileNo', 'name', 'doctorId', 'date']);
+      return base.filter(
+        field =>
+          allowed.has(field.key) ||
+          (field.type === 'doctor' && isDoctorField(field.key) && !isCoDoctorField(field.key)) ||
+          field.type === 'date' ||
+          field.key === 'date',
+      );
+    },
+    [fields, isEditMode, isAppointmentBooking],
+  );
 
   const hasDateField = useMemo(
     () => fields.some(field => field.type === 'date' || field.key === 'date'),
@@ -114,7 +174,8 @@ const AddPatientScreen: React.FC<AddPatientScreenProps> = ({ navigation }) => {
     [doctors, primaryDoctorId],
   );
 
-  const doctorUsesSlots = selectedDoctor?.isSlot !== false;
+  const doctorUsesSlots = isSlotBookingMode(selectedDoctor);
+  const doctorUsesCustom = isCustomBookingMode(selectedDoctor);
 
   const primaryDoctorField = useMemo(
     () =>
@@ -135,6 +196,17 @@ const AddPatientScreen: React.FC<AddPatientScreenProps> = ({ navigation }) => {
           appointmentDate,
       ),
     [primaryDoctorField, primaryDoctorId, doctorUsesSlots, appointmentDate],
+  );
+
+  const customTimeRequired = useMemo(
+    () =>
+      Boolean(
+        primaryDoctorField &&
+          primaryDoctorId &&
+          doctorUsesCustom &&
+          appointmentDate,
+      ),
+    [primaryDoctorField, primaryDoctorId, doctorUsesCustom, appointmentDate],
   );
 
   const loadForm = useCallback(async () => {
@@ -160,13 +232,22 @@ const AddPatientScreen: React.FC<AddPatientScreenProps> = ({ navigation }) => {
       );
       console.log(`📋 Registration fields loaded: ${regisFields.length}`);
       setFields(regisFields);
-      setFormValues(buildInitialFormValues(regisFields));
+      const initial = buildInitialFormValues(regisFields);
+      const nextValues = isEditMode
+        ? { ...initial, ...prefillPatientFormValues(editPatientData) }
+        : {
+            ...initial,
+            ...(presetDoctorId ? { doctorId: presetDoctorId } : {}),
+            ...(presetDate ? { date: presetDate } : {}),
+          };
+      setFormValues(nextValues);
       setDoctors(
         (doctorList || []).map((doc: any) => ({
           _id: doc._id,
           name: doc.name,
           doctorCode: doc.doctorCode,
-          isSlot: doc.isSlot,
+          bookingMode: doc.bookingMode,
+          customBookingDuration: doc.customBookingDuration,
         })),
       );
     } catch (err) {
@@ -178,7 +259,76 @@ const AddPatientScreen: React.FC<AddPatientScreenProps> = ({ navigation }) => {
     } finally {
       setLoadingConfig(false);
     }
-  }, [token, appConfig, appDataLoading, dispatch]);
+  }, [token, appConfig, appDataLoading, dispatch, isEditMode, editPatientData, presetDoctorId, presetDate]);
+
+  useEffect(() => {
+    if (!isAppointmentBooking) return;
+    const timer = setTimeout(() => {
+      const digits = (formValues.mobileNo ?? '').replace(/\D/g, '').slice(-10);
+      setDebouncedBookingMobile(digits.length >= 3 ? digits : '');
+    }, 400);
+    return () => clearTimeout(timer);
+  }, [formValues.mobileNo, isAppointmentBooking]);
+
+  useEffect(() => {
+    if (!token || !isAppointmentBooking || !debouncedBookingMobile) {
+      setBookingPatientMatches([]);
+      setBookingPatientsLoading(false);
+      return;
+    }
+
+    let active = true;
+    (async () => {
+      setBookingPatientsLoading(true);
+      try {
+        const result = await realAuthService.fetchPatients(token, {
+          page: 0,
+          limit: 5,
+          search: debouncedBookingMobile,
+        });
+        if (!active) return;
+        const rows = (result.patients || []).filter((p: any) =>
+          String(p?.mobileNo || '').replace(/\D/g, '').includes(debouncedBookingMobile),
+        );
+        setBookingPatientMatches(
+          rows.slice(0, 5).map((p: any) => ({
+            _id: String(p._id || p.id),
+            name: p.name || '',
+            mobileNo: p.mobileNo || '',
+            uhid: p.uhid ?? null,
+          })),
+        );
+      } catch (err) {
+        console.error('Booking patient search failed:', err);
+        if (active) setBookingPatientMatches([]);
+      } finally {
+        if (active) setBookingPatientsLoading(false);
+      }
+    })();
+
+    return () => {
+      active = false;
+    };
+  }, [token, isAppointmentBooking, debouncedBookingMobile]);
+
+  const selectBookingPatient = (patient: {
+    _id: string;
+    name: string;
+    mobileNo: string;
+    uhid?: string | null;
+  }) => {
+    setBookingSelectedPatientId(patient._id);
+    setBookingSelectedPatient(patient);
+    setFieldValue('name', patient.name);
+    setFieldValue('mobileNo', patient.mobileNo);
+    setBookingPatientMatches([]);
+  };
+
+  const clearBookingPatient = () => {
+    setBookingSelectedPatientId(null);
+    setBookingSelectedPatient(null);
+    setFieldValue('name', '');
+  };
 
   useEffect(() => {
     loadForm();
@@ -189,7 +339,7 @@ const AddPatientScreen: React.FC<AddPatientScreenProps> = ({ navigation }) => {
     if (!token || !primaryDoctorId || !appointmentDate) return;
 
     const doctor = doctors.find(doc => doc._id === primaryDoctorId);
-    if (doctor?.isSlot === false) {
+    if (!isSlotBookingMode(doctor)) {
       setSelectedSlot(null);
       setSlots([]);
       setSlotsLoading(false);
@@ -221,19 +371,56 @@ const AddPatientScreen: React.FC<AddPatientScreenProps> = ({ navigation }) => {
     };
   }, [token, primaryDoctorId, appointmentDate, doctors]);
 
+  // Pre-fill default custom duration from doctor schedule settings.
+  useEffect(() => {
+    if (!token || !primaryDoctorId) return;
+    const doctor = doctors.find(doc => doc._id === primaryDoctorId);
+    if (!isCustomBookingMode(doctor)) return;
+
+    let active = true;
+    (async () => {
+      const profile = await realAuthService.fetchDoctorBookingProfile(primaryDoctorId, token);
+      if (!active) return;
+      const merged = {
+        ...doctor,
+        bookingMode: profile.bookingMode || doctor?.bookingMode,
+        customBookingDuration:
+          profile.customBookingDuration ?? doctor?.customBookingDuration,
+      };
+      const dur = snapCustomBookingDuration(resolveCustomBookingDuration(merged));
+      setCustomDuration(String(dur));
+      setDoctors(prev =>
+        prev.map(d =>
+          d._id === primaryDoctorId
+            ? {
+                ...d,
+                bookingMode: merged.bookingMode,
+                customBookingDuration: merged.customBookingDuration,
+              }
+            : d,
+        ),
+      );
+    })();
+
+    return () => {
+      active = false;
+    };
+  }, [token, primaryDoctorId, doctorUsesCustom]);
+
   // Open the slot picker once doctor and date are set and slots have loaded.
   useEffect(() => {
+    if (isEditMode) return;
     if (!primaryDoctorId || !appointmentDate || slotsLoading) return;
 
     const doctor = doctors.find(doc => doc._id === primaryDoctorId);
-    if (doctor?.isSlot === false) return;
+    if (!isSlotBookingMode(doctor)) return;
 
     const task = InteractionManager.runAfterInteractions(() => {
       setSlotPickerOpen(true);
     });
 
     return () => task.cancel();
-  }, [primaryDoctorId, appointmentDate, slotsLoading, doctors]);
+  }, [primaryDoctorId, appointmentDate, slotsLoading, doctors, isEditMode]);
 
   const onRefresh = useCallback(async () => {
     if (!token || refreshing) return;
@@ -261,7 +448,8 @@ const AddPatientScreen: React.FC<AddPatientScreenProps> = ({ navigation }) => {
           _id: doc._id,
           name: doc.name,
           doctorCode: doc.doctorCode,
-          isSlot: doc.isSlot,
+          bookingMode: doc.bookingMode,
+          customBookingDuration: doc.customBookingDuration,
         })),
       );
     } catch (err) {
@@ -282,6 +470,10 @@ const AddPatientScreen: React.FC<AddPatientScreenProps> = ({ navigation }) => {
 
   const setFieldValue = (key: string, value: string) => {
     setFormValues(prev => ({ ...prev, [key]: value }));
+    if (key === 'mobileNo' && isAppointmentBooking) {
+      setBookingSelectedPatientId(null);
+      setBookingSelectedPatient(null);
+    }
     if (errors[key]) {
       setErrors(prev => {
         const next = { ...prev };
@@ -298,7 +490,7 @@ const AddPatientScreen: React.FC<AddPatientScreenProps> = ({ navigation }) => {
       if (!token || !resolvedDoctorId || !resolvedDate) return;
 
       const doctor = doctors.find(doc => doc._id === resolvedDoctorId);
-      if (doctor?.isSlot === false) {
+      if (!isSlotBookingMode(doctor)) {
         setSelectedSlot(null);
         setSlots([]);
         return;
@@ -336,7 +528,7 @@ const AddPatientScreen: React.FC<AddPatientScreenProps> = ({ navigation }) => {
 
     if (!hasDateField && isPrimaryDoctor && optionValue) {
       const doctor = doctors.find(doc => doc._id === optionValue);
-      if (doctor?.isSlot === false) {
+      if (!isSlotBookingMode(doctor)) {
         setSelectedSlot(null);
         setSlots([]);
         return;
@@ -376,7 +568,7 @@ const AddPatientScreen: React.FC<AddPatientScreenProps> = ({ navigation }) => {
   const validateForm = () => {
     const nextErrors: Record<string, string> = {};
 
-    fields.forEach(field => {
+    visibleFields.forEach(field => {
       if (!isRegistrationRequiredField(field)) return;
 
       const value = (formValues[field.key] ?? '').trim();
@@ -385,7 +577,7 @@ const AddPatientScreen: React.FC<AddPatientScreenProps> = ({ navigation }) => {
       }
     });
 
-    const mobileField = fields.find(field => field.key === 'mobileNo');
+    const mobileField = visibleFields.find(field => field.key === 'mobileNo');
     if (mobileField) {
       const mobile = (formValues.mobileNo ?? '').trim();
       if (mobile) {
@@ -396,12 +588,68 @@ const AddPatientScreen: React.FC<AddPatientScreenProps> = ({ navigation }) => {
       }
     }
 
-    if (slotSelectionRequired && !selectedSlot) {
+    if (!isEditMode && slotSelectionRequired && !selectedSlot) {
       nextErrors.slot = 'Please select a slot';
+    } else if (
+      !isEditMode &&
+      slotSelectionRequired &&
+      selectedSlot &&
+      !isSlotSelectable(selectedSlot)
+    ) {
+      nextErrors.slot = 'Please select an available slot';
+    }
+
+    if (!isEditMode && customTimeRequired) {
+      const duration = Number(customDuration);
+      if (!customStartTime.trim()) {
+        nextErrors.customStartTime = 'Start time is required';
+      }
+      if (!customDuration.trim() || isNaN(duration) || duration < 1) {
+        nextErrors.customDuration = 'Select a duration';
+      }
     }
 
     setErrors(nextErrors);
     return Object.keys(nextErrors).length === 0;
+  };
+
+  const buildBookAppointmentPayload = () => {
+    const getValue = (key: string) => (formValues[key] ?? '').trim();
+    const phone = getValue('mobileNo').replace(/\D/g, '').slice(-10);
+    const appointmentDateValue = hasDateField
+      ? getValue(dateFieldKey)
+      : appointmentDate;
+
+    const payload: {
+      doctorId: string;
+      phone: string;
+      patientName: string;
+      date: string;
+      paymentMode: string;
+      patientId?: string;
+      slotTokenCount?: number;
+      appointmentTime?: string;
+      duration?: number;
+    } = {
+      doctorId: getValue(primaryDoctorFieldKey) || getValue('doctorId'),
+      phone,
+      patientName: getValue('name'),
+      date: appointmentDateValue,
+      paymentMode: 'cash',
+    };
+
+    if (bookingSelectedPatientId) {
+      payload.patientId = bookingSelectedPatientId;
+    }
+    if (selectedSlot?.tokenCount != null) {
+      payload.slotTokenCount = Number(selectedSlot.tokenCount);
+    }
+    if (doctorUsesCustom) {
+      payload.appointmentTime = customStartTime;
+      payload.duration = Number(customDuration);
+    }
+
+    return payload;
   };
 
   const buildPayload = () => {
@@ -430,7 +678,7 @@ const AddPatientScreen: React.FC<AddPatientScreenProps> = ({ navigation }) => {
       careTaker: getValue('careTaker'),
       visitType: visitTypeLabel,
       doctorName: doctor?.name ?? '',
-      patientType: getValue('patientType'),
+      patientType: getValue('patientType') || 'opd',
     };
 
     // Include any custom dynamic fields inside patient.
@@ -439,20 +687,33 @@ const AddPatientScreen: React.FC<AddPatientScreenProps> = ({ navigation }) => {
       patient[field.key] = getValue(field.key);
     });
 
+    const mode = getDoctorBookingMode(doctor);
+    const appointmentTime =
+      selectedSlot?.startTime ?? (doctorUsesCustom ? customStartTime : null);
+
     return {
       doctorId,
       coDoctorId,
       patient,
       careTaker: getValue('careTaker'),
       registerCharge: 0,
-      appointmentTime: selectedSlot?.startTime ?? null,
-      appointmentType: selectedSlot ? 'SLOT' : 'TOKEN',
+      appointmentTime,
+      appointmentType: mode === 'QUEUE' ? 'TOKEN' : 'SLOT',
       ...(selectedSlot?.tokenCount != null
         ? { tokenCount: selectedSlot.tokenCount }
         : {}),
+      ...(doctorUsesCustom ? { duration: Number(customDuration) } : {}),
       date: appointmentDateValue,
       visitType: visitTypeLabel.toUpperCase().replace(/\s+/g, '_'),
     };
+  };
+
+  const buildEditPayload = () => {
+    const payload: Record<string, string> = {};
+    visibleFields.forEach(field => {
+      payload[field.key] = String(formValues[field.key] ?? '').trim();
+    });
+    return payload;
   };
 
   const handleSubmit = async () => {
@@ -461,6 +722,26 @@ const AddPatientScreen: React.FC<AddPatientScreenProps> = ({ navigation }) => {
 
     setSubmitting(true);
     try {
+      if (isEditMode) {
+        await realAuthService.editPatient(
+          editPatientId,
+          buildEditPayload(),
+          token,
+        );
+        Alert.alert('Success', 'Patient updated successfully.', [
+          { text: 'OK', onPress: () => navigation.goBack() },
+        ]);
+        return;
+      }
+
+      if (isAppointmentBooking) {
+        await realAuthService.bookAdminAppointment(buildBookAppointmentPayload(), token);
+        Alert.alert('Success', 'Appointment booked successfully.', [
+          { text: 'OK', onPress: () => navigation.goBack() },
+        ]);
+        return;
+      }
+
       await realAuthService.registerPatient(buildPayload(), token);
       Alert.alert('Success', 'Patient registered successfully.', [
         {
@@ -470,8 +751,18 @@ const AddPatientScreen: React.FC<AddPatientScreenProps> = ({ navigation }) => {
       ]);
     } catch (err) {
       Alert.alert(
-        'Registration Failed',
-        err instanceof Error ? err.message : 'Could not register patient.',
+        isEditMode
+          ? 'Update Failed'
+          : isAppointmentBooking
+            ? 'Booking Failed'
+            : 'Registration Failed',
+        err instanceof Error
+          ? err.message
+          : isEditMode
+            ? 'Could not update patient.'
+            : isAppointmentBooking
+              ? 'Could not book appointment.'
+              : 'Could not register patient.',
       );
     } finally {
       setSubmitting(false);
@@ -588,6 +879,44 @@ const AddPatientScreen: React.FC<AddPatientScreenProps> = ({ navigation }) => {
         )}
 
         {error ? <Text style={styles.errorText}>{error}</Text> : null}
+
+        {isAppointmentBooking && isMobileField ? (
+          <>
+            {bookingPatientsLoading ? (
+              <Text style={styles.bookingHint}>Searching patients…</Text>
+            ) : null}
+            {bookingPatientMatches.length > 0 && !bookingSelectedPatientId ? (
+              <View style={styles.bookingMatches}>
+                {bookingPatientMatches.map(patient => (
+                  <TouchableOpacity
+                    key={patient._id}
+                    style={styles.bookingMatchItem}
+                    onPress={() => selectBookingPatient(patient)}
+                  >
+                    <Text style={styles.bookingMatchName}>{patient.name}</Text>
+                    <Text style={styles.bookingMatchMeta}>
+                      {patient.mobileNo}
+                      {patient.uhid ? ` · UHID ${patient.uhid}` : ''}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            ) : null}
+            {bookingSelectedPatient ? (
+              <View style={styles.bookingLinked}>
+                <View style={styles.bookingLinkedInfo}>
+                  <Text style={styles.bookingMatchName}>{bookingSelectedPatient.name}</Text>
+                  <Text style={styles.bookingMatchMeta}>
+                    UHID {bookingSelectedPatient.uhid || '—'} · {bookingSelectedPatient.mobileNo}
+                  </Text>
+                </View>
+                <TouchableOpacity onPress={clearBookingPatient}>
+                  <Text style={styles.bookingChangeText}>Change</Text>
+                </TouchableOpacity>
+              </View>
+            ) : null}
+          </>
+        ) : null}
       </View>
     );
   };
@@ -596,7 +925,7 @@ const AddPatientScreen: React.FC<AddPatientScreenProps> = ({ navigation }) => {
     return (
       <View style={styles.container}>
         <Header
-          title="Add Patient"
+          title={screenTitle}
           showHomeIcon
           onHomePress={() => navigation.popToTop()}
           onNotificationPress={() => navigation.navigate('Inbox')}
@@ -613,7 +942,7 @@ const AddPatientScreen: React.FC<AddPatientScreenProps> = ({ navigation }) => {
     return (
       <View style={styles.container}>
         <Header
-          title="Add Patient"
+          title={screenTitle}
           showHomeIcon
           onHomePress={() => navigation.popToTop()}
           onNotificationPress={() => navigation.navigate('Inbox')}
@@ -629,7 +958,7 @@ const AddPatientScreen: React.FC<AddPatientScreenProps> = ({ navigation }) => {
   return (
     <View style={styles.container}>
       <Header
-        title="Add Patient"
+        title={screenTitle}
         showHomeIcon
         onHomePress={() => navigation.popToTop()}
         onNotificationPress={() => navigation.navigate('Inbox')}
@@ -652,15 +981,19 @@ const AddPatientScreen: React.FC<AddPatientScreenProps> = ({ navigation }) => {
             />
           }
         >
-          <Text style={styles.pageTitle}>Add Patient</Text>
+          <Text style={styles.pageTitle}>{screenTitle}</Text>
           <Text style={styles.pageSubtitle}>
-            Register a new patient. Select the doctor in the form below.
+            {isEditMode
+              ? 'Update patient details below.'
+              : isAppointmentBooking
+                ? 'Search by mobile, select patient UHID, or enter a new name.'
+                : 'Register a new patient. Select the doctor in the form below.'}
           </Text>
 
           <View style={styles.formCard}>
-            <Text style={styles.formHeading}>Add Patient</Text>
+            <Text style={styles.formHeading}>{screenTitle}</Text>
 
-            {fields.length === 0 ? (
+            {visibleFields.length === 0 ? (
               <View style={styles.centerState}>
                 <Icon name="info-outline" size={40} color={theme.colors.disabled} />
                 <Text style={styles.emptyText}>
@@ -672,9 +1005,40 @@ const AddPatientScreen: React.FC<AddPatientScreenProps> = ({ navigation }) => {
               </View>
             ) : (
               <>
-                {fields.map(renderField)}
+                {visibleFields.map(renderField)}
 
-                {slotSelectionRequired ? (
+                {!isEditMode && customTimeRequired ? (
+                  <CustomBookingTimeFields
+                    startTime={customStartTime}
+                    durationMinutes={customDuration}
+                    onStartTimeChange={time => {
+                      setCustomStartTime(time);
+                      if (errors.customStartTime) {
+                        setErrors(prev => {
+                          const next = { ...prev };
+                          delete next.customStartTime;
+                          return next;
+                        });
+                      }
+                    }}
+                    onDurationChange={minutes => {
+                      setCustomDuration(minutes);
+                      if (errors.customDuration) {
+                        setErrors(prev => {
+                          const next = { ...prev };
+                          delete next.customDuration;
+                          return next;
+                        });
+                      }
+                    }}
+                    errors={{
+                      startTime: errors.customStartTime,
+                      duration: errors.customDuration,
+                    }}
+                  />
+                ) : null}
+
+                {!isEditMode && slotSelectionRequired ? (
                   <View style={styles.fieldBlock}>
                     <Text style={styles.fieldLabel}>Appointment Slot *</Text>
                     <TouchableOpacity
@@ -731,7 +1095,9 @@ const AddPatientScreen: React.FC<AddPatientScreenProps> = ({ navigation }) => {
                 {submitting ? (
                   <ActivityIndicator size="small" color={theme.colors.surface} />
                 ) : (
-                  <Text style={styles.submitButtonText}>Submit</Text>
+                  <Text style={styles.submitButtonText}>
+                    {isEditMode ? 'Save' : isAppointmentBooking ? 'Book' : 'Submit'}
+                  </Text>
                 )}
               </TouchableOpacity>
             )}
@@ -773,59 +1139,23 @@ const AddPatientScreen: React.FC<AddPatientScreenProps> = ({ navigation }) => {
             {formatDateForDisplay(appointmentDate)}
           </Text>
 
-          {slotsLoading ? (
-            <ActivityIndicator
-              style={styles.slotModalLoader}
-              size="large"
-              color={theme.colors.primary}
-            />
-          ) : slots.length === 0 ? (
-            <Text style={styles.slotModalEmpty}>
-              No slots available for this doctor on the selected date.
-            </Text>
-          ) : (
-            <ScrollView showsVerticalScrollIndicator={false}>
-              <View style={styles.slotCardGrid}>
-                {slots.map(slot => {
-                  const active = slot._id === selectedSlot?._id;
-                  const disabled = !!slot.isDisable;
-                  return (
-                    <TouchableOpacity
-                      key={slot._id}
-                      style={[
-                        styles.slotCard,
-                        active && styles.slotCardActive,
-                        disabled && styles.slotCardDisabled,
-                      ]}
-                      activeOpacity={0.8}
-                      disabled={disabled}
-                      onPress={() => {
-                        setSelectedSlot(slot);
-                        setSlotPickerOpen(false);
-                        if (errors.slot) {
-                          setErrors(prev => {
-                            const next = { ...prev };
-                            delete next.slot;
-                            return next;
-                          });
-                        }
-                      }}
-                    >
-                      <Text style={styles.slotCardLine}>
-                        Time: {slot.startTime}
-                      </Text>
-                      <Text style={styles.slotCardLine}>
-                        Duration: {slot.duration ?? 30}
-                      </Text>
-                      <Text style={styles.slotCardLine}>
-                        Token: {slot.tokenCount ?? '—'}
-                      </Text>
-                    </TouchableOpacity>
-                  );
-                })}
-              </View>
-            </ScrollView>
-          )}
+          <SlotPickerGrid
+            slots={slots}
+            selectedSlotId={selectedSlot?._id}
+            loading={slotsLoading}
+            onSelect={slot => {
+              if (!isSlotSelectable(slot)) return;
+              setSelectedSlot(slot);
+              setSlotPickerOpen(false);
+              if (errors.slot) {
+                setErrors(prev => {
+                  const next = { ...prev };
+                  delete next.slot;
+                  return next;
+                });
+              }
+            }}
+          />
         </View>
       </ModalBackdrop>
     </View>
@@ -909,6 +1239,53 @@ const styles = StyleSheet.create({
   },
   placeholderText: {
     color: theme.colors.placeholder,
+  },
+  bookingHint: {
+    marginTop: theme.spacing.xs,
+    fontSize: theme.typography.fontSizes.sm,
+    color: theme.colors.textSecondary,
+  },
+  bookingMatches: {
+    marginTop: theme.spacing.xs,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    borderRadius: theme.borderRadius.md,
+    overflow: 'hidden',
+  },
+  bookingMatchItem: {
+    paddingHorizontal: theme.spacing.md,
+    paddingVertical: theme.spacing.sm,
+    borderBottomWidth: 1,
+    borderBottomColor: theme.colors.border,
+  },
+  bookingMatchName: {
+    fontSize: theme.typography.fontSizes.md,
+    fontWeight: theme.typography.fontWeights.medium,
+    color: theme.colors.text,
+  },
+  bookingMatchMeta: {
+    marginTop: 2,
+    fontSize: theme.typography.fontSizes.sm,
+    color: theme.colors.textSecondary,
+  },
+  bookingLinked: {
+    marginTop: theme.spacing.sm,
+    padding: theme.spacing.md,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    borderRadius: theme.borderRadius.md,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: theme.spacing.sm,
+  },
+  bookingLinkedInfo: {
+    flex: 1,
+  },
+  bookingChangeText: {
+    color: theme.colors.primary,
+    fontSize: theme.typography.fontSizes.sm,
+    fontWeight: theme.typography.fontWeights.semiBold,
   },
   dropdownList: {
     marginTop: theme.spacing.xs,

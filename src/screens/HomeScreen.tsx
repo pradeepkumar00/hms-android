@@ -48,6 +48,10 @@ const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
   };
 
   const handleTilePress = (screen: keyof RootStackParamList) => {
+    if (screen === 'AddPatient') {
+      navigation.navigate('AddPatient', { bookingMode: 'appointment' });
+      return;
+    }
     navigation.navigate(screen);
   };
 

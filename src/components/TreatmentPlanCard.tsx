@@ -20,6 +20,10 @@ export interface TreatmentPlanItem {
   expenseAmount?: number;
   qty?: number;
   teeth?: Record<string, number[]>;
+  description?: string;
+  appointment?: string;
+  manageServiceId?: string;
+  isAdvanced?: boolean;
 }
 
 export interface TreatmentPlanPayment {
@@ -55,6 +59,8 @@ export interface TreatmentPlanRecord {
 interface TreatmentPlanCardProps {
   plan: TreatmentPlanRecord;
   patientId?: string;
+  canManage?: boolean;
+  onEdit?: (plan: TreatmentPlanRecord) => void;
   onCancelled?: () => void | Promise<void>;
 }
 
@@ -153,6 +159,8 @@ const CancelNoteBox = ({
 const TreatmentPlanCard: React.FC<TreatmentPlanCardProps> = ({
   plan,
   patientId,
+  canManage = true,
+  onEdit,
   onCancelled,
 }) => {
   const token = useAppSelector(selectAuthToken);
@@ -172,8 +180,16 @@ const TreatmentPlanCard: React.FC<TreatmentPlanCardProps> = ({
   const dueAmount = planDueAmount(plan);
   const resolvedPatientId = patientId || plan.patientId || '';
   const groupId = planGroupId(plan);
+  const canEdit = canManage && !!plan._id && !cancelled;
+  const canCancel =
+    !!groupId && !cancelled && (plan.totalAmount ?? 0) > 0;
 
   const toggleExpanded = () => setExpanded(prev => !prev);
+
+  const handleEditPress = () => {
+    if (!canEdit) return;
+    onEdit?.(plan);
+  };
 
   const openCancelModal = () => {
     if (!resolvedPatientId || !groupId) {
@@ -234,13 +250,13 @@ const TreatmentPlanCard: React.FC<TreatmentPlanCardProps> = ({
   return (
     <>
       <View style={styles.card}>
-        <TouchableOpacity
-          style={styles.header}
-          activeOpacity={0.9}
-          onPress={toggleExpanded}
-        >
-          <View style={styles.headerLeft}>
-            <Icon name="credit-card" size={20} color={theme.colors.surface} />
+        <View style={styles.header}>
+          <TouchableOpacity
+            style={styles.headerLeft}
+            activeOpacity={0.9}
+            onPress={toggleExpanded}
+          >
+            <Icon name="credit-card" size={16} color={theme.colors.surface} />
             <View style={styles.headerTextWrap}>
               <Text style={styles.headerTitle}>Treatment Plan</Text>
               <Text style={styles.headerSubtitle}>
@@ -248,8 +264,17 @@ const TreatmentPlanCard: React.FC<TreatmentPlanCardProps> = ({
                 {teethCount} teeth
               </Text>
             </View>
-          </View>
+          </TouchableOpacity>
           <View style={styles.headerRight}>
+            {canEdit ? (
+              <TouchableOpacity
+                style={styles.editBtn}
+                activeOpacity={0.85}
+                onPress={handleEditPress}
+              >
+                <Text style={styles.editBtnText}>Edit</Text>
+              </TouchableOpacity>
+            ) : null}
             {cancelled ? (
               <View style={styles.cancelledBadge}>
                 <Text style={styles.cancelledBadgeText}>Cancelled</Text>
@@ -263,13 +288,15 @@ const TreatmentPlanCard: React.FC<TreatmentPlanCardProps> = ({
                 <Text style={styles.dueBadgeText}>Due</Text>
               </View>
             ) : null}
-            <Icon
-              name={expanded ? 'expand-more' : 'chevron-right'}
-              size={22}
-              color={theme.colors.surface}
-            />
+            <TouchableOpacity onPress={toggleExpanded} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+              <Icon
+                name={expanded ? 'expand-more' : 'chevron-right'}
+                size={20}
+                color={theme.colors.surface}
+              />
+            </TouchableOpacity>
           </View>
-        </TouchableOpacity>
+        </View>
 
         <TouchableOpacity
           style={styles.summaryBody}
@@ -391,7 +418,7 @@ const TreatmentPlanCard: React.FC<TreatmentPlanCardProps> = ({
               </>
             )}
 
-            {!cancelled && (
+            {!cancelled && canCancel && (
               <TouchableOpacity
                 style={styles.cancelBtn}
                 activeOpacity={0.85}
@@ -400,6 +427,16 @@ const TreatmentPlanCard: React.FC<TreatmentPlanCardProps> = ({
                 <Text style={styles.cancelBtnText}>Cancel Treatment</Text>
               </TouchableOpacity>
             )}
+
+            {canEdit ? (
+              <TouchableOpacity
+                style={styles.editPlanBtn}
+                activeOpacity={0.85}
+                onPress={handleEditPress}
+              >
+                <Text style={styles.editPlanBtnText}>Edit Plan</Text>
+              </TouchableOpacity>
+            ) : null}
 
             {cancelled && !!cancellationRemark && (
               <CancelNoteBox
@@ -470,10 +507,10 @@ const styles = StyleSheet.create({
   card: {
     borderWidth: 1,
     borderColor: theme.colors.border,
-    borderRadius: theme.borderRadius.lg,
+    borderRadius: theme.borderRadius.md,
     overflow: 'hidden',
     backgroundColor: theme.colors.surface,
-    marginBottom: theme.spacing.lg,
+    marginBottom: theme.spacing.sm,
     ...theme.shadows.sm,
   },
   header: {
@@ -481,8 +518,8 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
     backgroundColor: theme.colors.primary,
-    paddingHorizontal: theme.spacing.md,
-    paddingVertical: theme.spacing.md,
+    paddingHorizontal: theme.spacing.sm,
+    paddingVertical: 8,
   },
   headerLeft: {
     flexDirection: 'row',
@@ -494,19 +531,32 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   headerTitle: {
-    fontSize: theme.typography.fontSizes.lg,
+    fontSize: theme.typography.fontSizes.sm,
     fontWeight: theme.typography.fontWeights.bold,
     color: theme.colors.surface,
   },
   headerSubtitle: {
-    fontSize: theme.typography.fontSizes.sm,
+    fontSize: theme.typography.fontSizes.xs,
     color: 'rgba(255,255,255,0.92)',
-    marginTop: 2,
+    marginTop: 1,
   },
   headerRight: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: theme.spacing.sm,
+    gap: theme.spacing.xs,
+  },
+  editBtn: {
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.55)',
+    borderRadius: theme.borderRadius.sm,
+    paddingVertical: 3,
+    paddingHorizontal: theme.spacing.sm,
+    backgroundColor: 'rgba(255,255,255,0.12)',
+  },
+  editBtnText: {
+    fontSize: theme.typography.fontSizes.xs,
+    fontWeight: theme.typography.fontWeights.semiBold,
+    color: theme.colors.surface,
   },
   statusBadge: {
     backgroundColor: '#43A047',
@@ -515,7 +565,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: theme.spacing.sm,
   },
   statusBadgeText: {
-    fontSize: theme.typography.fontSizes.sm,
+    fontSize: theme.typography.fontSizes.xs,
     fontWeight: theme.typography.fontWeights.semiBold,
     color: theme.colors.surface,
   },
@@ -542,8 +592,8 @@ const styles = StyleSheet.create({
     color: theme.colors.surface,
   },
   summaryBody: {
-    paddingHorizontal: theme.spacing.md,
-    paddingVertical: theme.spacing.md,
+    paddingHorizontal: theme.spacing.sm,
+    paddingVertical: theme.spacing.sm,
     backgroundColor: theme.colors.surface,
   },
   summaryRow: {
@@ -570,12 +620,12 @@ const styles = StyleSheet.create({
     letterSpacing: 0.4,
   },
   summaryBillValue: {
-    fontSize: theme.typography.fontSizes.lg,
+    fontSize: theme.typography.fontSizes.md,
     fontWeight: theme.typography.fontWeights.bold,
     color: theme.colors.success,
   },
   summaryValue: {
-    fontSize: theme.typography.fontSizes.md,
+    fontSize: theme.typography.fontSizes.sm,
     fontWeight: theme.typography.fontWeights.bold,
     color: theme.colors.text,
   },
@@ -599,12 +649,12 @@ const styles = StyleSheet.create({
     paddingBottom: theme.spacing.sm,
   },
   treatmentCard: {
-    marginHorizontal: theme.spacing.md,
-    marginBottom: theme.spacing.sm,
+    marginHorizontal: theme.spacing.sm,
+    marginBottom: theme.spacing.xs,
     borderWidth: 1,
     borderColor: theme.colors.border,
-    borderRadius: theme.borderRadius.lg,
-    padding: theme.spacing.md,
+    borderRadius: theme.borderRadius.md,
+    padding: theme.spacing.sm,
     backgroundColor: theme.colors.surface,
   },
   treatmentTopRow: {
@@ -614,13 +664,13 @@ const styles = StyleSheet.create({
   },
   treatmentName: {
     flex: 1,
-    fontSize: theme.typography.fontSizes.lg,
+    fontSize: theme.typography.fontSizes.sm,
     fontWeight: theme.typography.fontWeights.bold,
     color: theme.colors.text,
     marginRight: theme.spacing.sm,
   },
   treatmentAmount: {
-    fontSize: theme.typography.fontSizes.lg,
+    fontSize: theme.typography.fontSizes.sm,
     fontWeight: theme.typography.fontWeights.bold,
     color: theme.colors.text,
   },
@@ -701,20 +751,35 @@ const styles = StyleSheet.create({
     color: theme.colors.textSecondary,
   },
   cancelBtn: {
-    marginHorizontal: theme.spacing.md,
-    marginTop: theme.spacing.sm,
-    marginBottom: theme.spacing.md,
+    marginHorizontal: theme.spacing.sm,
+    marginTop: theme.spacing.xs,
+    marginBottom: theme.spacing.sm,
     borderWidth: 1,
     borderColor: theme.colors.primary,
-    borderRadius: theme.borderRadius.lg,
-    paddingVertical: theme.spacing.md,
+    borderRadius: theme.borderRadius.md,
+    paddingVertical: theme.spacing.sm,
     alignItems: 'center',
     backgroundColor: '#EEF0FF',
   },
   cancelBtnText: {
-    fontSize: theme.typography.fontSizes.md,
+    fontSize: theme.typography.fontSizes.sm,
     fontWeight: theme.typography.fontWeights.semiBold,
     color: theme.colors.primary,
+  },
+  editPlanBtn: {
+    marginHorizontal: theme.spacing.sm,
+    marginBottom: theme.spacing.xs,
+    borderWidth: 1,
+    borderColor: '#C7D2FE',
+    borderRadius: theme.borderRadius.md,
+    paddingVertical: theme.spacing.sm,
+    alignItems: 'center',
+    backgroundColor: '#EEF2FF',
+  },
+  editPlanBtnText: {
+    fontSize: theme.typography.fontSizes.sm,
+    fontWeight: theme.typography.fontWeights.semiBold,
+    color: '#4F46E5',
   },
   cancelNoteBox: {
     borderWidth: 1,

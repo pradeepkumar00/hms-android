@@ -22,7 +22,7 @@ export interface User {
   };
   route?: string[]; // User routes/permissions
   consultFees?: number; // Consultation fees
-  isSlot?: boolean; // Slot availability
+  bookingMode?: string;
   updatedAt?: string; // Last update timestamp
   __v?: number; // Version key
 }
@@ -139,6 +139,7 @@ export interface Patient {
   uhid?: string | null;
   gender?: string;
   age?: number;
+  address?: string;
   type?: string;
   admitType?: string | null;
 }
@@ -174,6 +175,9 @@ export interface Appointment {
   patientId?: string | null;
   patientName: string;
   mobileNo?: string;
+  gender?: string | null;
+  age?: number | string | null;
+  address?: string | null;
   doctorId?: string;
   doctorName?: string;
   doctorCode?: string;
@@ -258,9 +262,21 @@ export type RootStackParamList = {
     type?: 'created' | 'assigned';
     title: string;
   }; // Generic task list screen with filters
-  OPD: { appointment?: Appointment; patient?: any }; // OPD consultation screen
+  OPD: {
+    appointment?: Appointment;
+    patient?: any;
+    openFollowup?: boolean;
+    openUpload?: 'prescription' | 'procedure' | 'lab';
+    openTreatmentPlan?: boolean;
+    followupLinkedTreatments?: Array<{ treatmentDesc: string; date?: string }>;
+  };
   PatientList: undefined;
-  AddPatient: undefined;
+  AddPatient: {
+    patientData?: Record<string, unknown>;
+    bookingMode?: 'appointment';
+    presetDoctorId?: string;
+    presetDate?: string;
+  } | undefined;
 };
 
 // UI Types

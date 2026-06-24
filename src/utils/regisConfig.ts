@@ -252,3 +252,28 @@ export const formatDateForDisplay = (value?: string) => {
   const mm = String(date.getMonth() + 1).padStart(2, '0');
   return `${dd}/${mm}/${date.getFullYear()}`;
 };
+
+export const isBookingRegistrationField = (field: RegisField): boolean =>
+  field.key === 'visitType' ||
+  field.type === 'date' ||
+  field.type === 'doctor' ||
+  isDoctorField(field.key) ||
+  isCoDoctorField(field.key);
+
+export const prefillPatientFormValues = (
+  patient: Record<string, unknown> | null | undefined,
+): Record<string, string> => {
+  if (!patient) return {};
+  const src = (patient.user ?? patient.patient ?? patient) as Record<
+    string,
+    unknown
+  >;
+  const values: Record<string, string> = {};
+  Object.entries(src).forEach(([key, value]) => {
+    if (value == null) return;
+    if (typeof value === 'string' || typeof value === 'number') {
+      values[key] = String(value);
+    }
+  });
+  return values;
+};

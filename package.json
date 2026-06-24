@@ -1,6 +1,6 @@
 {
   "name": "HospitalManagement",
-  "version": "0.0.9",
+  "version": "1.0.1",
   "private": true,
   "scripts": {
     "android": "cross-env ENVFILE=.env.development react-native run-android",
@@ -17,6 +17,7 @@
     "build:android:dev": "cd android && ./gradlew assembleDebug",
     "build:android:staging": "cd android && ./gradlew assembleStagingDebug",
     "build:android:prod": "cd android && ./gradlew assembleRelease",
+    "build:android:internal": "cd android && ./gradlew assembleInternalRelease",
     "env:dev": "cp .env.development .env && echo '✅ Switched to DEVELOPMENT environment'",
     "env:staging": "cp .env.staging .env && echo '✅ Switched to STAGING environment'",
     "env:prod": "cp .env.production .env && echo '⚠️  WARNING: Switched to PRODUCTION environment'",
@@ -42,6 +43,7 @@
     "@reduxjs/toolkit": "^2.8.2",
     "axios": "^1.11.0",
     "base-64": "^1.0.0",
+    "firebase": "10.14.1",
     "react": "19.1.0",
     "react-native": "0.81.0",
     "react-native-blob-util": "^0.24.9",

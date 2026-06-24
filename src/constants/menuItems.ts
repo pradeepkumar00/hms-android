@@ -24,7 +24,7 @@ export const HOME_MENU_ITEMS: MenuItem[] = [
   },
   {
     key: 'patients',
-    label: 'Patients',
+    label: 'OPD Patients',
     icon: 'people',
     screen: 'PatientList',
   },

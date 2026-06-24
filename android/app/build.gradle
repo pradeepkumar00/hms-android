@@ -8,6 +8,7 @@ apply plugin: "com.google.gms.google-services"
 // An explicit ENVFILE env var still overrides this.
 project.ext.envConfigFiles = [
     release: ".env.production",
+    internalRelease: ".env.production",
     debug: ".env.development",
 ]
 apply from: project(':react-native-config').projectDir.getPath() + "/dotenv.gradle"
@@ -17,6 +18,7 @@ apply from: project(':react-native-config').projectDir.getPath() + "/dotenv.grad
  * By default you don't need to apply any configuration, just uncomment the lines you need.
  */
 react {
+    nodeExecutableAndArgs = ["/opt/homebrew/opt/node@20/bin/node"]
     /* Folders */
     //   The root of your project, i.e. where "package.json" lives. Default is '../..'
     // root = file("../../")
@@ -85,13 +87,13 @@ android {
         applicationId "com.octusai.hospital"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 1
-        versionName "1.0"
+        versionCode 2
+        versionName "1.0.1"
         
         // Specify supported ABIs for better compatibility across devices
         // Android 9+ supports all modern ABIs
         ndk {
-            abiFilters "arm64-v8a", "armeabi-v7a", "x86", "x86_64"
+            abiFilters "arm64-v8a", "armeabi-v7a"
         }
         
         // Enable multiDex support for Android 9+ and large app bundles
@@ -162,6 +164,13 @@ android {
             
             // Optimize for wide device compatibility
             manifestPlaceholders = [usesCleartextTraffic:"false"]
+        }
+        // Same as release (prod API + minified) but debug-signed for sideload testing.
+        // Installs over prior debug builds; use when release APK fails with signature mismatch.
+        internalRelease {
+            initWith release
+            signingConfig signingConfigs.debug
+            matchingFallbacks = ["release", "debug"]
         }
     }
 }

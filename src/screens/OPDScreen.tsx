@@ -17,18 +17,21 @@ import {
   TextInput,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useFocusEffect } from '@react-navigation/native';
 import Pdf from 'react-native-pdf';
 import DatePicker from 'react-native-date-picker';
 import { launchCamera, CameraOptions } from 'react-native-image-picker';
 import {
   pick,
+  types,
   errorCodes,
   isErrorWithCode,
 } from '@react-native-documents/picker';
-import { useAppSelector, selectAuthToken, selectManageServices, selectAppDataLoading } from '../store';
-import { theme } from '../constants/theme';
-import { ModalBackdrop, OPDActionsFab, TreatmentPlanCard, TreatmentPlanDrawer } from '../components';
+import { useAppSelector, selectAuthToken, selectManageServices, selectAppDataLoading, selectCurrentUser } from '../store';
 import type { TreatmentPlanRecord } from '../components';
+import { extractAppointmentTreatments } from '../utils/appointmentTreatments';
+import { theme } from '../constants/theme';
+import { ModalBackdrop, OPDActionsFab, PinchZoomView, SlotPickerGrid, TreatmentPlanCard, TreatmentPlanDrawer } from '../components';
 import Icon from 'react-native-vector-icons/MaterialIcons';
 import { Appointment } from '../types';
 import {
@@ -38,11 +41,30 @@ import {
   type FollowupPlanGroup,
   type FollowupTreatmentOption,
 } from '../utils/followupTreatments';
+import { BookableSlot, isSlotSelectable } from '../utils/slot.util';
+import { isSlotBookingMode } from '../utils/doctorBookingMode.util';
+import {
+  collectUploadFileParts,
+  isImageUploadPart,
+  viewerPartKey,
+} from '../utils/uploadFileParts.util';
+import { layoutUploadViewerImage } from '../utils/uploadViewerImageLayout.util';
 import { filterManageServicesByType } from '../utils/manageServices';
+import {
+  canDeleteUpload,
+  canManageTreatmentPlan,
+} from '../utils/accessControl';
 
 interface OPDScreenProps {
   navigation: any;
-  route: { params?: { appointment?: Appointment; patient?: any } };
+  route: {
+    params?: {
+      appointment?: Appointment;
+      patient?: any;
+      openFollowup?: boolean;
+      followupLinkedTreatments?: Array<{ treatmentDesc: string; date?: string }>;
+    };
+  };
 }
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
@@ -56,19 +78,12 @@ interface Doctor {
   _id: string;
   name: string;
   doctorCode?: string | null;
-  isSlot?: boolean;
+  bookingMode?: string;
   color?: string | null;
 }
 
 // A bookable slot from GET /slot
-interface Slot {
-  _id: string;
-  startTime: string;
-  endTime?: string;
-  duration?: number;
-  isDisable?: boolean;
-  tokenCount?: number;
-}
+interface Slot extends BookableSlot {}
 
 // YYYY-MM-DD in local time (the format the slot/booking APIs expect).
 const toApiDate = (d: Date) => {
@@ -130,6 +145,8 @@ interface HistoryItem {
   mimeType?: string;
   fileName?: string;
   filePath?: string;
+  fileCount?: number;
+  batchParentId?: string;
   reportName?: string;
   uploadedBy?: string;
   appointmentDate?: string;
@@ -139,8 +156,15 @@ interface HistoryItem {
   doctorName?: string;
   status?: string;
   remark?: string;
+  details?: Appointment['details'];
   sortAt?: number;
   treatmentPlan?: TreatmentPlanRecord;
+  fileParts?: Array<{
+    filePath: string;
+    fileName?: string;
+    originalName?: string;
+    mimeType?: string;
+  }>;
 }
 
 const parseApptTime = (time?: string | null): number | null => {
@@ -250,18 +274,33 @@ const buildHistorySections = (
   treatmentPlans: TreatmentPlanRecord[] = [],
 ): HistorySection[] => {
   const uploads: HistoryItem[] = (history?.prescriptionUpload || []).map(
-    (u: any) => ({
-      id: u._id,
-      kind: 'upload' as const,
-      uploadType: u.type,
-      createdAt: u.createdAt,
-      category: u.category,
-      mimeType: u.mimeType,
-      fileName: u.originalName || u.fileName,
-      filePath: u.filePath,
-      uploadedBy: u.uploadedBy,
-      status: u.status,
-    }),
+    (u: any) => {
+      const parts = collectUploadFileParts(u);
+      const first = parts[0];
+      return {
+        id: u._id,
+        batchParentId: u._id,
+        kind: 'upload' as const,
+        uploadType: u.type,
+        createdAt: u.createdAt,
+        category: u.category,
+        mimeType: first?.mimeType ?? u.mimeType,
+        fileName:
+          parts.length > 1
+            ? `${parts.length} files`
+            : first?.originalName || first?.fileName || u.originalName || u.fileName,
+        filePath: first?.filePath ?? u.filePath,
+        fileCount: parts.length || 1,
+        fileParts: parts.map((p: any) => ({
+          filePath: p.filePath,
+          fileName: p.fileName,
+          originalName: p.originalName,
+          mimeType: p.mimeType,
+        })),
+        uploadedBy: u.uploadedBy,
+        status: u.status,
+      };
+    },
   );
 
   const labs: HistoryItem[] = (history?.labreport || []).map((l: any) => ({
@@ -283,6 +322,7 @@ const buildHistorySections = (
     doctorName: appt.doctorName,
     status: appt.status,
     remark: appt.remark,
+    details: appt.details,
     sortAt: appointmentSortAt(appt),
   }));
 
@@ -319,10 +359,19 @@ interface HistorySection {
   items: HistoryItem[];
 }
 
-type UploadFileType = 'prescription' | 'procedure';
+type UploadFileType = 'prescription' | 'procedure' | 'lab';
 
-const uploadApiType = (kind: UploadFileType): string =>
-  kind === 'procedure' ? 'note' : 'prescription';
+const uploadApiType = (kind: UploadFileType): string => {
+  if (kind === 'procedure') return 'note';
+  if (kind === 'lab') return 'lab';
+  return 'prescription';
+};
+
+const uploadKindLabel = (kind: UploadFileType): string => {
+  if (kind === 'procedure') return 'Procedure';
+  if (kind === 'lab') return 'Lab / Investigation';
+  return 'Prescription';
+};
 
 const mapTeethForPlan = (selectedTeeth: number[]) => {
   const Upper = selectedTeeth
@@ -350,11 +399,21 @@ const mapTeethForPlan = (selectedTeeth: number[]) => {
 const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
   const insets = useSafeAreaInsets();
   const token = useAppSelector(selectAuthToken);
+  const currentUser = useAppSelector(selectCurrentUser);
+  const canManageTreatmentPlanAccess = useMemo(
+    () => canManageTreatmentPlan(currentUser),
+    [currentUser],
+  );
+  const canDeleteUploadAccess = useMemo(
+    () => canDeleteUpload(currentUser),
+    [currentUser],
+  );
   const manageServiceRecords = useAppSelector(selectManageServices);
   const appDataLoading = useAppSelector(selectAppDataLoading);
   const appointment = route.params?.appointment;
-  const patient = route.params?.patient;
-  const patientId = appointment?.patientId || patient?._id || patient?.id;
+  const initialPatient = route.params?.patient;
+  const patientId = appointment?.patientId || initialPatient?._id || initialPatient?.id;
+  const [patientRecord, setPatientRecord] = useState<any>(initialPatient || null);
 
   const [history, setHistory] = useState<any>(null);
   const [patientAppointments, setPatientAppointments] = useState<Appointment[]>(
@@ -363,11 +422,9 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
   const [, setConfig] = useState<any>(null);
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
-  const [selectedFile, setSelectedFile] = useState<{
-    name: string;
-    uri: string;
-    type: string;
-  } | null>(null);
+  const [selectedFiles, setSelectedFiles] = useState<
+    Array<{ name: string; uri: string; type: string }>
+  >([]);
   const [uploading, setUploading] = useState(false);
   const [uploadFileType, setUploadFileType] =
     useState<UploadFileType>('prescription');
@@ -377,6 +434,42 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
   const [categoryDropdownOpen, setCategoryDropdownOpen] = useState(false);
   // Index of the currently open file within `openableItems` (null = closed).
   const [viewerIndex, setViewerIndex] = useState<number | null>(null);
+  /** Clockwise rotation for the image viewer; resets when switching files. */
+  const [viewerRotation, setViewerRotation] = useState(0);
+  const [viewerZoom, setViewerZoom] = useState(1);
+  const [viewerImageNatural, setViewerImageNatural] = useState({ w: 0, h: 0 });
+  const [viewerBodySize, setViewerBodySize] = useState({
+    w: SCREEN_WIDTH,
+    h: Math.round(SCREEN_HEIGHT * 0.55),
+  });
+  const viewerImageLayout = useMemo(() => {
+    const naturalW = viewerImageNatural.w || SCREEN_WIDTH;
+    const naturalH = viewerImageNatural.h || Math.round(SCREEN_HEIGHT * 0.7);
+    return layoutUploadViewerImage(
+      naturalW,
+      naturalH,
+      Math.max(1, viewerBodySize.w - 16),
+      Math.max(1, viewerBodySize.h - 16),
+      viewerRotation,
+    );
+  }, [viewerImageNatural, viewerBodySize, viewerRotation]);
+
+  const resetViewerImageState = () => {
+    setViewerImageNatural({ w: 0, h: 0 });
+    setViewerRotation(0);
+    setViewerZoom(1);
+  };
+
+  const primeViewerImageSize = (uri: string) => {
+    Image.getSize(
+      uri,
+      (width, height) => setViewerImageNatural({ w: width, h: height }),
+      () => setViewerImageNatural({ w: SCREEN_WIDTH, h: Math.round(SCREEN_HEIGHT * 0.7) }),
+    );
+  };
+  const VIEWER_MIN_ZOOM = 0.5;
+  const VIEWER_MAX_ZOOM = 4;
+  const VIEWER_ZOOM_STEP = 0.25;
   // Shared cache of upload _id -> signed URL (used by thumbnails and viewer).
   const [signedUrls, setSignedUrls] = useState<Record<string, string>>({});
   const [deletingFileId, setDeletingFileId] = useState<string | null>(null);
@@ -411,6 +504,8 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
   const [followupTreatmentSearch, setFollowupTreatmentSearch] = useState('');
   const [followupRemark, setFollowupRemark] = useState('');
   const [treatmentPlanOpen, setTreatmentPlanOpen] = useState(false);
+  const [editingTreatmentPlan, setEditingTreatmentPlan] =
+    useState<TreatmentPlanRecord | null>(null);
   const [treatmentPlans, setTreatmentPlans] = useState<TreatmentPlanRecord[]>(
     [],
   );
@@ -423,21 +518,53 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
     [history, patientAppointments, treatmentPlans],
   );
 
-  // All openable upload files (images + PDFs) in display order — the set the
-  // viewer's bottom strip pages through.
-  const openableItems = useMemo(
-    () =>
-      historySections
-        .flatMap(s => s.items)
-        .filter(i => i.kind === 'upload' && i.filePath),
-    [historySections],
-  );
+  // All viewable file parts (including nested batch `files[]`) for the viewer strip.
+  const openableItems = useMemo(() => {
+    const items: HistoryItem[] = [];
+    for (const u of history?.prescriptionUpload || []) {
+      for (const part of collectUploadFileParts(u)) {
+        const key = viewerPartKey(part);
+        if (!key) continue;
+        items.push({
+          id: key,
+          batchParentId: u._id,
+          kind: 'upload',
+          uploadType: u.type,
+          createdAt: u.createdAt,
+          category: u.category,
+          mimeType: part.mimeType,
+          fileName: part.originalName || part.fileName,
+          filePath: part.filePath,
+          uploadedBy: u.uploadedBy,
+          status: u.status,
+          sortAt: new Date(u.createdAt || 0).getTime(),
+        });
+      }
+    }
+    return items.sort((a, b) => (b.sortAt || 0) - (a.sortAt || 0));
+  }, [history]);
 
-  // Fetch signed URLs for image uploads so their thumbnails show the image.
+  // Bottom strip: prefer files from the same batch; fall back to all when needed.
+  const viewerStripItems = useMemo(() => {
+    if (viewerIndex == null) return [];
+    const current = openableItems[viewerIndex];
+    if (!current) return [];
+
+    if (current.batchParentId) {
+      const siblings = openableItems.filter(
+        item => item.batchParentId === current.batchParentId,
+      );
+      if (siblings.length > 1) return siblings;
+    }
+
+    return openableItems.length > 1 ? openableItems : [];
+  }, [viewerIndex, openableItems]);
+
+  // Fetch signed URLs for image file parts so thumbnails show in cards and strip.
   useEffect(() => {
     if (!token || !patientId || !history) return;
-    const images = (history.prescriptionUpload || []).filter(
-      (u: any) => (u.mimeType || '').startsWith('image/') && u.filePath,
+    const images = (history.prescriptionUpload || []).flatMap((u: any) =>
+      collectUploadFileParts(u).filter((part: any) => isImageUploadPart(part)),
     );
     if (images.length === 0) return;
 
@@ -446,14 +573,15 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
       const realAuthService = (await import('../services/realAuthService'))
         .default;
       const entries = await Promise.all(
-        images.map(async (u: any) => {
+        images.map(async (part: any) => {
           try {
+            const key = viewerPartKey(part);
             const url = await realAuthService.getPatientFileSignedUrl(
-              u.filePath,
+              part.filePath,
               patientId,
               token,
             );
-            return [u._id, url] as const;
+            return [key, url] as const;
           } catch {
             return null;
           }
@@ -474,7 +602,7 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
   const resolveSignedUrl = useCallback(
     async (item: HistoryItem): Promise<string | null> => {
       if (!item.filePath || !token || !patientId) return null;
-      if (signedUrls[item.id]) return signedUrls[item.id];
+      if (signedUrls[item.filePath]) return signedUrls[item.filePath];
       try {
         const realAuthService = (await import('../services/realAuthService'))
           .default;
@@ -483,7 +611,7 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
           patientId,
           token,
         );
-        setSignedUrls(prev => ({ ...prev, [item.id]: url }));
+        setSignedUrls(prev => ({ ...prev, [item.filePath!]: url }));
         return url;
       } catch (error) {
         console.error('Failed to resolve signed URL:', error);
@@ -493,36 +621,95 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
     [signedUrls, token, patientId],
   );
 
-  // When the viewer opens or pages to a new item, make sure its URL is loaded.
+  // When the viewer opens or pages to a new item, load URL and image dimensions.
   useEffect(() => {
     if (viewerIndex == null) return;
     const item = openableItems[viewerIndex];
-    if (item && !signedUrls[item.id]) {
+    if (!item?.filePath) return;
+
+    setViewerImageNatural({ w: 0, h: 0 });
+    setViewerRotation(0);
+    setViewerZoom(1);
+
+    const url = signedUrls[item.filePath];
+    if (!url) {
       resolveSignedUrl(item);
+      return;
+    }
+    if (isImageUploadPart(item)) {
+      primeViewerImageSize(url);
     }
   }, [viewerIndex, openableItems, signedUrls, resolveSignedUrl]);
 
   // Patient header values (prefer the fetched patient record, fall back to appt)
-  const name = patient?.name || appointment?.patientName || 'Unknown';
-  const mobile = patient?.mobileNo || appointment?.mobileNo || '—';
-  const uhid = patient?.uhid || appointment?.uhid || '—';
+  const name = patientRecord?.name || appointment?.patientName || 'Unknown';
+  const mobile = patientRecord?.mobileNo || appointment?.mobileNo || '—';
+  const uhid = patientRecord?.uhid || appointment?.uhid || '—';
   const genderAge =
     [
-      patient?.gender,
-      patient?.age != null ? `${patient.age} Years` : null,
+      patientRecord?.gender,
+      patientRecord?.age != null ? `${patientRecord.age} Years` : null,
     ]
       .filter(Boolean)
       .join(' / ') || '—';
 
+  const refreshPatientRecord = useCallback(async () => {
+    if (!token || !patientId) return;
+    try {
+      const realAuthService = (await import('../services/realAuthService'))
+        .default;
+      const full = await realAuthService.fetchPatientById(String(patientId), token);
+      if (full) setPatientRecord(full);
+    } catch (err) {
+      console.error('Failed to refresh patient record:', err);
+    }
+  }, [token, patientId]);
+
+  useFocusEffect(
+    useCallback(() => {
+      refreshPatientRecord();
+    }, [refreshPatientRecord]),
+  );
+
+  const handleEditPatient = async () => {
+    if (!patientId || !token) return;
+    try {
+      const realAuthService = (await import('../services/realAuthService'))
+        .default;
+      const full =
+        patientRecord ||
+        (await realAuthService.fetchPatientById(String(patientId), token));
+      navigation.navigate('AddPatient', {
+        patientData: {
+          ...(full || {}),
+          _id: String(patientId),
+          name: full?.name || name,
+          mobileNo: full?.mobileNo || mobile,
+          uhid: full?.uhid || uhid,
+        },
+      });
+    } catch (err) {
+      Alert.alert(
+        'Edit Patient',
+        err instanceof Error ? err.message : 'Could not open patient editor.',
+      );
+    }
+  };
+
   // Only DENTAL is offered for prescription uploads.
   const categoryOptions = useMemo(() => ['DENTAL'], []);
 
-  // Default the category to the first option once a file is chosen.
+  // Default the category to the first option once files are chosen (not for lab).
   useEffect(() => {
-    if (selectedFile && !selectedCategory && categoryOptions.length) {
+    if (selectedFiles.length === 0) return;
+    if (uploadFileType === 'lab') {
+      setSelectedCategory('COMMON');
+      return;
+    }
+    if (!selectedCategory && categoryOptions.length) {
       setSelectedCategory(categoryOptions[0]);
     }
-  }, [selectedFile, selectedCategory, categoryOptions]);
+  }, [selectedFiles, selectedCategory, categoryOptions, uploadFileType]);
 
   // The visit's doctor from props — used as the dropdown's default selection.
   const defaultDoctor: Doctor | null = useMemo(() => {
@@ -547,6 +734,13 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
     setSelectedDoctor(defaultDoctor);
     setShowFollowupModal(true);
   };
+
+  useEffect(() => {
+    if (route.params?.openFollowup) {
+      openFollowupModal();
+      navigation.setParams({ openFollowup: undefined });
+    }
+  }, [route.params?.openFollowup]);
 
   const followupPlanTreatmentOptions = useMemo(
     () => followupPlanGroups.flatMap(group => group.treatments),
@@ -671,7 +865,7 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
     if (!showFollowupModal || !token || !selectedDoctor || !followupDate) {
       return;
     }
-    if (selectedDoctor.isSlot === false) {
+    if (!isSlotBookingMode(selectedDoctor)) {
       setSlots([]);
       setSelectedSlot(null);
       setSlotsLoading(false);
@@ -708,7 +902,7 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
       !showFollowupModal ||
       !selectedDoctor ||
       !followupDate ||
-      selectedDoctor.isSlot === false ||
+      !isSlotBookingMode(selectedDoctor) ||
       slotsLoading
     ) {
       return;
@@ -730,8 +924,16 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
       Alert.alert('Missing doctor', 'Please select a doctor.');
       return;
     }
-    if (selectedDoctor.isSlot !== false && !selectedSlot) {
+    if (isSlotBookingMode(selectedDoctor) && !selectedSlot) {
       Alert.alert('Missing slot', 'Please pick a slot for the follow-up.');
+      return;
+    }
+    if (
+      isSlotBookingMode(selectedDoctor) &&
+      selectedSlot &&
+      !isSlotSelectable(selectedSlot)
+    ) {
+      Alert.alert('Slot unavailable', 'Please pick an available slot.');
       return;
     }
     const followupDetails = collectSelectedFollowupDetails(
@@ -788,10 +990,10 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
       );
 
       if (patientId) {
-        const appts = await realAuthService
+        const { appointments } = await realAuthService
           .fetchPatientAppointments(patientId, token)
-          .catch(() => []);
-        setPatientAppointments(appts || []);
+          .catch(() => ({ appointments: [] }));
+        setPatientAppointments(appointments || []);
       }
     } catch (error) {
       console.error('Follow-up booking error:', error);
@@ -833,6 +1035,7 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
           patientId
             ? realAuthService
                 .fetchPatientAppointments(patientId, token)
+                .then(result => result.appointments)
                 .catch(() => [])
             : Promise.resolve([]),
           patientId
@@ -925,23 +1128,101 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
     </View>
   );
 
+  const renderUploadGridCell = (
+    part: NonNullable<HistoryItem['fileParts']>[number],
+    item: HistoryItem,
+    index: number,
+  ) => {
+    const partIsImage = isImageUploadPart(part);
+    const uri = part.filePath ? signedUrls[part.filePath] : undefined;
+    const name = part.originalName || part.fileName || '';
+    const extMatch = name.match(/\.([a-z0-9]+)$/i);
+    const ext = extMatch ? extMatch[1].toUpperCase() : partIsImage ? 'IMG' : 'PDF';
+    const removing =
+      !!part.filePath &&
+      deletingFileId === `${item.batchParentId || item.id}:${part.filePath}`;
+
+    return (
+      <View
+        key={part.filePath || `part-${index}`}
+        style={styles.uploadGridCellWrap}
+      >
+        <TouchableOpacity
+          style={styles.uploadGridCell}
+          activeOpacity={0.8}
+          onPress={() => openFile(item, part.filePath)}
+        >
+          {partIsImage && uri ? (
+            <Image
+              source={{ uri }}
+              style={styles.uploadGridCellImage}
+              resizeMode="cover"
+            />
+          ) : (
+            <View style={styles.uploadGridCellFallback}>
+              <Icon
+                name={partIsImage ? 'image' : 'picture-as-pdf'}
+                size={14}
+                color={partIsImage ? '#8B5CF6' : '#E53935'}
+              />
+              <Text style={styles.uploadGridCellExt}>{ext}</Text>
+            </View>
+          )}
+        </TouchableOpacity>
+        {canDeleteUploadAccess ? (
+          <TouchableOpacity
+            style={styles.uploadGridCellRemove}
+            activeOpacity={0.85}
+            disabled={removing}
+            onPress={() => handleDeletePrescription(item, part)}
+          >
+            {removing ? (
+              <ActivityIndicator size="small" color="#fff" />
+            ) : (
+              <Icon name="close" size={12} color="#fff" />
+            )}
+          </TouchableOpacity>
+        ) : null}
+      </View>
+    );
+  };
+
   const renderUploadCard = (item: HistoryItem) => {
+    const isLab = item.uploadType === 'lab';
     const isProcedure = item.uploadType === 'note';
     const isImage = (item.mimeType || '').startsWith('image/');
-    const thumbUri = signedUrls[item.id];
+    const thumbUri = item.filePath ? signedUrls[item.filePath] : undefined;
     const displayDate = formatDate(item.createdAt).replace(/-/g, '/');
+    const categoryLabel = item.category?.trim();
     const badgeText =
-      item.category ||
-      (item.status ? getApptStatusLabel(item.status) : undefined);
+      categoryLabel && categoryLabel !== 'COMMON' ? categoryLabel : undefined;
+    const multiFile = (item.fileCount || 1) > 1;
+    const uploadTitle = isLab
+      ? 'Uploaded Lab / Investigation'
+      : isProcedure
+        ? 'Uploaded Procedure'
+        : 'Uploaded Prescription';
+    const defaultFileName = isLab
+      ? 'Lab file'
+      : isProcedure
+        ? 'Procedure file'
+        : 'Prescription file';
 
     return (
       <View key={item.id} style={styles.styledUploadCard}>
-        <View style={styles.styledUploadHeader}>
+        <View
+          style={[
+            styles.styledUploadHeader,
+            isLab
+              ? styles.styledUploadHeaderLab
+              : isProcedure
+                ? styles.styledUploadHeaderProcedure
+                : styles.styledUploadHeaderPrescription,
+          ]}
+        >
           <View style={styles.styledUploadHeaderLeft}>
-            <Icon name="upload-file" size={18} color={theme.colors.surface} />
-            <Text style={styles.styledUploadHeaderTitle}>
-              {isProcedure ? 'Uploaded Procedure' : 'Uploaded Prescription'}
-            </Text>
+            <Icon name="upload-file" size={16} color={theme.colors.surface} />
+            <Text style={styles.styledUploadHeaderTitle}>{uploadTitle}</Text>
           </View>
           {!!badgeText && (
             <View style={styles.styledUploadBadge}>
@@ -953,44 +1234,15 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
         <View
           style={[
             styles.styledUploadPanel,
-            isProcedure
-              ? styles.styledUploadPanelProcedure
-              : styles.styledUploadPanelPrescription,
+            isLab
+              ? styles.styledUploadPanelLab
+              : isProcedure
+                ? styles.styledUploadPanelProcedure
+                : styles.styledUploadPanelPrescription,
           ]}
         >
-          <View style={styles.styledUploadContent}>
-            <TouchableOpacity
-              style={styles.styledUploadThumbnail}
-              activeOpacity={0.8}
-              onPress={() => openFile(item)}
-            >
-              {isImage && thumbUri ? (
-                <Image
-                  source={{ uri: thumbUri }}
-                  style={styles.thumbnailImage}
-                  resizeMode="cover"
-                />
-              ) : (
-                <>
-                  <Icon
-                    name={isImage ? 'image' : 'picture-as-pdf'}
-                    size={36}
-                    color={isImage ? '#8B5CF6' : '#E53935'}
-                  />
-                  <Text style={styles.styledUploadThumbnailLabel}>
-                    {isImage ? 'IMAGE' : 'PDF'}
-                  </Text>
-                </>
-              )}
-            </TouchableOpacity>
-
-            <View style={styles.styledUploadInfo}>
-              <TouchableOpacity activeOpacity={0.7} onPress={() => openFile(item)}>
-                <Text style={styles.styledUploadFileName} numberOfLines={2}>
-                  {item.fileName ||
-                    (isProcedure ? 'Procedure file' : 'Prescription file')}
-                </Text>
-              </TouchableOpacity>
+          {multiFile ? (
+            <>
               <View style={styles.styledUploadMetaRow}>
                 <View style={styles.styledUploadMetaItem}>
                   <Text style={styles.styledUploadMetaLabel}>DATE</Text>
@@ -1002,9 +1254,66 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
                     {item.uploadedBy || '—'}
                   </Text>
                 </View>
+                <View style={styles.styledUploadMetaItem}>
+                  <Text style={styles.styledUploadMetaLabel}>FILES</Text>
+                  <Text style={styles.styledUploadMetaValue}>{item.fileCount}</Text>
+                </View>
+              </View>
+
+              <View style={styles.uploadFilesGrid}>
+                {(item.fileParts || []).map((part, index) =>
+                  renderUploadGridCell(part, item, index),
+                )}
+              </View>
+            </>
+          ) : (
+            <View style={styles.styledUploadContent}>
+              <TouchableOpacity
+                style={styles.styledUploadThumbnail}
+                activeOpacity={0.8}
+                onPress={() => openFile(item)}
+              >
+                {isImage && thumbUri ? (
+                  <Image
+                    source={{ uri: thumbUri }}
+                    style={styles.thumbnailImage}
+                    resizeMode="cover"
+                  />
+                ) : (
+                  <>
+                    <Icon
+                      name={isImage ? 'image' : 'picture-as-pdf'}
+                      size={28}
+                      color={isImage ? '#8B5CF6' : '#E53935'}
+                    />
+                    <Text style={styles.styledUploadThumbnailLabel}>
+                      {isImage ? 'IMAGE' : 'PDF'}
+                    </Text>
+                  </>
+                )}
+              </TouchableOpacity>
+
+              <View style={styles.styledUploadInfo}>
+                <TouchableOpacity activeOpacity={0.7} onPress={() => openFile(item)}>
+                  <Text style={styles.styledUploadFileName} numberOfLines={2}>
+                    {item.fileName || defaultFileName}
+                  </Text>
+                </TouchableOpacity>
+                <View style={styles.styledUploadMetaRow}>
+                  <View style={styles.styledUploadMetaItem}>
+                    <Text style={styles.styledUploadMetaLabel}>DATE</Text>
+                    <Text style={styles.styledUploadMetaValue}>{displayDate}</Text>
+                  </View>
+                  <View style={styles.styledUploadMetaItem}>
+                    <Text style={styles.styledUploadMetaLabel}>BY</Text>
+                    <Text style={styles.styledUploadMetaValue} numberOfLines={1}>
+                      {item.uploadedBy || '—'}
+                    </Text>
+                  </View>
+                </View>
               </View>
             </View>
-          </View>
+          )}
 
           <View style={styles.styledUploadActions}>
             <TouchableOpacity
@@ -1012,7 +1321,7 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
               activeOpacity={0.85}
               onPress={() => openFile(item)}
             >
-              <Icon name="print" size={18} color="#6366F1" />
+              <Icon name="print" size={16} color="#6366F1" />
               <Text style={styles.styledUploadActionText}>Print</Text>
             </TouchableOpacity>
             <TouchableOpacity
@@ -1023,24 +1332,26 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
               activeOpacity={0.85}
               onPress={() => openFile(item)}
             >
-              <Icon name="file-download" size={18} color="#6366F1" />
+              <Icon name="file-download" size={16} color="#6366F1" />
               <Text style={styles.styledUploadActionText}>Download</Text>
             </TouchableOpacity>
-            <TouchableOpacity
-              style={[styles.styledUploadActionBtn, styles.styledUploadActionDelete]}
-              activeOpacity={0.85}
-              disabled={deletingFileId === item.id}
-              onPress={() => handleDeletePrescription(item)}
-            >
-              {deletingFileId === item.id ? (
-                <ActivityIndicator size="small" color="#EF4444" />
-              ) : (
-                <>
-                  <Icon name="delete-outline" size={18} color="#374151" />
-                  <Text style={styles.styledUploadActionDeleteText}>Delete</Text>
-                </>
-              )}
-            </TouchableOpacity>
+            {canDeleteUploadAccess ? (
+              <TouchableOpacity
+                style={[styles.styledUploadActionBtn, styles.styledUploadActionDelete]}
+                activeOpacity={0.85}
+                disabled={deletingFileId === (item.batchParentId || item.id)}
+                onPress={() => handleDeletePrescription(item)}
+              >
+                {deletingFileId === (item.batchParentId || item.id) ? (
+                  <ActivityIndicator size="small" color="#EF4444" />
+                ) : (
+                  <>
+                    <Icon name="delete-outline" size={16} color="#374151" />
+                    <Text style={styles.styledUploadActionDeleteText}>Delete</Text>
+                  </>
+                )}
+              </TouchableOpacity>
+            ) : null}
           </View>
         </View>
       </View>
@@ -1103,6 +1414,10 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
     const isEditingRemark = editingRemarkId === item.id;
     const isSavingRemark = savingRemarkId === item.id;
     const savedRemark = (item.remark || '').trim();
+    const treatments = extractAppointmentTreatments({
+      details: item.details,
+      date: item.appointmentDate,
+    });
 
     return (
       <View key={item.id} style={styles.apptCard}>
@@ -1140,6 +1455,24 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
               {metaField('DOCTOR', item.doctorName || '—')}
             </View>
           </View>
+
+          {treatments.length > 0 ? (
+            <View style={styles.apptTreatmentBlock}>
+              <Text style={styles.apptTreatmentLabel}>TREATMENTS</Text>
+              {treatments.map((treatment, index) => (
+                <View key={`${item.id}-treatment-${index}`} style={styles.apptTreatmentItem}>
+                  <Text style={styles.apptTreatmentName} numberOfLines={2}>
+                    {treatment.treatmentDesc}
+                  </Text>
+                  {treatment.date ? (
+                    <Text style={styles.apptTreatmentDate}>
+                      {formatApptDate(treatment.date)}
+                    </Text>
+                  ) : null}
+                </View>
+              ))}
+            </View>
+          ) : null}
 
           <View style={styles.apptRemarkBox}>
             <View style={styles.apptRemarkHeader}>
@@ -1212,6 +1545,8 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
           key={item.id}
           plan={item.treatmentPlan}
           patientId={patientId}
+          canManage={canManageTreatmentPlanAccess}
+          onEdit={handleEditTreatmentPlan}
           onCancelled={refreshTreatmentPlans}
         />
       );
@@ -1221,6 +1556,8 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
 
   const openUploadModal = (type: UploadFileType) => {
     setUploadFileType(type);
+    setSelectedCategory(type === 'lab' ? 'COMMON' : null);
+    setCategoryDropdownOpen(false);
     setShowUploadModal(true);
   };
 
@@ -1233,7 +1570,7 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
           PermissionsAndroid.PERMISSIONS.CAMERA,
           {
             title: 'Camera Permission',
-            message: 'Camera access is needed to capture the prescription.',
+            message: `Camera access is needed to capture the ${uploadKindLabel(uploadFileType).toLowerCase()}.`,
             buttonPositive: 'OK',
             buttonNegative: 'Cancel',
           },
@@ -1241,7 +1578,7 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
         if (granted !== PermissionsAndroid.RESULTS.GRANTED) {
           Alert.alert(
             'Permission Required',
-            'Camera permission is needed to take a photo of the prescription.',
+            `Camera permission is needed to take a photo of the ${uploadKindLabel(uploadFileType).toLowerCase()}.`,
           );
           return;
         }
@@ -1266,25 +1603,32 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
       }
       if (response.assets && response.assets.length > 0) {
         const asset = response.assets[0];
-        setSelectedFile({
-          name: asset.fileName || `prescription_${Date.now()}.jpg`,
-          uri: asset.uri || '',
-          type: asset.type || 'image/jpeg',
-        });
+        setSelectedFiles(prev => [
+          ...prev,
+          {
+            name: asset.fileName || `prescription_${Date.now()}.jpg`,
+            uri: asset.uri || '',
+            type: asset.type || 'image/jpeg',
+          },
+        ]);
       }
     });
   };
 
   const handleFilePick = async () => {
     try {
-      const result = await pick({ type: ['image/*', 'application/pdf'] });
+      const result = await pick({
+        type: [types.images, types.pdf],
+        allowMultiSelection: true,
+        copyTo: 'cachesDirectory',
+      });
       if (result && result.length > 0) {
-        const file = result[0];
-        setSelectedFile({
-          name: file.name || 'Prescription file',
-          uri: file.uri || '',
+        const picked = result.map(file => ({
+          name: file.name || 'Upload file',
+          uri: file.fileCopyUri || file.uri || '',
           type: file.type || 'application/octet-stream',
-        });
+        }));
+        setSelectedFiles(prev => [...prev, ...picked]);
       }
     } catch (error) {
       if (
@@ -1308,14 +1652,47 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
     handleFilePick();
   };
 
-  const handleRemoveFile = () => {
-    setSelectedFile(null);
-    setSelectedCategory(null);
-    setCategoryDropdownOpen(false);
-    setUploadFileType('prescription');
+  const handleRemoveFile = (index?: number) => {
+    if (uploading) return;
+    if (index == null) {
+      setSelectedFiles([]);
+      setSelectedCategory(null);
+      setCategoryDropdownOpen(false);
+      setUploadFileType('prescription');
+      return;
+    }
+    setSelectedFiles(prev => prev.filter((_, i) => i !== index));
+  };
+
+  const closeTreatmentPlanDrawer = () => {
+    setTreatmentPlanOpen(false);
+    setEditingTreatmentPlan(null);
   };
 
   const handleTreatmentPlanPress = () => {
+    if (!canManageTreatmentPlanAccess) return;
+    setEditingTreatmentPlan(null);
+    setTreatmentPlanOpen(true);
+  };
+
+  useEffect(() => {
+    const uploadType = route.params?.openUpload;
+    if (uploadType) {
+      openUploadModal(uploadType);
+      navigation.setParams({ openUpload: undefined });
+    }
+  }, [route.params?.openUpload]);
+
+  useEffect(() => {
+    if (route.params?.openTreatmentPlan && canManageTreatmentPlanAccess) {
+      handleTreatmentPlanPress();
+      navigation.setParams({ openTreatmentPlan: undefined });
+    }
+  }, [route.params?.openTreatmentPlan, canManageTreatmentPlanAccess]);
+
+  const handleEditTreatmentPlan = (plan: TreatmentPlanRecord) => {
+    if (!canManageTreatmentPlanAccess) return;
+    setEditingTreatmentPlan(plan);
     setTreatmentPlanOpen(true);
   };
 
@@ -1332,8 +1709,10 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
     discount: number;
     paymentMode: string;
     refId: string;
+    remark: string;
     totalAmount: number;
     advanced: boolean;
+    planId?: string;
   }) => {
     if (!token || !patientId) {
       Alert.alert(
@@ -1381,10 +1760,12 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
       discount: payload.discount,
       paymentMode: payload.paymentMode.toLowerCase(),
       remark:
+        payload.remark.trim() ||
         validRows
           .map(row => row.note.trim())
           .filter(Boolean)
-          .join('; ') || '',
+          .join('; ') ||
+        '',
       refId: payload.refId,
       doctorId: appointment?.doctorId || '',
       doctorName: appointment?.doctorName || defaultDoctor?.name || '',
@@ -1397,63 +1778,144 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
     try {
       const realAuthService = (await import('../services/realAuthService'))
         .default;
-      await realAuthService.saveTreatmentPlan(body, token);
+      if (payload.planId) {
+        await realAuthService.updateTreatmentPlan(payload.planId, body, token);
+        Alert.alert('Success', 'Treatment plan updated.');
+      } else {
+        await realAuthService.saveTreatmentPlan(body, token);
+        Alert.alert('Success', 'Treatment plan saved.');
+      }
       await refreshTreatmentPlans();
-      Alert.alert('Success', 'Treatment plan saved.');
+      closeTreatmentPlanDrawer();
     } catch (error) {
       console.error('Treatment plan save error:', error);
       Alert.alert(
         'Save Failed',
-        'Could not save the treatment plan. Please try again.',
+        payload.planId
+          ? 'Could not update the treatment plan. Please try again.'
+          : 'Could not save the treatment plan. Please try again.',
       );
       throw error;
     }
   };
 
-  const openFile = (item: HistoryItem) => {
-    if (!item.filePath) return;
-    const index = openableItems.findIndex(i => i.id === item.id);
-    if (index >= 0) setViewerIndex(index);
+  const closeFileViewer = () => {
+    setViewerIndex(null);
+    resetViewerImageState();
   };
 
-  const handleDeletePrescription = (item: HistoryItem) => {
+  const zoomViewerIn = () => {
+    setViewerZoom(prev =>
+      Math.min(VIEWER_MAX_ZOOM, Math.round((prev + VIEWER_ZOOM_STEP) * 100) / 100),
+    );
+  };
+
+  const zoomViewerOut = () => {
+    setViewerZoom(prev =>
+      Math.max(VIEWER_MIN_ZOOM, Math.round((prev - VIEWER_ZOOM_STEP) * 100) / 100),
+    );
+  };
+
+  const rotateViewerImage = () => {
+    setViewerRotation(prev => (prev + 90) % 360);
+    setViewerZoom(1);
+  };
+
+  const openFile = (item: HistoryItem, filePath?: string) => {
+    const targetPath = filePath || item.filePath;
+    if (!targetPath) return;
+    const index = openableItems.findIndex(
+      i => i.filePath === targetPath || i.id === targetPath,
+    );
+    if (index >= 0) {
+      resetViewerImageState();
+      setViewerIndex(index);
+    }
+  };
+
+  const handleDeletePrescription = (
+    item: HistoryItem,
+    part?: NonNullable<HistoryItem['fileParts']>[number],
+  ) => {
     if (!token || !patientId || deletingFileId) return;
 
+    const multiFile = (item.fileCount || 1) > 1;
+    const partialDelete = multiFile && !!part?.filePath;
+
+    const deleteLabel =
+      item.uploadType === 'lab'
+        ? partialDelete ? 'Remove lab file' : 'Delete lab file'
+        : item.uploadType === 'note'
+          ? partialDelete ? 'Remove procedure file' : 'Delete procedure'
+          : partialDelete ? 'Remove prescription file' : 'Delete prescription';
+    const successLabel = partialDelete
+      ? 'File removed from upload.'
+      : item.uploadType === 'lab'
+        ? 'Lab file removed successfully.'
+        : item.uploadType === 'note'
+          ? 'Procedure removed successfully.'
+          : 'Prescription removed successfully.';
+
+    const fileLabel =
+      part?.originalName || part?.fileName || item.fileName || 'this file';
+    const confirmMessage = partialDelete
+      ? `Remove "${fileLabel}" from this upload?`
+      : multiFile
+        ? `Delete all ${item.fileCount} files in this upload?`
+        : `Remove "${fileLabel}"?`;
+
     Alert.alert(
-      item.uploadType === 'note' ? 'Delete procedure' : 'Delete prescription',
-      `Remove "${item.fileName || 'this file'}"?`,
+      deleteLabel,
+      confirmMessage,
       [
         { text: 'Cancel', style: 'cancel' },
         {
           text: 'Delete',
           style: 'destructive',
           onPress: async () => {
-            setDeletingFileId(item.id);
+            const deleteId = item.batchParentId || item.id;
+            const deletingKey = partialDelete
+              ? `${deleteId}:${part!.filePath}`
+              : deleteId;
+            setDeletingFileId(deletingKey);
             try {
               const realAuthService = (await import('../services/realAuthService'))
                 .default;
-              await realAuthService.deletePatientFile(item.id, token);
+              if (partialDelete) {
+                await realAuthService.deletePatientFilePart(
+                  deleteId,
+                  part!.filePath!,
+                  token,
+                );
+              } else {
+                await realAuthService.deletePatientFile(deleteId, token);
+              }
 
               if (
                 viewerIndex != null &&
-                openableItems[viewerIndex]?.id === item.id
+                openableItems[viewerIndex]?.batchParentId === deleteId &&
+                (!partialDelete ||
+                  openableItems[viewerIndex]?.filePath === part?.filePath)
               ) {
-                setViewerIndex(null);
+                closeFileViewer();
               }
 
               setSignedUrls(prev => {
                 const next = { ...prev };
-                delete next[item.id];
+                if (partialDelete && part?.filePath) {
+                  delete next[part.filePath];
+                } else {
+                  openableItems
+                    .filter(i => i.batchParentId === deleteId)
+                    .forEach(i => {
+                      if (i.filePath) delete next[i.filePath];
+                    });
+                }
                 return next;
               });
 
               await refreshPrescriptionHistory();
-              Alert.alert(
-                'Deleted',
-                item.uploadType === 'note'
-                  ? 'Procedure removed successfully.'
-                  : 'Prescription removed successfully.',
-              );
+              Alert.alert('Deleted', successLabel);
             } catch (error) {
               console.error('Prescription delete error:', error);
               Alert.alert(
@@ -1470,37 +1932,40 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
   };
 
   const handleUpload = async () => {
-    if (!selectedFile || !token) return;
+    if (!selectedFiles.length || !token) return;
     if (!patientId) {
       Alert.alert('Upload Failed', 'No patient is associated with this visit.');
       return;
     }
-    if (!selectedCategory) {
+    const category =
+      uploadFileType === 'lab' ? 'COMMON' : selectedCategory;
+    if (!category) {
       Alert.alert('Select category', 'Please choose a prescription category.');
       return;
     }
 
     setUploading(true);
     const uploadingType = uploadFileType;
+    const fileCount = selectedFiles.length;
+    const kindLabel = uploadKindLabel(uploadingType);
     try {
       const realAuthService = (await import('../services/realAuthService'))
         .default;
-      await realAuthService.uploadPatientFile(
-        selectedFile,
+      await realAuthService.uploadPatientFiles(
+        selectedFiles,
         patientId,
         uploadApiType(uploadingType),
         token,
-        selectedCategory,
+        category,
       );
 
-      setSelectedFile(null);
+      setSelectedFiles([]);
       setSelectedCategory(null);
       setUploadFileType('prescription');
+      const countLabel = fileCount > 1 ? `${fileCount} files` : 'File';
       Alert.alert(
         'Success',
-        uploadingType === 'procedure'
-          ? 'Procedure uploaded successfully.'
-          : 'Prescription uploaded successfully.',
+        `${kindLabel} uploaded successfully (${countLabel}).`,
       );
 
       await refreshPrescriptionHistory();
@@ -1508,19 +1973,21 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
       console.error('File upload error:', error);
       Alert.alert(
         'Upload Failed',
-        uploadingType === 'procedure'
-          ? 'Could not upload the procedure. Please try again.'
-          : 'Could not upload the prescription. Please try again.',
+        `Could not upload the ${kindLabel.toLowerCase()}. Please try again.`,
       );
     } finally {
       setUploading(false);
     }
   };
 
-  const uploadModalTitle =
-    uploadFileType === 'procedure'
-      ? 'Upload Procedure'
-      : 'Upload Prescription';
+  const uploadModalTitle = `Upload ${uploadKindLabel(uploadFileType)}`;
+  const uploadCameraHint =
+    uploadFileType === 'lab'
+      ? 'Take a photo of the lab report'
+      : uploadFileType === 'procedure'
+        ? 'Take a photo of the procedure document'
+        : 'Take a photo of the prescription';
+  const showUploadCategory = uploadFileType !== 'lab';
 
   return (
     <View style={styles.container}>
@@ -1557,6 +2024,16 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
             {headerItem('Gender/Age:', genderAge)}
           </View>
         </View>
+        {patientId ? (
+          <TouchableOpacity
+            style={styles.headerEditBtn}
+            onPress={handleEditPatient}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            accessibilityLabel="Edit patient"
+          >
+            <Icon name="edit" size={16} color={theme.colors.primary} />
+          </TouchableOpacity>
+        ) : null}
       </View>
 
       <ScrollView
@@ -1631,7 +2108,7 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
               <View style={styles.uploadOptionTextWrap}>
                 <Text style={styles.uploadOptionTitle}>Camera</Text>
                 <Text style={styles.uploadOptionSubtitle}>
-                  Take a photo of the prescription
+                  {uploadCameraHint}
                 </Text>
               </View>
               <Icon
@@ -1656,7 +2133,7 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
               <View style={styles.uploadOptionTextWrap}>
                 <Text style={styles.uploadOptionTitle}>File Manager</Text>
                 <Text style={styles.uploadOptionSubtitle}>
-                  Choose an image or PDF file
+                  Choose one or more images or PDFs
                 </Text>
               </View>
               <Icon
@@ -1669,10 +2146,10 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
         </View>
       </ModalBackdrop>
 
-      {/* Selected file → category + confirm upload popup */}
+      {/* Selected files → category + confirm upload popup */}
       <ModalBackdrop
-        visible={!!selectedFile}
-        onClose={handleRemoveFile}
+        visible={selectedFiles.length > 0}
+        onClose={() => handleRemoveFile()}
         animationType="fade"
         align="center"
         dismissOnBackdropPress={!uploading}
@@ -1680,10 +2157,10 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
         <View style={styles.uploadPopupCard}>
           <View style={styles.uploadPopupBody}>
             <View style={styles.followupHeader}>
-              <Text style={styles.followupTitle}>{uploadModalTitle}</Text>
+              <Text style={styles.uploadPopupTitle}>{uploadModalTitle}</Text>
               <TouchableOpacity
                 style={styles.followupClose}
-                onPress={handleRemoveFile}
+                onPress={() => handleRemoveFile()}
                 disabled={uploading}
                 hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
               >
@@ -1691,73 +2168,106 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
               </TouchableOpacity>
             </View>
 
-            <View style={styles.selectedFileRow}>
-              <Icon
-                name="insert-drive-file"
-                size={20}
-                color={theme.colors.primary}
-              />
-              <Text style={styles.selectedFileName} numberOfLines={1}>
-                {selectedFile?.name}
-              </Text>
-            </View>
+            <ScrollView
+              style={styles.selectedFilesScroll}
+              nestedScrollEnabled
+              showsVerticalScrollIndicator={false}
+            >
+              {selectedFiles.map((file, index) => (
+                <View key={`${file.uri}-${index}`} style={styles.selectedFileRow}>
+                  <Icon
+                    name="insert-drive-file"
+                    size={20}
+                    color={theme.colors.primary}
+                  />
+                  <Text style={styles.selectedFileName} numberOfLines={1}>
+                    {file.name}
+                  </Text>
+                  <TouchableOpacity
+                    onPress={() => handleRemoveFile(index)}
+                    disabled={uploading}
+                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                  >
+                    <Icon name="close" size={18} color={theme.colors.textSecondary} />
+                  </TouchableOpacity>
+                </View>
+              ))}
+            </ScrollView>
 
-            <Text style={styles.followupLabel}>Category</Text>
             <TouchableOpacity
-              style={styles.categorySelect}
+              style={styles.addMoreFilesBtn}
               activeOpacity={0.7}
               disabled={uploading}
-              onPress={() => setCategoryDropdownOpen(o => !o)}
+              onPress={handleFilePick}
             >
-              <Text
-                style={[
-                  styles.categorySelectText,
-                  !selectedCategory && styles.followupPlaceholder,
-                ]}
-              >
-                {selectedCategory || 'Select category'}
-              </Text>
-              <Icon
-                name={categoryDropdownOpen ? 'expand-less' : 'expand-more'}
-                size={22}
-                color={theme.colors.textSecondary}
-              />
+              <Icon name="add" size={20} color={theme.colors.primary} />
+              <Text style={styles.addMoreFilesText}>Add more files</Text>
             </TouchableOpacity>
-            {categoryDropdownOpen && (
-              <View style={styles.dropdownList}>
-                <ScrollView
-                  style={styles.categoryDropdownScroll}
-                  nestedScrollEnabled
+
+            {showUploadCategory ? (
+              <>
+                <Text style={styles.followupLabel}>Category</Text>
+                <TouchableOpacity
+                  style={styles.categorySelect}
+                  activeOpacity={0.7}
+                  disabled={uploading}
+                  onPress={() => setCategoryDropdownOpen(o => !o)}
                 >
-                  {categoryOptions.map(cat => {
-                    const active = cat === selectedCategory;
-                    return (
-                      <TouchableOpacity
-                        key={cat}
-                        style={styles.dropdownItem}
-                        activeOpacity={0.7}
-                        onPress={() => {
-                          setSelectedCategory(cat);
-                          setCategoryDropdownOpen(false);
-                        }}
-                      >
-                        <Text
-                          style={[
-                            styles.dropdownItemText,
-                            active && styles.dropdownItemTextActive,
-                          ]}
-                        >
-                          {cat}
-                        </Text>
-                        {active && (
-                          <Icon name="check" size={18} color={theme.colors.primary} />
-                        )}
-                      </TouchableOpacity>
-                    );
-                  })}
-                </ScrollView>
-              </View>
-            )}
+                  <Text
+                    style={[
+                      styles.categorySelectText,
+                      !selectedCategory && styles.followupPlaceholder,
+                    ]}
+                  >
+                    {selectedCategory || 'Select category'}
+                  </Text>
+                  <Icon
+                    name={categoryDropdownOpen ? 'expand-less' : 'expand-more'}
+                    size={22}
+                    color={theme.colors.textSecondary}
+                  />
+                </TouchableOpacity>
+                {categoryDropdownOpen && (
+                  <View style={styles.dropdownList}>
+                    <ScrollView
+                      style={styles.categoryDropdownScroll}
+                      nestedScrollEnabled
+                    >
+                      {categoryOptions.map(cat => {
+                        const active = cat === selectedCategory;
+                        return (
+                          <TouchableOpacity
+                            key={cat}
+                            style={styles.dropdownItem}
+                            activeOpacity={0.7}
+                            onPress={() => {
+                              setSelectedCategory(cat);
+                              setCategoryDropdownOpen(false);
+                            }}
+                          >
+                            <Text
+                              style={[
+                                styles.dropdownItemText,
+                                active && styles.dropdownItemTextActive,
+                              ]}
+                            >
+                              {cat}
+                            </Text>
+                            {active && (
+                              <Icon
+                                name="check"
+                                size={18}
+                                color={theme.colors.primary}
+                              />
+                            )}
+                          </TouchableOpacity>
+                        );
+                      })}
+                    </ScrollView>
+                  </View>
+                )}
+              </>
+            ) : null}
 
             <TouchableOpacity
               style={[
@@ -1778,7 +2288,13 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
                     size={20}
                     color={theme.colors.surface}
                   />
-                  <Text style={styles.uploadText}>Upload</Text>
+                  <Text style={styles.uploadText}>
+                    {uploading
+                      ? 'Uploading...'
+                      : selectedFiles.length > 1
+                      ? `Upload ${selectedFiles.length} files`
+                      : 'Upload'}
+                  </Text>
                 </>
               )}
             </TouchableOpacity>
@@ -1816,6 +2332,27 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
             <Text style={styles.followupSubtitle}>
               Books a queue appointment only — no prescription is created.
             </Text>
+
+            {route.params?.followupLinkedTreatments?.length ? (
+              <View style={styles.followupLinkedTreatments}>
+                <Text style={styles.followupLabel}>Linked treatments</Text>
+                {route.params.followupLinkedTreatments.map((treatment, index) => (
+                  <View
+                    key={`linked-treatment-${index}`}
+                    style={styles.followupLinkedTreatmentRow}
+                  >
+                    <Text style={styles.followupLinkedTreatmentName}>
+                      {treatment.treatmentDesc}
+                    </Text>
+                    {treatment.date ? (
+                      <Text style={styles.followupLinkedTreatmentDate}>
+                        {formatDate(treatment.date)}
+                      </Text>
+                    ) : null}
+                  </View>
+                ))}
+              </View>
+            ) : null}
 
             {/* Follow-up date */}
             <Text style={styles.followupLabel}>Follow-up date</Text>
@@ -1903,7 +2440,7 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
               </View>
             )}
 
-            {selectedDoctor?.isSlot !== false ? (
+            {isSlotBookingMode(selectedDoctor) ? (
               <>
                 {/* Slot */}
                 <Text style={styles.followupLabel}>Slot</Text>
@@ -2210,46 +2747,16 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
             </TouchableOpacity>
           </View>
 
-          {slots.length === 0 ? (
-            <Text style={styles.followupSubtitle}>
-              No slots available for this doctor on the selected date.
-            </Text>
-          ) : (
-            <ScrollView showsVerticalScrollIndicator={false}>
-              <View style={styles.slotCardGrid}>
-                {slots.map(slot => {
-                  const active = slot._id === selectedSlot?._id;
-                  const disabled = !!slot.isDisable;
-                  return (
-                    <TouchableOpacity
-                      key={slot._id}
-                      style={[
-                        styles.slotCard,
-                        active && styles.slotCardActive,
-                        disabled && styles.slotCardDisabled,
-                      ]}
-                      activeOpacity={0.8}
-                      disabled={disabled}
-                      onPress={() => {
-                        setSelectedSlot(slot);
-                        setSlotPickerOpen(false);
-                      }}
-                    >
-                      <Text style={styles.slotCardLine}>
-                        Time: {slot.startTime}
-                      </Text>
-                      <Text style={styles.slotCardLine}>
-                        Duration: {slot.duration ?? 30}
-                      </Text>
-                      <Text style={styles.slotCardLine}>
-                        Token: {slot.tokenCount ?? '—'}
-                      </Text>
-                    </TouchableOpacity>
-                  );
-                })}
-              </View>
-            </ScrollView>
-          )}
+          <SlotPickerGrid
+            slots={slots}
+            selectedSlotId={selectedSlot?._id}
+            loading={slotsLoading}
+            onSelect={slot => {
+              if (!isSlotSelectable(slot)) return;
+              setSelectedSlot(slot);
+              setSlotPickerOpen(false);
+            }}
+          />
         </View>
       </ModalBackdrop>
 
@@ -2259,13 +2766,16 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
         animationType="slide"
         statusBarTranslucent
         presentationStyle="overFullScreen"
-        onRequestClose={() => setViewerIndex(null)}
+        onRequestClose={closeFileViewer}
       >
         {(() => {
           const current =
             viewerIndex != null ? openableItems[viewerIndex] : undefined;
-          const currentUrl = current ? signedUrls[current.id] : undefined;
+          const currentUrl = current?.filePath
+            ? signedUrls[current.filePath]
+            : undefined;
           const isPdf = (current?.mimeType || '').includes('pdf');
+          const isImage = isImageUploadPart(current);
           return (
             <SafeAreaView
               edges={['top', 'bottom']}
@@ -2273,7 +2783,7 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
             >
               <View style={styles.viewerHeader}>
                 <TouchableOpacity
-                  onPress={() => setViewerIndex(null)}
+                  onPress={closeFileViewer}
                   hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
                 >
                   <Icon name="arrow-back" size={24} color={theme.colors.text} />
@@ -2281,13 +2791,66 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
                 <Text style={styles.viewerTitle} numberOfLines={1}>
                   {current?.fileName || 'File'}
                 </Text>
+                {isImage && currentUrl ? (
+                  <TouchableOpacity
+                    onPress={rotateViewerImage}
+                    style={styles.viewerRotateBtn}
+                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                    accessibilityLabel="Rotate image"
+                  >
+                    <Icon name="rotate-right" size={22} color={theme.colors.primary} />
+                  </TouchableOpacity>
+                ) : (
+                  <View style={styles.viewerRotatePlaceholder} />
+                )}
+                <View style={styles.viewerZoomActions}>
+                  <TouchableOpacity
+                    onPress={zoomViewerOut}
+                    disabled={viewerZoom <= VIEWER_MIN_ZOOM}
+                    style={[
+                      styles.viewerZoomBtn,
+                      viewerZoom <= VIEWER_MIN_ZOOM && styles.viewerZoomBtnDisabled,
+                    ]}
+                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                    accessibilityLabel="Zoom out"
+                  >
+                    <Text style={styles.viewerZoomBtnText}>−</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    onPress={zoomViewerIn}
+                    disabled={viewerZoom >= VIEWER_MAX_ZOOM}
+                    style={[
+                      styles.viewerZoomBtn,
+                      viewerZoom >= VIEWER_MAX_ZOOM && styles.viewerZoomBtnDisabled,
+                    ]}
+                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                    accessibilityLabel="Zoom in"
+                  >
+                    <Text style={styles.viewerZoomBtnText}>+</Text>
+                  </TouchableOpacity>
+                </View>
                 <Text style={styles.viewerCount}>
-                  {viewerIndex != null ? viewerIndex + 1 : 0}/
-                  {openableItems.length}
+                  {viewerStripItems.length > 1
+                    ? `${
+                        viewerStripItems.findIndex(
+                          it => it.filePath === current?.filePath,
+                        ) + 1
+                      }/${viewerStripItems.length}`
+                    : viewerIndex != null
+                      ? `${viewerIndex + 1}/${openableItems.length}`
+                      : '0/0'}
                 </Text>
               </View>
 
-              <View style={styles.viewerBody}>
+              <View
+                style={styles.viewerBody}
+                onLayout={event => {
+                  const { width, height } = event.nativeEvent.layout;
+                  if (width > 0 && height > 0) {
+                    setViewerBodySize({ w: width, h: height });
+                  }
+                }}
+              >
                 {!currentUrl ? (
                   <ActivityIndicator
                     size="large"
@@ -2299,44 +2862,95 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
                     source={{ uri: currentUrl, cache: true }}
                     trustAllCerts={false}
                     style={styles.viewerPdf}
+                    scale={viewerZoom}
+                    minScale={VIEWER_MIN_ZOOM}
+                    maxScale={VIEWER_MAX_ZOOM}
+                    enableDoubleTapZoom
+                    onScaleChanged={(scale: number) => {
+                      const next = Math.max(
+                        VIEWER_MIN_ZOOM,
+                        Math.min(VIEWER_MAX_ZOOM, Math.round(scale * 100) / 100),
+                      );
+                      setViewerZoom(next);
+                    }}
                     onError={err => {
                       console.error('PDF render error:', err);
                     }}
                   />
                 ) : (
-                  <ScrollView
+                  <PinchZoomView
+                    key={current?.id || currentUrl}
                     style={styles.viewerImageScroll}
-                    contentContainerStyle={styles.viewerImageContent}
-                    maximumZoomScale={4}
-                    minimumZoomScale={1}
-                    centerContent
+                    zoom={viewerZoom}
+                    minZoom={VIEWER_MIN_ZOOM}
+                    maxZoom={VIEWER_MAX_ZOOM}
+                    onZoomChange={setViewerZoom}
+                    viewportWidth={viewerBodySize.w}
+                    viewportHeight={viewerBodySize.h}
+                    contentWidth={viewerImageLayout?.frameWidth || SCREEN_WIDTH}
+                    contentHeight={viewerImageLayout?.frameHeight || SCREEN_HEIGHT * 0.7}
                   >
-                    <Image
-                      source={{ uri: currentUrl }}
-                      style={styles.viewerImage}
-                      resizeMode="contain"
-                    />
-                  </ScrollView>
+                    <View
+                      style={[
+                        styles.viewerImageFrame,
+                        viewerImageLayout
+                          ? {
+                              width: viewerImageLayout.frameWidth,
+                              height: viewerImageLayout.frameHeight,
+                            }
+                          : null,
+                      ]}
+                    >
+                      <Image
+                        source={{ uri: currentUrl }}
+                        style={[
+                          styles.viewerImage,
+                          viewerImageLayout
+                            ? {
+                                width: viewerImageLayout.imgWidth,
+                                height: viewerImageLayout.imgHeight,
+                              }
+                            : null,
+                          { transform: [{ rotate: `${viewerRotation}deg` }] },
+                        ]}
+                        resizeMode="contain"
+                        onLoad={event => {
+                          const { width, height } = event.nativeEvent.source;
+                          if (width > 0 && height > 0) {
+                            setViewerImageNatural({ w: width, h: height });
+                          }
+                        }}
+                      />
+                    </View>
+                  </PinchZoomView>
                 )}
               </View>
 
-              {/* Bottom glider: thumbnails of all prescriptions */}
-              {openableItems.length > 1 && (
+              {/* Bottom glider: compact thumbnails for this batch (or all uploads) */}
+              {viewerStripItems.length > 1 && (
                 <View style={styles.gliderContainer}>
                   <ScrollView
                     horizontal
                     showsHorizontalScrollIndicator={false}
                     contentContainerStyle={styles.gliderContent}
                   >
-                    {openableItems.map((it, idx) => {
+                    {viewerStripItems.map(it => {
                       const itIsImage = (it.mimeType || '').startsWith('image/');
-                      const itUri = signedUrls[it.id];
-                      const active = idx === viewerIndex;
+                      const itUri = it.filePath ? signedUrls[it.filePath] : undefined;
+                      const active = it.filePath === current?.filePath;
                       return (
                         <TouchableOpacity
                           key={it.id}
                           activeOpacity={0.8}
-                          onPress={() => setViewerIndex(idx)}
+                          onPress={() => {
+                            const globalIndex = openableItems.findIndex(
+                              o => o.filePath === it.filePath,
+                            );
+                            if (globalIndex >= 0) {
+                              resetViewerImageState();
+                              setViewerIndex(globalIndex);
+                            }
+                          }}
                           style={[
                             styles.gliderThumb,
                             active && styles.gliderThumbActive,
@@ -2351,7 +2965,7 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
                           ) : (
                             <Icon
                               name={itIsImage ? 'image' : 'picture-as-pdf'}
-                              size={26}
+                              size={14}
                               color={itIsImage ? theme.colors.primary : '#E53935'}
                             />
                           )}
@@ -2368,7 +2982,8 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
 
       <TreatmentPlanDrawer
         visible={treatmentPlanOpen}
-        onClose={() => setTreatmentPlanOpen(false)}
+        onClose={closeTreatmentPlanDrawer}
+        editPlan={editingTreatmentPlan}
         onSave={handleSaveTreatmentPlan}
         token={token}
       />
@@ -2376,8 +2991,10 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
       <OPDActionsFab
         onUploadPrescriptionPress={() => openUploadModal('prescription')}
         onUploadProcedurePress={() => openUploadModal('procedure')}
+        onUploadLabPress={() => openUploadModal('lab')}
         onTreatmentPlanPress={handleTreatmentPlanPress}
         onFollowupPress={openFollowupModal}
+        showTreatmentPlan={canManageTreatmentPlanAccess}
       />
     </View>
   );
@@ -2412,14 +3029,28 @@ const styles = StyleSheet.create({
     color: theme.colors.surface,
   },
   header: {
-    paddingHorizontal: theme.spacing.md,
-    paddingVertical: theme.spacing.md,
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    paddingHorizontal: theme.spacing.sm,
+    paddingVertical: theme.spacing.sm,
     borderBottomWidth: 1,
     borderBottomColor: theme.colors.border,
     backgroundColor: theme.colors.surface,
   },
   headerGrid: {
+    flex: 1,
     flexDirection: 'row',
+  },
+  headerEditBtn: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: theme.colors.background,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    marginLeft: theme.spacing.xs,
   },
   headerCol: {
     flex: 1,
@@ -2442,7 +3073,8 @@ const styles = StyleSheet.create({
   },
   content: {
     flexGrow: 1,
-    padding: theme.spacing.md,
+    paddingHorizontal: theme.spacing.md,
+    paddingTop: theme.spacing.sm,
     paddingBottom: 96,
   },
   selectedFileRow: {
@@ -2461,6 +3093,32 @@ const styles = StyleSheet.create({
     fontSize: theme.typography.fontSizes.md,
     color: theme.colors.text,
     marginHorizontal: theme.spacing.sm,
+  },
+  selectedFilesScroll: {
+    maxHeight: 160,
+    marginBottom: theme.spacing.xs,
+  },
+  addMoreFilesBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: theme.colors.primary,
+    borderStyle: 'dashed',
+    borderRadius: theme.borderRadius.md,
+    paddingVertical: theme.spacing.sm,
+    marginBottom: theme.spacing.sm,
+    gap: theme.spacing.xs,
+  },
+  addMoreFilesText: {
+    fontSize: theme.typography.fontSizes.sm,
+    fontWeight: theme.typography.fontWeights.semiBold,
+    color: theme.colors.primary,
+  },
+  styledUploadFileCount: {
+    marginTop: 4,
+    fontSize: theme.typography.fontSizes.sm,
+    color: theme.colors.textSecondary,
   },
   categorySelect: {
     flexDirection: 'row',
@@ -2487,9 +3145,9 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     borderRadius: theme.borderRadius.md,
-    paddingVertical: theme.spacing.md,
+    paddingVertical: theme.spacing.sm,
     paddingHorizontal: theme.spacing.md,
-    marginBottom: theme.spacing.lg,
+    marginBottom: theme.spacing.md,
     backgroundColor: '#4CAF50',
   },
   confirmBtnDisabled: {
@@ -2502,19 +3160,19 @@ const styles = StyleSheet.create({
     marginLeft: theme.spacing.sm,
   },
   uploadPopupConfirmBtn: {
-    marginTop: theme.spacing.lg,
+    marginTop: theme.spacing.md,
     marginBottom: 0,
   },
   uploadPopupCard: {
     width: '100%',
     maxWidth: 520,
     backgroundColor: theme.colors.surface,
-    borderRadius: theme.borderRadius.xl,
+    borderRadius: theme.borderRadius.lg,
     overflow: 'hidden',
     ...theme.shadows.sm,
   },
   uploadPopupBody: {
-    padding: theme.spacing.lg,
+    padding: theme.spacing.md,
   },
   uploadModalContainer: {
     backgroundColor: theme.colors.surface,
@@ -2522,38 +3180,39 @@ const styles = StyleSheet.create({
     borderTopRightRadius: theme.borderRadius.xl,
   },
   uploadModalContent: {
-    padding: theme.spacing.lg,
+    padding: theme.spacing.md,
   },
   uploadModalHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: theme.spacing.lg,
-    paddingBottom: theme.spacing.md,
+    marginBottom: theme.spacing.sm,
+    paddingBottom: theme.spacing.sm,
     borderBottomWidth: 1,
     borderBottomColor: theme.colors.border,
   },
   uploadModalTitle: {
-    fontSize: theme.typography.fontSizes.xl,
+    fontSize: theme.typography.fontSizes.lg,
     fontWeight: theme.typography.fontWeights.bold,
     color: theme.colors.text,
   },
   uploadOption: {
     flexDirection: 'row',
     alignItems: 'center',
-    padding: theme.spacing.md,
+    paddingVertical: theme.spacing.sm,
+    paddingHorizontal: theme.spacing.sm,
     borderRadius: theme.borderRadius.md,
     backgroundColor: theme.colors.background,
-    marginBottom: theme.spacing.sm,
+    marginBottom: theme.spacing.xs,
   },
   uploadOptionIcon: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
     backgroundColor: theme.colors.primary + '15',
     alignItems: 'center',
     justifyContent: 'center',
-    marginRight: theme.spacing.md,
+    marginRight: theme.spacing.sm,
   },
   uploadOptionTextWrap: {
     flex: 1,
@@ -2569,11 +3228,11 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
   historyTitle: {
-    fontSize: theme.typography.fontSizes.lg,
+    fontSize: theme.typography.fontSizes.md,
     fontWeight: theme.typography.fontWeights.bold,
     color: theme.colors.text,
-    marginTop: theme.spacing.md,
-    marginBottom: theme.spacing.md,
+    marginTop: theme.spacing.xs,
+    marginBottom: theme.spacing.sm,
   },
   historyLoader: {
     marginTop: theme.spacing.lg,
@@ -2585,21 +3244,21 @@ const styles = StyleSheet.create({
     marginTop: theme.spacing.xxl,
   },
   historySection: {
-    marginBottom: theme.spacing.md,
+    marginBottom: theme.spacing.sm,
   },
   sectionHeaderRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: theme.spacing.md,
+    marginBottom: theme.spacing.sm,
   },
   sectionLabelPill: {
     backgroundColor: '#ECEFF1',
     borderRadius: theme.borderRadius.lg,
-    paddingVertical: theme.spacing.xs,
-    paddingHorizontal: theme.spacing.md,
+    paddingVertical: 3,
+    paddingHorizontal: theme.spacing.sm,
   },
   sectionLabelText: {
-    fontSize: theme.typography.fontSizes.sm,
+    fontSize: theme.typography.fontSizes.xs,
     fontWeight: theme.typography.fontWeights.bold,
     color: '#546E7A',
   },
@@ -2611,9 +3270,9 @@ const styles = StyleSheet.create({
   },
   // Shared info lines (File: / Date: / Time: / Uploaded By:)
   cardInfoLine: {
-    fontSize: theme.typography.fontSizes.md,
+    fontSize: theme.typography.fontSizes.sm,
     color: theme.colors.text,
-    marginTop: theme.spacing.xs,
+    marginTop: 3,
   },
   cardInfoLabel: {
     fontWeight: theme.typography.fontWeights.bold,
@@ -2635,7 +3294,7 @@ const styles = StyleSheet.create({
   },
   metaValue: {
     flex: 1,
-    fontSize: theme.typography.fontSizes.md,
+    fontSize: theme.typography.fontSizes.sm,
     fontWeight: theme.typography.fontWeights.semiBold,
     color: theme.colors.text,
   },
@@ -2644,11 +3303,11 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
     backgroundColor: theme.colors.primary,
-    paddingHorizontal: theme.spacing.md,
-    paddingVertical: 10,
+    paddingHorizontal: theme.spacing.sm,
+    paddingVertical: 8,
   },
   historyCardHeaderTitle: {
-    fontSize: theme.typography.fontSizes.md,
+    fontSize: theme.typography.fontSizes.sm,
     fontWeight: theme.typography.fontWeights.bold,
     color: theme.colors.surface,
   },
@@ -2659,9 +3318,9 @@ const styles = StyleSheet.create({
   // Uploaded prescription / procedure cards
   styledUploadCard: {
     backgroundColor: theme.colors.surface,
-    borderRadius: theme.borderRadius.lg,
+    borderRadius: theme.borderRadius.md,
     overflow: 'hidden',
-    marginBottom: theme.spacing.md,
+    marginBottom: theme.spacing.sm,
     borderWidth: 1,
     borderColor: '#E0E7FF',
     ...theme.shadows.sm,
@@ -2670,9 +3329,17 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
+    paddingHorizontal: theme.spacing.sm,
+    paddingVertical: 8,
+  },
+  styledUploadHeaderPrescription: {
     backgroundColor: '#8B5CF6',
-    paddingHorizontal: theme.spacing.md,
-    paddingVertical: 10,
+  },
+  styledUploadHeaderProcedure: {
+    backgroundColor: '#1565C0',
+  },
+  styledUploadHeaderLab: {
+    backgroundColor: '#047857',
   },
   styledUploadHeaderLeft: {
     flexDirection: 'row',
@@ -2681,7 +3348,7 @@ const styles = StyleSheet.create({
     gap: theme.spacing.sm,
   },
   styledUploadHeaderTitle: {
-    fontSize: theme.typography.fontSizes.md,
+    fontSize: theme.typography.fontSizes.sm,
     fontWeight: theme.typography.fontWeights.bold,
     color: theme.colors.surface,
   },
@@ -2699,7 +3366,7 @@ const styles = StyleSheet.create({
     textTransform: 'uppercase',
   },
   styledUploadPanel: {
-    padding: theme.spacing.md,
+    padding: theme.spacing.sm,
   },
   styledUploadPanelPrescription: {
     backgroundColor: theme.colors.surface,
@@ -2707,19 +3374,68 @@ const styles = StyleSheet.create({
   styledUploadPanelProcedure: {
     backgroundColor: '#F4F7FF',
   },
+  styledUploadPanelLab: {
+    backgroundColor: '#ECFDF5',
+  },
   styledUploadContent: {
     flexDirection: 'row',
   },
+  uploadFilesGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+    marginTop: theme.spacing.xs,
+  },
+  uploadGridCellWrap: {
+    position: 'relative',
+  },
+  uploadGridCell: {
+    width: 40,
+    height: 40,
+    borderRadius: theme.borderRadius.sm,
+    borderWidth: 1,
+    borderColor: '#E0E7FF',
+    backgroundColor: theme.colors.surface,
+    overflow: 'hidden',
+  },
+  uploadGridCellRemove: {
+    position: 'absolute',
+    top: -4,
+    right: -4,
+    width: 16,
+    height: 16,
+    borderRadius: 8,
+    backgroundColor: '#EF4444',
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 1,
+  },
+  uploadGridCellImage: {
+    width: '100%',
+    height: '100%',
+  },
+  uploadGridCellFallback: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#F8FAFC',
+  },
+  uploadGridCellExt: {
+    fontSize: 9,
+    fontWeight: theme.typography.fontWeights.bold,
+    color: '#64748B',
+    marginTop: 2,
+  },
   styledUploadThumbnail: {
-    width: 96,
-    height: 96,
+    width: 52,
+    height: 52,
     borderRadius: theme.borderRadius.md,
     borderWidth: 1,
     borderColor: '#E0E7FF',
     backgroundColor: theme.colors.surface,
     alignItems: 'center',
     justifyContent: 'center',
-    marginRight: theme.spacing.md,
+    marginRight: theme.spacing.sm,
     overflow: 'hidden',
   },
   styledUploadThumbnailLabel: {
@@ -2732,15 +3448,15 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   styledUploadFileName: {
-    fontSize: theme.typography.fontSizes.lg,
-    fontWeight: theme.typography.fontWeights.bold,
+    fontSize: theme.typography.fontSizes.md,
+    fontWeight: theme.typography.fontWeights.semiBold,
     color: '#1F2937',
-    marginBottom: theme.spacing.sm,
+    marginBottom: theme.spacing.xs,
   },
   styledUploadMetaRow: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: theme.spacing.md,
+    gap: theme.spacing.sm,
   },
   styledUploadMetaItem: {
     flexDirection: 'row',
@@ -2760,18 +3476,18 @@ const styles = StyleSheet.create({
   },
   styledUploadActions: {
     flexDirection: 'row',
-    marginTop: theme.spacing.md,
-    gap: theme.spacing.sm,
+    marginTop: theme.spacing.sm,
+    gap: theme.spacing.xs,
   },
   styledUploadActionBtn: {
     flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    borderRadius: theme.borderRadius.lg,
-    paddingVertical: theme.spacing.sm,
+    borderRadius: theme.borderRadius.md,
+    paddingVertical: 6,
     paddingHorizontal: theme.spacing.xs,
-    gap: 4,
+    gap: 3,
     borderWidth: 1,
   },
   styledUploadActionPrint: {
@@ -2787,41 +3503,41 @@ const styles = StyleSheet.create({
     borderColor: '#FFCDD2',
   },
   styledUploadActionText: {
-    fontSize: theme.typography.fontSizes.sm,
+    fontSize: theme.typography.fontSizes.xs,
     fontWeight: theme.typography.fontWeights.semiBold,
     color: '#6366F1',
   },
   styledUploadActionDeleteText: {
-    fontSize: theme.typography.fontSizes.sm,
+    fontSize: theme.typography.fontSizes.xs,
     fontWeight: theme.typography.fontWeights.semiBold,
     color: '#EF4444',
   },
   // Lab report card
   labCard: {
     backgroundColor: theme.colors.surface,
-    borderRadius: theme.borderRadius.lg,
-    padding: theme.spacing.md,
-    marginBottom: theme.spacing.md,
+    borderRadius: theme.borderRadius.md,
+    padding: theme.spacing.sm,
+    marginBottom: theme.spacing.sm,
     ...theme.shadows.sm,
   },
   labBadge: {
     alignSelf: 'flex-start',
-    backgroundColor: '#E8EAF6',
+    backgroundColor: '#D1FAE5',
     borderRadius: theme.borderRadius.sm,
-    paddingVertical: theme.spacing.xs,
+    paddingVertical: 3,
     paddingHorizontal: theme.spacing.sm,
-    marginBottom: theme.spacing.sm,
+    marginBottom: theme.spacing.xs,
   },
   labBadgeText: {
-    fontSize: theme.typography.fontSizes.md,
+    fontSize: theme.typography.fontSizes.xs,
     fontWeight: theme.typography.fontWeights.bold,
-    color: theme.colors.text,
+    color: '#047857',
   },
   apptCard: {
     backgroundColor: theme.colors.surface,
-    borderRadius: theme.borderRadius.lg,
+    borderRadius: theme.borderRadius.md,
     overflow: 'hidden',
-    marginBottom: theme.spacing.md,
+    marginBottom: theme.spacing.sm,
     borderWidth: 1,
     borderColor: '#BBDEFB',
     ...theme.shadows.sm,
@@ -2836,19 +3552,19 @@ const styles = StyleSheet.create({
   },
   apptStatusBadge: {
     borderRadius: theme.borderRadius.xl,
-    paddingHorizontal: theme.spacing.md,
-    paddingVertical: 4,
+    paddingHorizontal: theme.spacing.sm,
+    paddingVertical: 3,
     marginLeft: theme.spacing.sm,
   },
   apptStatusText: {
-    fontSize: theme.typography.fontSizes.sm,
+    fontSize: theme.typography.fontSizes.xs,
     fontWeight: theme.typography.fontWeights.bold,
     color: theme.colors.surface,
   },
   apptCardBody: {
     backgroundColor: '#F5F7FA',
-    paddingHorizontal: theme.spacing.md,
-    paddingVertical: theme.spacing.md,
+    paddingHorizontal: theme.spacing.sm,
+    paddingVertical: theme.spacing.sm,
   },
   apptCardGrid: {
     flexDirection: 'row',
@@ -2858,6 +3574,34 @@ const styles = StyleSheet.create({
     width: '50%',
     paddingRight: theme.spacing.sm,
     marginBottom: theme.spacing.sm,
+  },
+  apptTreatmentBlock: {
+    marginTop: theme.spacing.sm,
+    borderWidth: 1,
+    borderColor: '#C8E6C9',
+    borderRadius: theme.borderRadius.lg,
+    backgroundColor: theme.colors.surface,
+    padding: theme.spacing.md,
+  },
+  apptTreatmentLabel: {
+    fontSize: theme.typography.fontSizes.xs,
+    fontWeight: theme.typography.fontWeights.bold,
+    color: theme.colors.textSecondary,
+    marginBottom: theme.spacing.xs,
+  },
+  apptTreatmentItem: {
+    paddingVertical: theme.spacing.xs,
+    borderBottomWidth: 1,
+    borderBottomColor: theme.colors.border,
+  },
+  apptTreatmentName: {
+    fontSize: theme.typography.fontSizes.md,
+    color: theme.colors.text,
+  },
+  apptTreatmentDate: {
+    marginTop: 2,
+    fontSize: theme.typography.fontSizes.sm,
+    color: theme.colors.textSecondary,
   },
   apptRemarkBox: {
     marginTop: theme.spacing.sm,
@@ -2965,6 +3709,44 @@ const styles = StyleSheet.create({
     color: theme.colors.text,
     marginLeft: theme.spacing.md,
   },
+  viewerRotateBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: theme.colors.background,
+    marginLeft: theme.spacing.xs,
+  },
+  viewerRotatePlaceholder: {
+    width: 36,
+    marginLeft: theme.spacing.xs,
+  },
+  viewerZoomActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginLeft: theme.spacing.sm,
+    gap: 4,
+  },
+  viewerZoomBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: theme.colors.surface,
+  },
+  viewerZoomBtnDisabled: {
+    opacity: 0.4,
+  },
+  viewerZoomBtnText: {
+    fontSize: 20,
+    lineHeight: 22,
+    fontWeight: theme.typography.fontWeights.semiBold,
+    color: theme.colors.text,
+  },
   viewerCount: {
     fontSize: theme.typography.fontSizes.md,
     fontWeight: theme.typography.fontWeights.semiBold,
@@ -2993,8 +3775,13 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   viewerImage: {
-    width: SCREEN_WIDTH,
-    height: SCREEN_HEIGHT * 0.8,
+    maxWidth: '100%',
+    maxHeight: '100%',
+  },
+  viewerImageFrame: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    overflow: 'visible',
   },
   // Bottom glider strip
   gliderContainer: {
@@ -3003,19 +3790,20 @@ const styles = StyleSheet.create({
     backgroundColor: theme.colors.surface,
   },
   gliderContent: {
-    paddingHorizontal: theme.spacing.md,
-    paddingVertical: theme.spacing.sm,
+    paddingHorizontal: theme.spacing.sm,
+    paddingVertical: 6,
+    gap: 6,
   },
   gliderThumb: {
-    width: 56,
-    height: 56,
-    borderRadius: theme.borderRadius.md,
-    borderWidth: 2,
+    width: 40,
+    height: 40,
+    borderRadius: 6,
+    borderWidth: 1.5,
     borderColor: 'transparent',
     backgroundColor: theme.colors.background,
     alignItems: 'center',
     justifyContent: 'center',
-    marginRight: theme.spacing.sm,
+    marginRight: 6,
     overflow: 'hidden',
   },
   gliderThumbActive: {
@@ -3038,7 +3826,14 @@ const styles = StyleSheet.create({
   followupHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: theme.spacing.md,
+    marginBottom: theme.spacing.sm,
+  },
+  uploadPopupTitle: {
+    flex: 1,
+    fontSize: theme.typography.fontSizes.lg,
+    fontWeight: theme.typography.fontWeights.bold,
+    color: theme.colors.text,
+    marginRight: theme.spacing.sm,
   },
   followupTitle: {
     fontSize: theme.typography.fontSizes.xl,
@@ -3070,7 +3865,25 @@ const styles = StyleSheet.create({
   followupSubtitle: {
     fontSize: theme.typography.fontSizes.sm,
     color: theme.colors.textSecondary,
-    marginBottom: theme.spacing.lg,
+    marginBottom: theme.spacing.md,
+  },
+  followupLinkedTreatments: {
+    marginBottom: theme.spacing.md,
+    paddingBottom: theme.spacing.sm,
+    borderBottomWidth: 1,
+    borderBottomColor: theme.colors.border,
+  },
+  followupLinkedTreatmentRow: {
+    paddingVertical: theme.spacing.xs,
+  },
+  followupLinkedTreatmentName: {
+    fontSize: theme.typography.fontSizes.md,
+    color: theme.colors.text,
+  },
+  followupLinkedTreatmentDate: {
+    marginTop: 2,
+    fontSize: theme.typography.fontSizes.sm,
+    color: theme.colors.textSecondary,
   },
   followupLabel: {
     fontSize: theme.typography.fontSizes.md,

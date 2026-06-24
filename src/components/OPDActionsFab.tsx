@@ -13,8 +13,10 @@ import ModalBackdrop from './ModalBackdrop';
 interface OPDActionsFabProps {
   onUploadPrescriptionPress: () => void;
   onUploadProcedurePress: () => void;
+  onUploadLabPress: () => void;
   onTreatmentPlanPress: () => void;
   onFollowupPress: () => void;
+  showTreatmentPlan?: boolean;
 }
 
 interface DrawerAction {
@@ -31,8 +33,10 @@ interface DrawerAction {
 const OPDActionsFab: React.FC<OPDActionsFabProps> = ({
   onUploadPrescriptionPress,
   onUploadProcedurePress,
+  onUploadLabPress,
   onTreatmentPlanPress,
   onFollowupPress,
+  showTreatmentPlan = true,
 }) => {
   const insets = useSafeAreaInsets();
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -62,6 +66,15 @@ const OPDActionsFab: React.FC<OPDActionsFabProps> = ({
       iconColor: '#2E7D32',
       iconBg: '#E8F5E9',
       onPress: () => runAction(onUploadProcedurePress),
+    },
+    {
+      key: 'lab',
+      title: 'Lab / Investigation',
+      subtitle: 'Upload lab report or scan',
+      icon: 'biotech',
+      iconColor: '#047857',
+      iconBg: '#D1FAE5',
+      onPress: () => runAction(onUploadLabPress),
     },
     {
       key: 'treatment',
@@ -114,7 +127,11 @@ const OPDActionsFab: React.FC<OPDActionsFabProps> = ({
           <Text style={styles.drawerTitle}>Quick actions</Text>
           <Text style={styles.drawerSubtitle}>Add records for this patient</Text>
 
-          {actions.map(action => (
+          {actions
+            .filter(
+              action => showTreatmentPlan || action.key !== 'treatment',
+            )
+            .map(action => (
             <TouchableOpacity
               key={action.key}
               style={[
@@ -201,7 +218,7 @@ const styles = StyleSheet.create({
     marginBottom: theme.spacing.md,
   },
   drawerTitle: {
-    fontSize: theme.typography.fontSizes.xl,
+    fontSize: theme.typography.fontSizes.lg,
     fontWeight: theme.typography.fontWeights.bold,
     color: '#1A237E',
     textAlign: 'center',
@@ -210,17 +227,18 @@ const styles = StyleSheet.create({
     fontSize: theme.typography.fontSizes.sm,
     color: theme.colors.textSecondary,
     textAlign: 'center',
-    marginTop: theme.spacing.xs,
-    marginBottom: theme.spacing.lg,
+    marginTop: 2,
+    marginBottom: theme.spacing.md,
   },
   drawerOption: {
     flexDirection: 'row',
     alignItems: 'center',
     borderWidth: 1,
     borderColor: theme.colors.border,
-    borderRadius: theme.borderRadius.lg,
-    padding: theme.spacing.md,
-    marginBottom: theme.spacing.sm,
+    borderRadius: theme.borderRadius.md,
+    paddingVertical: theme.spacing.sm,
+    paddingHorizontal: theme.spacing.md,
+    marginBottom: theme.spacing.xs,
     backgroundColor: theme.colors.surface,
   },
   drawerOptionAccent: {
@@ -228,18 +246,18 @@ const styles = StyleSheet.create({
     backgroundColor: '#F3E5F5',
   },
   drawerOptionIcon: {
-    width: 44,
-    height: 44,
+    width: 38,
+    height: 38,
     borderRadius: theme.borderRadius.md,
     alignItems: 'center',
     justifyContent: 'center',
-    marginRight: theme.spacing.md,
+    marginRight: theme.spacing.sm,
   },
   drawerOptionTextWrap: {
     flex: 1,
   },
   drawerOptionTitle: {
-    fontSize: theme.typography.fontSizes.md,
+    fontSize: theme.typography.fontSizes.sm,
     fontWeight: theme.typography.fontWeights.semiBold,
     color: theme.colors.text,
   },
@@ -247,20 +265,20 @@ const styles = StyleSheet.create({
     color: '#7B1FA2',
   },
   drawerOptionSubtitle: {
-    fontSize: theme.typography.fontSizes.sm,
+    fontSize: theme.typography.fontSizes.xs,
     color: theme.colors.textSecondary,
-    marginTop: 2,
+    marginTop: 1,
   },
   drawerOptionSubtitleAccent: {
     color: '#7B1FA2',
   },
   cancelBtn: {
     alignItems: 'center',
-    paddingVertical: theme.spacing.md,
+    paddingVertical: theme.spacing.sm,
     marginTop: theme.spacing.xs,
   },
   cancelBtnText: {
-    fontSize: theme.typography.fontSizes.lg,
+    fontSize: theme.typography.fontSizes.md,
     fontWeight: theme.typography.fontWeights.semiBold,
     color: '#546E7A',
   },

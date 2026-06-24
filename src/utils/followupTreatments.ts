@@ -1,4 +1,5 @@
 import type { TreatmentPlanRecord } from '../components/TreatmentPlanCard';
+import { detailLabel } from './appointmentTreatments';
 
 export interface FollowupTreatmentOption {
   key: string;
@@ -127,6 +128,44 @@ export interface BookFollowupDetail {
   qty?: number;
   description?: string;
 }
+
+/** Pre-select treatment picker keys from an appointment's linked details. */
+export const matchDetailsToTreatmentKeys = (
+  details: Array<Record<string, unknown>>,
+  planGroups: FollowupPlanGroup[],
+  catalogOptions: FollowupTreatmentOption[],
+): Set<string> => {
+  const keys = new Set<string>();
+
+  for (const detail of details) {
+    const msId = String(detail.manageServiceId || '').trim();
+    if (msId) {
+      const catalogKey = `ms:${msId}`;
+      if (catalogOptions.some(item => item.key === catalogKey)) {
+        keys.add(catalogKey);
+        continue;
+      }
+    }
+
+    const label = detailLabel(detail).toLowerCase();
+    if (!label) continue;
+
+    for (const group of planGroups) {
+      for (const treatment of group.treatments) {
+        if (treatment.treatmentDesc.toLowerCase() === label) {
+          keys.add(treatment.key);
+        }
+      }
+    }
+    for (const treatment of catalogOptions) {
+      if (treatment.treatmentDesc.toLowerCase() === label) {
+        keys.add(treatment.key);
+      }
+    }
+  }
+
+  return keys;
+};
 
 export const collectSelectedFollowupDetails = (
   selectedKeys: Set<string>,

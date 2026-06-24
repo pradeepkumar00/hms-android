@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   View,
   Text,
@@ -16,6 +16,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Icon from 'react-native-vector-icons/MaterialIcons';
 import { theme } from '../constants/theme';
 import ModalBackdrop from './ModalBackdrop';
+import type { TreatmentPlanItem, TreatmentPlanRecord } from './TreatmentPlanCard';
 import { useAppSelector, selectManageServices, selectAppDataLoading } from '../store';
 import {
   filterManageServicesByType,
@@ -26,33 +27,12 @@ const PAYMENT_MODES = ['Cash', 'UPI', 'Card', 'Cheque', 'Online'];
 const SHEET_MAX_HEIGHT = Math.round(Dimensions.get('window').height * 0.92);
 const TEETH_IMAGE_BASE = 'https://hms.octusai.com/assets/images/teeth';
 
-// Primary teeth reuse permanent tooth artwork on the server.
-const PRIMARY_TOOTH_IMAGE_MAP: Record<number, number> = {
-  55: 15,
-  54: 14,
-  53: 13,
-  52: 12,
-  51: 11,
-  61: 21,
-  62: 22,
-  63: 23,
-  64: 24,
-  65: 25,
-  85: 45,
-  84: 44,
-  83: 43,
-  82: 42,
-  81: 41,
-  71: 31,
-  72: 32,
-  73: 33,
-  74: 34,
-  75: 35,
-};
+/** Match web teeth-selection: primary teeth reuse permanent artwork via t - 40. */
+const getToothImageNumber = (tooth: number) => (tooth > 50 ? tooth - 40 : tooth);
 
-const getToothImageUri = (tooth: number) => {
-  const imageTooth = PRIMARY_TOOTH_IMAGE_MAP[tooth] ?? tooth;
-  return `${TEETH_IMAGE_BASE}/${imageTooth}_.png`;
+const getToothImageUri = (tooth: number, selected: boolean) => {
+  const imageTooth = getToothImageNumber(tooth);
+  return `${TEETH_IMAGE_BASE}/${imageTooth}${selected ? '_' : ''}.png`;
 };
 
 const UPPER_RIGHT = [18, 17, 16, 15, 14, 13, 12, 11];
@@ -66,7 +46,7 @@ const LOWER_PRIMARY_LEFT = [71, 72, 73, 74, 75];
 
 // Fixed slots per quadrant half so the midline divider aligns across all arches.
 const TEETH_SLOTS_PER_SIDE = 8;
-const TOOTH_SLOT_WIDTH = 36;
+const TOOTH_SLOT_WIDTH = 32;
 const TEETH_SIDE_WIDTH = TEETH_SLOTS_PER_SIDE * TOOTH_SLOT_WIDTH;
 
 interface TreatmentRow {
@@ -92,16 +72,54 @@ interface TreatmentPlanSavePayload {
   discount: number;
   paymentMode: string;
   refId: string;
+  remark: string;
   totalAmount: number;
   advanced: boolean;
+  planId?: string;
 }
 
 interface TreatmentPlanDrawerProps {
   visible: boolean;
   onClose: () => void;
   token?: string | null;
+  editPlan?: TreatmentPlanRecord | null;
   onSave?: (payload: TreatmentPlanSavePayload) => Promise<void> | void;
 }
+
+const flattenTeethFromPlan = (teeth?: Record<string, number[]>) => {
+  if (!teeth) return [];
+  return Object.values(teeth)
+    .flat()
+    .filter((n): n is number => typeof n === 'number');
+};
+
+const hasPrimaryTeeth = (nums: number[]) => nums.some(t => t > 50);
+
+const parsePlanDate = (value?: string) => {
+  if (!value) return defaultFollowUpDate();
+  const iso = /^\d{4}-\d{2}-\d{2}$/.test(value)
+    ? `${value}T12:00:00`
+    : value;
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? defaultFollowUpDate() : d;
+};
+
+const capitalizePaymentMode = (mode?: string) => {
+  const raw = (mode || 'cash').trim();
+  if (!raw) return 'Cash';
+  return raw.charAt(0).toUpperCase() + raw.slice(1).toLowerCase();
+};
+
+const rowFromPlanItem = (item: TreatmentPlanItem): TreatmentRow => ({
+  id: `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+  expanded: false,
+  treatmentName: item.treatmentDesc || item.title || '',
+  serviceId: item.manageServiceId,
+  amountPerTooth: String(item.treatmentAmount ?? 0),
+  selectedTeeth: flattenTeethFromPlan(item.teeth),
+  note: item.description || '',
+  followUpDate: parsePlanDate(item.appointment),
+});
 
 const defaultFollowUpDate = () => new Date();
 
@@ -150,7 +168,7 @@ const ToothButton: React.FC<{
   >
     <View style={[styles.toothImageWrap, selected && styles.toothImageWrapSelected]}>
       <Image
-        source={{ uri: getToothImageUri(tooth) }}
+        source={{ uri: getToothImageUri(tooth, selected) }}
         style={styles.toothImage}
         resizeMode="contain"
       />
@@ -241,9 +259,11 @@ const TreatmentPlanDrawer: React.FC<TreatmentPlanDrawerProps> = ({
   visible,
   onClose,
   token,
+  editPlan,
   onSave,
 }) => {
   const insets = useSafeAreaInsets();
+  const isEditMode = !!editPlan?._id;
   const manageServiceRecords = useAppSelector(selectManageServices);
   const appDataLoading = useAppSelector(selectAppDataLoading);
   const [advanced, setAdvanced] = useState(false);
@@ -253,6 +273,7 @@ const TreatmentPlanDrawer: React.FC<TreatmentPlanDrawerProps> = ({
   const [paymentMode, setPaymentMode] = useState('Cash');
   const [paymentModeOpen, setPaymentModeOpen] = useState(false);
   const [refId, setRefId] = useState('');
+  const [remark, setRemark] = useState('');
   const [saving, setSaving] = useState(false);
   const [servicePickerRowId, setServicePickerRowId] = useState<string | null>(
     null,
@@ -322,7 +343,7 @@ const TreatmentPlanDrawer: React.FC<TreatmentPlanDrawerProps> = ({
     );
   };
 
-  const resetForm = () => {
+  const resetForm = useCallback(() => {
     setAdvanced(false);
     setRows([createRow()]);
     setPaidAmount('0');
@@ -330,8 +351,38 @@ const TreatmentPlanDrawer: React.FC<TreatmentPlanDrawerProps> = ({
     setPaymentMode('Cash');
     setPaymentModeOpen(false);
     setRefId('');
+    setRemark('');
     setServicePickerRowId(null);
-  };
+  }, []);
+
+  const loadEditPlan = useCallback((plan: TreatmentPlanRecord) => {
+    const items = plan.items || [];
+    const loadedRows = items.length
+      ? items.map(rowFromPlanItem)
+      : [createRow()];
+    const allTeeth = items.flatMap(item => flattenTeethFromPlan(item.teeth));
+    setAdvanced(
+      items.some(item => item.isAdvanced) || hasPrimaryTeeth(allTeeth),
+    );
+    setRows(loadedRows);
+    const summary = (plan as any).paymentSummary;
+    setPaidAmount(String(summary?.paid ?? plan.paidAmount ?? 0));
+    setDiscount(String(summary?.discount ?? plan.discount ?? 0));
+    setPaymentMode(capitalizePaymentMode(plan.paymentMode));
+    setRefId(plan.refId || '');
+    setRemark(plan.remark || '');
+    setPaymentModeOpen(false);
+    setServicePickerRowId(null);
+  }, []);
+
+  useEffect(() => {
+    if (!visible) return;
+    if (editPlan?._id) {
+      loadEditPlan(editPlan);
+      return;
+    }
+    resetForm();
+  }, [visible, editPlan?._id, editPlan, loadEditPlan, resetForm]);
 
   const handleClose = () => {
     resetForm();
@@ -364,8 +415,10 @@ const TreatmentPlanDrawer: React.FC<TreatmentPlanDrawerProps> = ({
         discount: Number(discount) || 0,
         paymentMode,
         refId: refId.trim(),
+        remark: remark.trim(),
         totalAmount,
         advanced,
+        planId: editPlan?._id,
       });
       resetForm();
       onClose();
@@ -580,10 +633,13 @@ const TreatmentPlanDrawer: React.FC<TreatmentPlanDrawerProps> = ({
         >
           <View style={styles.headerRow}>
             <View style={styles.headerTextWrap}>
-              <Text style={styles.title}>Treatment Plan</Text>
+              <Text style={styles.title}>
+                {isEditMode ? 'Edit Treatment Plan' : 'Treatment Plan'}
+              </Text>
               <Text style={styles.subtitle}>
-                Pick treatments from Manage Service, select teeth, and generate
-                bill
+                {isEditMode
+                  ? 'Update treatments, teeth, and billing details'
+                  : 'Pick treatments from Manage Service, select teeth, and generate bill'}
               </Text>
             </View>
             <TouchableOpacity
@@ -742,6 +798,16 @@ const TreatmentPlanDrawer: React.FC<TreatmentPlanDrawerProps> = ({
             autoCapitalize="characters"
           />
 
+          <Text style={styles.fieldLabel}>REMARK</Text>
+          <TextInput
+            style={[styles.fieldInput, styles.remarkInput]}
+            value={remark}
+            onChangeText={setRemark}
+            placeholder="Plan remark"
+            placeholderTextColor={theme.colors.placeholder}
+            multiline
+          />
+
           <TouchableOpacity
             style={[styles.saveBtn, saving && styles.saveBtnDisabled]}
             activeOpacity={0.85}
@@ -751,7 +817,9 @@ const TreatmentPlanDrawer: React.FC<TreatmentPlanDrawerProps> = ({
             {saving ? (
               <ActivityIndicator size="small" color={theme.colors.surface} />
             ) : (
-              <Text style={styles.saveBtnText}>Save plan & bill</Text>
+              <Text style={styles.saveBtnText}>
+                {isEditMode ? 'Update plan' : 'Save plan & bill'}
+              </Text>
             )}
           </TouchableOpacity>
 
@@ -787,15 +855,15 @@ const styles = StyleSheet.create({
     paddingRight: theme.spacing.sm,
   },
   title: {
-    fontSize: theme.typography.fontSizes.xxl,
+    fontSize: theme.typography.fontSizes.lg,
     fontWeight: theme.typography.fontWeights.bold,
     color: theme.colors.text,
   },
   subtitle: {
-    marginTop: theme.spacing.xs,
-    fontSize: theme.typography.fontSizes.sm,
+    marginTop: 2,
+    fontSize: theme.typography.fontSizes.xs,
     color: theme.colors.textSecondary,
-    lineHeight: 20,
+    lineHeight: 16,
   },
   closeBtn: {
     width: 36,
@@ -942,7 +1010,7 @@ const styles = StyleSheet.create({
     backgroundColor: theme.colors.surface,
   },
   formLabel: {
-    fontSize: theme.typography.fontSizes.md,
+    fontSize: theme.typography.fontSizes.sm,
     fontWeight: theme.typography.fontWeights.semiBold,
     color: theme.colors.text,
     marginBottom: theme.spacing.xs,
@@ -951,13 +1019,12 @@ const styles = StyleSheet.create({
   formInput: {
     borderWidth: 1,
     borderColor: theme.colors.border,
-    borderRadius: theme.borderRadius.lg,
-    paddingHorizontal: theme.spacing.md,
-    paddingVertical: theme.spacing.md,
-    fontSize: theme.typography.fontSizes.md,
+    borderRadius: theme.borderRadius.md,
+    paddingHorizontal: theme.spacing.sm,
+    paddingVertical: theme.spacing.sm,
+    fontSize: theme.typography.fontSizes.sm,
     color: theme.colors.text,
     backgroundColor: theme.colors.surface,
-    ...theme.shadows.sm,
   },
   serviceDropdown: {
     borderWidth: 1,
@@ -1050,21 +1117,20 @@ const styles = StyleSheet.create({
     padding: 2,
   },
   toothImageWrapSelected: {
-    backgroundColor: `${theme.colors.primary}22`,
-    borderWidth: 1.5,
-    borderColor: theme.colors.primary,
+    backgroundColor: 'transparent',
+    borderWidth: 0,
   },
   toothImage: {
-    width: 24,
-    height: 32,
+    width: 22,
+    height: 28,
   },
   toothNumber: {
-    marginTop: 2,
-    fontSize: 10,
+    marginTop: 1,
+    fontSize: 9,
     color: theme.colors.textSecondary,
   },
   toothNumberSelected: {
-    color: theme.colors.primary,
+    color: '#D32F2F',
     fontWeight: theme.typography.fontWeights.bold,
   },
   addMoreBtn: {
@@ -1114,12 +1180,16 @@ const styles = StyleSheet.create({
   fieldInput: {
     borderWidth: 1,
     borderColor: theme.colors.border,
-    borderRadius: theme.borderRadius.lg,
-    paddingHorizontal: theme.spacing.md,
-    paddingVertical: theme.spacing.md,
-    fontSize: theme.typography.fontSizes.md,
+    borderRadius: theme.borderRadius.md,
+    paddingHorizontal: theme.spacing.sm,
+    paddingVertical: theme.spacing.sm,
+    fontSize: theme.typography.fontSizes.sm,
     color: theme.colors.text,
     backgroundColor: theme.colors.surface,
+  },
+  remarkInput: {
+    minHeight: 64,
+    textAlignVertical: 'top',
   },
   paymentModeRow: {
     flexDirection: 'row',

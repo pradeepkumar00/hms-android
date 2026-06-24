@@ -22,8 +22,10 @@ import { Header } from '../components';
 import Icon from 'react-native-vector-icons/MaterialIcons';
 import realAuthService from '../services/realAuthService';
 import { Appointment, Patient } from '../types';
+import { buildPatientSearchFetchParams } from '../utils/patientSearchParams.util';
 
 const PAGE_SIZE = 20;
+const OPD_LIST_TYPE = 'opd';
 const PAGE_OPTION_HEIGHT = 36;
 const PAGE_DROPDOWN_FOOTER_HEIGHT = 34;
 const PAGE_DROPDOWN_LIST_HEIGHT = Math.min(
@@ -120,7 +122,8 @@ const PatientListScreen: React.FC<PatientListScreenProps> = ({ navigation }) => 
         const result = await realAuthService.fetchPatients(token, {
           page: pageToLoad,
           limit: PAGE_SIZE,
-          search: search || undefined,
+          type: OPD_LIST_TYPE,
+          ...buildPatientSearchFetchParams(search),
         });
 
         const normalized = result.patients.map(normalizePatient);
@@ -289,8 +292,8 @@ const PatientListScreen: React.FC<PatientListScreenProps> = ({ navigation }) => 
       <View style={styles.pageNavigator}>
         <Text style={styles.pageNavigatorSummary}>
           {total > 0
-            ? `${total.toLocaleString()} patient${total === 1 ? '' : 's'}`
-            : 'No patients'}
+            ? `${total.toLocaleString()} OPD patient${total === 1 ? '' : 's'}`
+            : 'No OPD patients'}
         </Text>
 
         <View style={styles.pageNavigatorControls}>
@@ -398,7 +401,7 @@ const PatientListScreen: React.FC<PatientListScreenProps> = ({ navigation }) => 
     });
   }, []);
 
-  const handleMoveToOpd = useCallback(
+  const handleOpenOpd = useCallback(
     async (patient: Patient) => {
       const patientId = patient._id || patient.id;
       if (!patientId || !token || movingPatientId) return;
@@ -421,10 +424,10 @@ const PatientListScreen: React.FC<PatientListScreenProps> = ({ navigation }) => 
           patient: resolvedPatient,
         });
       } catch (err) {
-        console.error('Move to OPD failed:', err);
+        console.error('Open OPD failed:', err);
         Alert.alert(
           'Error',
-          'Failed to move the patient to OPD. Please try again.',
+          'Failed to open the OPD view for this patient. Please try again.',
         );
       } finally {
         setMovingPatientId(null);
@@ -438,7 +441,17 @@ const PatientListScreen: React.FC<PatientListScreenProps> = ({ navigation }) => 
     const isMoving = movingPatientId === patientId;
 
     return (
-      <View style={styles.row}>
+      <Pressable
+        style={({ pressed }) => [
+          styles.row,
+          pressed && !isMoving && styles.rowPressed,
+          isMoving && styles.rowDisabled,
+        ]}
+        onPress={() => handleOpenOpd(item)}
+        disabled={isMoving}
+        accessibilityRole="button"
+        accessibilityLabel={`Open OPD for ${item.name}`}
+      >
         <Text style={[styles.cell, styles.nameCell]} numberOfLines={2}>
           {item.name}
         </Text>
@@ -449,49 +462,39 @@ const PatientListScreen: React.FC<PatientListScreenProps> = ({ navigation }) => 
           {item.mobileNo || '—'}
         </Text>
         <View style={styles.actionsCell}>
-          <TouchableOpacity
-            style={[
-              styles.actionButton,
-              !item.mobileNo && styles.actionButtonDisabled,
-            ]}
-            onPress={() => handleCall(item.mobileNo)}
-            disabled={!item.mobileNo}
-            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-            accessibilityLabel={`Call ${item.name}`}
-          >
-            <Icon
-              name="phone"
-              size={18}
-              color={item.mobileNo ? theme.colors.success : theme.colors.disabled}
-            />
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={styles.actionButton}
-            onPress={() => handleMoveToOpd(item)}
-            disabled={isMoving}
-            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-            accessibilityLabel={`Move ${item.name} to OPD`}
-          >
-            {isMoving ? (
-              <ActivityIndicator size="small" color={theme.colors.primary} />
-            ) : (
-              <Icon name="local-hospital" size={18} color={theme.colors.primary} />
-            )}
-          </TouchableOpacity>
+          {isMoving ? (
+            <ActivityIndicator size="small" color={theme.colors.primary} />
+          ) : (
+            <TouchableOpacity
+              style={[
+                styles.actionButton,
+                !item.mobileNo && styles.actionButtonDisabled,
+              ]}
+              onPress={() => handleCall(item.mobileNo)}
+              disabled={!item.mobileNo}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              accessibilityLabel={`Call ${item.name}`}
+            >
+              <Icon
+                name="phone"
+                size={18}
+                color={item.mobileNo ? theme.colors.success : theme.colors.disabled}
+              />
+            </TouchableOpacity>
+          )}
         </View>
-      </View>
+      </Pressable>
     );
   };
 
   const renderEmptyState = () => (
     <View style={styles.emptyState}>
       <Icon name="people-outline" size={64} color={theme.colors.disabled} />
-      <Text style={styles.emptyStateTitle}>No Patients Found</Text>
+      <Text style={styles.emptyStateTitle}>No OPD Patients Found</Text>
       <Text style={styles.emptyStateText}>
         {searchQuery.trim()
-          ? `No patients match "${searchQuery}"`
-          : 'There are no patients to display.'}
+          ? `No OPD patients match "${searchQuery}"`
+          : 'There are no OPD patients to display.'}
       </Text>
     </View>
   );
@@ -500,7 +503,7 @@ const PatientListScreen: React.FC<PatientListScreenProps> = ({ navigation }) => 
     return (
       <View style={styles.container}>
         <Header
-          title="Patients"
+          title="OPD Patients"
           showHomeIcon
           onHomePress={() => navigation.popToTop()}
           onNotificationPress={() => navigation.navigate('Inbox')}
@@ -549,7 +552,7 @@ const PatientListScreen: React.FC<PatientListScreenProps> = ({ navigation }) => 
           <Text style={[styles.headerCell, styles.nameCell]}>NAME</Text>
           <Text style={[styles.headerCell, styles.uhidCell]}>UHID</Text>
           <Text style={[styles.headerCell, styles.mobileCell]}>MOBILE</Text>
-          <Text style={[styles.headerCell, styles.actionsCell]}>ACTION</Text>
+          <Text style={[styles.headerCell, styles.actionsCell]}>CALL</Text>
         </View>
 
         <FlatList
@@ -663,6 +666,13 @@ const styles = StyleSheet.create({
     paddingHorizontal: theme.spacing.md,
     borderBottomWidth: 1,
     borderBottomColor: theme.colors.border,
+    backgroundColor: theme.colors.surface,
+  },
+  rowPressed: {
+    backgroundColor: theme.colors.background,
+  },
+  rowDisabled: {
+    opacity: 0.7,
   },
   cell: {
     fontSize: theme.typography.fontSizes.sm,
@@ -684,8 +694,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'flex-end',
-    gap: theme.spacing.xs,
-    minWidth: 72,
+    minWidth: 40,
   },
   actionButton: {
     width: 32,
