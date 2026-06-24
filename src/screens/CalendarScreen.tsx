@@ -2198,6 +2198,7 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation }) => {
       if (followUpReschedule) {
         body.details = rescheduleDetails;
       }
+      console.log('Reschedule payload:', JSON.stringify(body));
       await realAuthService.rescheduleAppointment(body, token);
       closeRescheduleModal();
       setSelectedAppt(null);

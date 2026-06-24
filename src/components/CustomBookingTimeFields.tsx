@@ -131,8 +131,10 @@ const CustomBookingTimeFields: React.FC<CustomBookingTimeFieldsProps> = ({
         confirmText="Save"
         cancelText="Cancel"
         onConfirm={date => {
-          onStartTimeChange(formatTimeForApi(date));
-          setTimePickerOpen(false);
+            const formatted = formatTimeForApi(date);
+            console.log('CustomBookingTimeFields: selected time ->', formatted);
+            onStartTimeChange(formatted);
+            setTimePickerOpen(false);
         }}
         onCancel={() => setTimePickerOpen(false)}
       />
