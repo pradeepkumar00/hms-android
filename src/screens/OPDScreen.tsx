@@ -31,7 +31,7 @@ import { useAppSelector, selectAuthToken, selectManageServices, selectAppDataLoa
 import type { TreatmentPlanRecord } from '../components';
 import { extractAppointmentTreatments } from '../utils/appointmentTreatments';
 import { theme } from '../constants/theme';
-import { ModalBackdrop, OPDActionsFab, PinchZoomView, SlotPickerGrid, TreatmentPlanCard, TreatmentPlanDrawer } from '../components';
+import { ModalBackdrop, OPDActionsFab, PinchZoomView, SlotPickerGrid, TreatmentPlanCard, TreatmentPlanDrawer, CustomBookingTimeFields } from '../components';
 import Icon from 'react-native-vector-icons/MaterialIcons';
 import { Appointment } from '../types';
 import {
@@ -42,7 +42,7 @@ import {
   type FollowupTreatmentOption,
 } from '../utils/followupTreatments';
 import { BookableSlot, isSlotSelectable } from '../utils/slot.util';
-import { isSlotBookingMode } from '../utils/doctorBookingMode.util';
+import { isSlotBookingMode, isCustomBookingMode, resolveCustomBookingDuration } from '../utils/doctorBookingMode.util';
 import {
   collectUploadFileParts,
   isImageUploadPart,
@@ -489,6 +489,9 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
   const [selectedSlot, setSelectedSlot] = useState<Slot | null>(null);
   const [slotPickerOpen, setSlotPickerOpen] = useState(false);
   const [booking, setBooking] = useState(false);
+  const [customStartTime, setCustomStartTime] = useState('');
+  const [customDurationMinutes, setCustomDurationMinutes] = useState('');
+  const [customBookingErrors, setCustomBookingErrors] = useState<{ startTime?: string; duration?: string } | null>(null);
   const [followupCatalogTreatments, setFollowupCatalogTreatments] = useState<
     FollowupTreatmentOption[]
   >([]);
@@ -896,6 +899,24 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
     };
   }, [showFollowupModal, token, selectedDoctor, followupDate]);
 
+  // Initialize custom booking defaults when doctor changes
+  useEffect(() => {
+    if (!showFollowupModal || !selectedDoctor) {
+      setCustomStartTime('');
+      setCustomDurationMinutes('');
+      setCustomBookingErrors(null);
+      return;
+    }
+    if (isCustomBookingMode(selectedDoctor)) {
+      const d = resolveCustomBookingDuration(selectedDoctor);
+      setCustomDurationMinutes(String(d));
+      setCustomStartTime('');
+    } else {
+      setCustomStartTime('');
+      setCustomDurationMinutes('');
+    }
+  }, [showFollowupModal, selectedDoctor]);
+
   // Open the slot picker once doctor and date are set and slots have loaded.
   useEffect(() => {
     if (
@@ -936,6 +957,23 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
       Alert.alert('Slot unavailable', 'Please pick an available slot.');
       return;
     }
+
+    // If doctor uses custom booking mode, require custom start time & duration
+    if (isCustomBookingMode(selectedDoctor)) {
+      const errors: { startTime?: string; duration?: string } = {};
+      if (!customStartTime || !customStartTime.trim()) {
+        errors.startTime = 'Please select a start time';
+      }
+      if (!customDurationMinutes || Number(customDurationMinutes) <= 0) {
+        errors.duration = 'Please choose a valid duration';
+      }
+      if (Object.keys(errors).length) {
+        setCustomBookingErrors(errors);
+        Alert.alert('Missing details', 'Please select a start time and duration for custom booking.');
+        return;
+      }
+      setCustomBookingErrors(null);
+    }
     const followupDetails = collectSelectedFollowupDetails(
       selectedFollowupTreatmentKeys,
       followupPlanGroups,
@@ -959,19 +997,23 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
     try {
       const realAuthService = (await import('../services/realAuthService'))
         .default;
-      const result = await realAuthService.bookFollowupToken(
-        {
-          doctorId: selectedDoctor._id,
-          doctorName: selectedDoctor.name,
-          patientId,
-          date: toApiDate(followupDate),
-          appointmentTime: selectedSlot?.startTime,
-          tokenCount: selectedSlot?.tokenCount,
-          details: followupDetails.length ? followupDetails : undefined,
-          remark: followupRemark,
-        },
-        token,
-      );
+      const payload: any = {
+        doctorId: selectedDoctor._id,
+        doctorName: selectedDoctor.name,
+        patientId,
+        date: toApiDate(followupDate),
+        details: followupDetails.length ? followupDetails : undefined,
+        remark: followupRemark,
+      };
+      if (isSlotBookingMode(selectedDoctor)) {
+        payload.appointmentTime = selectedSlot?.startTime;
+        payload.tokenCount = selectedSlot?.tokenCount;
+      } else if (isCustomBookingMode(selectedDoctor)) {
+        payload.appointmentTime = customStartTime;
+        payload.duration = Number(customDurationMinutes) || undefined;
+      }
+
+      const result = await realAuthService.bookFollowupToken(payload, token);
 
       const tokenNumber =
         result?.tokenCount ??
@@ -2476,6 +2518,17 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
                   )}
                 </TouchableOpacity>
               </>
+            ) : null}
+
+            {/* Custom booking: allow staff to set start time and duration */}
+            {selectedDoctor && !isSlotBookingMode(selectedDoctor) ? (
+              <CustomBookingTimeFields
+                startTime={customStartTime}
+                durationMinutes={customDurationMinutes}
+                onStartTimeChange={setCustomStartTime}
+                onDurationChange={setCustomDurationMinutes}
+                errors={customBookingErrors || undefined}
+              />
             ) : null}
 
             {/* Treatment (from Manage Service + treatment plans) */}

@@ -22,7 +22,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import DatePicker from 'react-native-date-picker';
 import { useAppSelector, selectAuthToken, selectAppConfig, selectCurrentUser, selectManageServices, selectAppDataLoading } from '../store';
 import { theme } from '../constants/theme';
-import { Header, ModalBackdrop, SlotPickerGrid, FileViewerModal, OPDActionsFab } from '../components';
+import { Header, ModalBackdrop, SlotPickerGrid, FileViewerModal, OPDActionsFab, CustomBookingTimeFields } from '../components';
 import Icon from 'react-native-vector-icons/MaterialIcons';
 import { Appointment, Patient } from '../types';
 import calendarRtdbService from '../services/calendarRtdbService';
@@ -36,6 +36,7 @@ import {
   shouldShowAppointmentToken,
 } from '../utils/appointmentDisplay.util';
 import { extractAppointmentTreatments } from '../utils/appointmentTreatments';
+import { defaultCustomStartTime } from '../utils/customBookingTime.util';
 import {
   filesForAppointment,
   historyDateKey,
@@ -286,21 +287,18 @@ const getAppointmentReason = (appt: Appointment): string => {
 const getStatusBadgeColors = (status?: string) => {
   switch ((status || '').toLowerCase()) {
     case 'waiting':
-      return { bg: '#FFF8E1', text: '#B7791F' };
+      return { bg: '#B7791F', text: '#FFFFFF' };
     case 'confirmed':
-      return { bg: '#E3F2FD', text: '#1565C0' };
+      return { bg: '#1565C0', text: '#FFFFFF' };
     case 'arrived':
-      return { bg: '#F3E5F5', text: '#7B1FA2' };
+      return { bg: '#7B1FA2', text: '#FFFFFF' };
     case 'completed':
-      return { bg: '#E8F5E9', text: '#2E7D32' };
-    case 'rescheduled':
-    case 'reschedule':
-      return { bg: '#FFF9C4', text: '#F57F17' };
+      return { bg: '#2E7D32', text: '#FFFFFF' };
     case 'absent':
-      return { bg: '#E3F2FD', text: '#1565C0' };
+      return { bg: '#C62828', text: '#FFFFFF' };
     case 'cancelled':
     case 'canceled':
-      return { bg: '#FFCDD2', text: '#B71C1C' };
+      return { bg: '#C62828', text: '#FFFFFF' };
     default:
       return { bg: '#F5F5F5', text: theme.colors.textSecondary };
   }
@@ -315,41 +313,15 @@ const getStatusDetailColor = (status?: string) => {
       return '#1D4ED8';
     case 'completed':
       return '#16A34A';
-    case 'rescheduled':
-    case 'reschedule':
-      return '#F59E0B';
     case 'absent':
-      return '#1E88E5';
+      return '#DC2626';
     case 'cancelled':
     case 'canceled':
-      return '#EF5350';
+      return '#6B7280';
     case 'scheduled':
       return '#4338CA';
     default:
       return '#374151';
-  }
-};
-
-const getStatusColor = (status?: string) => {
-  switch ((status || '').toLowerCase()) {
-    case 'waiting':
-      return '#FF9800';
-    case 'confirmed':
-      return '#2196F3';
-    case 'arrived':
-      return '#9C27B0';
-    case 'completed':
-      return '#4CAF50';
-    case 'rescheduled':
-    case 'reschedule':
-      return '#FBC02D';
-    case 'absent':
-      return '#42A5F5';
-    case 'cancelled':
-    case 'canceled':
-      return '#EF5350';
-    default:
-      return theme.colors.textSecondary;
   }
 };
 
@@ -540,6 +512,12 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation }) => {
     useState<BookableSlot | null>(null);
   const [rescheduleSlotPickerOpen, setRescheduleSlotPickerOpen] = useState(false);
   const [isRescheduling, setIsRescheduling] = useState(false);
+  const [rescheduleCustomStartTime, setRescheduleCustomStartTime] = useState('');
+  const [rescheduleCustomDuration, setRescheduleCustomDuration] = useState('');
+  const [rescheduleCustomErrors, setRescheduleCustomErrors] = useState<{
+    startTime?: string;
+    duration?: string;
+  } | null>(null);
   const [showTokenRescheduleDatePicker, setShowTokenRescheduleDatePicker] =
     useState(false);
   const [reschedulePlanGroups, setReschedulePlanGroups] = useState<FollowupPlanGroup[]>([]);
@@ -2054,6 +2032,24 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation }) => {
       );
       const isSlot = isSlotBookingMode(doctor);
       setRescheduleIsSlotDoctor(isSlot);
+      // initialize custom booking fields when doctor is custom booking mode
+      if (!isSlot && doctor) {
+        try {
+          const { resolveCustomBookingDuration } = await import(
+            '../utils/doctorBookingMode.util'
+          );
+          const d = resolveCustomBookingDuration(doctor);
+          setRescheduleCustomDuration(String(d));
+        } catch (e) {
+          setRescheduleCustomDuration('15');
+        }
+        setRescheduleCustomStartTime('');
+        setRescheduleCustomErrors(null);
+      } else {
+        setRescheduleCustomStartTime('');
+        setRescheduleCustomDuration('');
+        setRescheduleCustomErrors(null);
+      }
       if (isSlot && doctorId) {
         await loadRescheduleDates(doctorId, aptDate);
         if (aptDate) {
@@ -2064,6 +2060,11 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation }) => {
         setRescheduleTreatmentDropdownOpen(false);
         setRescheduleTreatmentSearch('');
         await loadRescheduleTreatmentOptions(selectedAppt);
+      }
+      // Auto-fill start time for custom booking doctors from the existing
+      // appointment time or fallback to a sensible default.
+      if (!isSlot && selectedAppt) {
+        setRescheduleCustomStartTime(selectedAppt.time || defaultCustomStartTime());
       }
     } catch (err) {
       console.error('Failed to open reschedule:', err);
@@ -2080,6 +2081,23 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation }) => {
     const doctor = rescheduleDoctors.find(d => d._id === doctorId);
     const isSlot = isSlotBookingMode(doctor);
     setRescheduleIsSlotDoctor(isSlot);
+    if (!isSlot && doctor) {
+      try {
+        const { resolveCustomBookingDuration } = await import(
+          '../utils/doctorBookingMode.util'
+        );
+        const d = resolveCustomBookingDuration(doctor);
+        setRescheduleCustomDuration(String(d));
+      } catch (e) {
+        setRescheduleCustomDuration('15');
+      }
+      setRescheduleCustomStartTime('');
+      setRescheduleCustomErrors(null);
+    } else {
+      setRescheduleCustomStartTime('');
+      setRescheduleCustomDuration('');
+      setRescheduleCustomErrors(null);
+    }
     if (isSlot && doctorId) {
       await loadRescheduleDates(doctorId, aptDate);
       if (aptDate) {
@@ -2124,6 +2142,23 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation }) => {
       return;
     }
 
+    if (!rescheduleIsSlotDoctor) {
+      const errors: { startTime?: string; duration?: string } = {};
+      if (!rescheduleCustomStartTime || !rescheduleCustomStartTime.trim()) {
+        errors.startTime = 'Please select a start time';
+      }
+      if (!rescheduleCustomDuration || Number(rescheduleCustomDuration) <= 0) {
+        errors.duration = 'Please choose a valid duration';
+      }
+      if (Object.keys(errors).length) {
+        setRescheduleCustomErrors(errors);
+        Alert.alert('Reschedule', 'Please select start time and duration for custom booking.');
+        setIsRescheduling(false);
+        return;
+      }
+      setRescheduleCustomErrors(null);
+    }
+
     const followUpReschedule = isFollowUpAppointment(selectedAppt);
     const rescheduleDetails = followUpReschedule
       ? collectSelectedFollowupDetails(
@@ -2154,6 +2189,11 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation }) => {
       }
       if (rescheduleIsSlotDoctor && selectedRescheduleSlot?.tokenCount != null) {
         body.newSlotTokenCount = selectedRescheduleSlot.tokenCount;
+      }
+      if (!rescheduleIsSlotDoctor) {
+        // For custom booking doctors include appointment time and duration
+        if (rescheduleCustomStartTime) body.newAppointmentTime = rescheduleCustomStartTime;
+        if (rescheduleCustomDuration) body.newDuration = Number(rescheduleCustomDuration);
       }
       if (followUpReschedule) {
         body.details = rescheduleDetails;
@@ -2203,7 +2243,7 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation }) => {
     label: string,
     onPress: () => void,
     options?: {
-      variant?: 'primary' | 'outline' | 'danger' | 'success' | 'warning';
+      variant?: 'primary' | 'outline' | 'danger' | 'success' | 'warning' | 'reschedule' | 'absent';
       disabled?: boolean;
       loading?: boolean;
       fullWidth?: boolean;
@@ -2217,6 +2257,8 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation }) => {
       variant === 'danger' && styles.ctaGridBtnDanger,
       variant === 'success' && styles.ctaGridBtnSuccess,
       variant === 'warning' && styles.ctaGridBtnWarning,
+      variant === 'reschedule' && styles.ctaGridBtnReschedule,
+      variant === 'absent' && styles.ctaGridBtnAbsent,
       options?.disabled && styles.ctaGridBtnDisabled,
     ];
     const textStyle = [
@@ -2225,6 +2267,8 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation }) => {
       variant === 'danger' && styles.ctaGridBtnTextDanger,
       variant === 'success' && styles.ctaGridBtnTextSuccess,
       variant === 'warning' && styles.ctaGridBtnTextWarning,
+      variant === 'reschedule' && styles.ctaGridBtnTextReschedule,
+      variant === 'absent' && styles.ctaGridBtnTextAbsent,
     ];
     return (
       <TouchableOpacity
@@ -2275,7 +2319,7 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation }) => {
               variant: 'danger',
             })}
             {renderCtaButton('Reschedule/Edit', openRescheduleModal, {
-              variant: 'outline',
+              variant: 'reschedule',
             })}
           </View>
         ) : (
@@ -2315,11 +2359,11 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation }) => {
               disabled: statusUpdating != null,
             },
           )}
-          {renderCtaButton(
+            {renderCtaButton(
             'Absent',
             () => handleStatusUpdate('absent', 'Absent'),
             {
-              variant: 'danger',
+              variant: 'absent',
               loading: statusUpdating === 'absent',
               disabled: statusUpdating != null,
             },
@@ -3571,6 +3615,17 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation }) => {
                 </TouchableOpacity>
               </>
             )}
+
+            {/* If doctor uses custom booking (not slot), show start time + duration fields */}
+            {!rescheduleIsSlotDoctor ? (
+              <CustomBookingTimeFields
+                startTime={rescheduleCustomStartTime}
+                durationMinutes={rescheduleCustomDuration}
+                onStartTimeChange={setRescheduleCustomStartTime}
+                onDurationChange={setRescheduleCustomDuration}
+                errors={rescheduleCustomErrors || undefined}
+              />
+            ) : null}
 
             {isFollowUpAppointment(selectedAppt) ? (
               <>
@@ -4848,13 +4903,23 @@ const styles = StyleSheet.create({
     borderColor: theme.colors.primary,
   },
   ctaGridBtnDanger: {
-    borderColor: '#C62828',
+    borderColor: '#E57373',
+    backgroundColor: '#FFCDD2',
   },
   ctaGridBtnSuccess: {
     borderColor: '#2E7D32',
+    backgroundColor: '#E8F5E9',
   },
   ctaGridBtnWarning: {
     borderColor: '#6D28D9',
+  },
+  ctaGridBtnReschedule: {
+    borderColor: '#FFE082',
+    backgroundColor: '#FFF9C4',
+  },
+  ctaGridBtnAbsent: {
+    borderColor: '#90CAF9',
+    backgroundColor: '#E3F2FD',
   },
   ctaGridBtnDisabled: {
     opacity: 0.6,
@@ -4872,7 +4937,7 @@ const styles = StyleSheet.create({
   ctaGridBtnTextDanger: {
     fontSize: theme.typography.fontSizes.sm,
     fontWeight: theme.typography.fontWeights.bold,
-    color: '#C62828',
+    color: '#B71C1C',
   },
   ctaGridBtnTextSuccess: {
     fontSize: theme.typography.fontSizes.sm,
@@ -4883,6 +4948,16 @@ const styles = StyleSheet.create({
     fontSize: theme.typography.fontSizes.sm,
     fontWeight: theme.typography.fontWeights.bold,
     color: '#6D28D9',
+  },
+  ctaGridBtnTextReschedule: {
+    fontSize: theme.typography.fontSizes.sm,
+    fontWeight: theme.typography.fontWeights.bold,
+    color: '#8A6D00',
+  },
+  ctaGridBtnTextAbsent: {
+    fontSize: theme.typography.fontSizes.sm,
+    fontWeight: theme.typography.fontWeights.bold,
+    color: '#1565C0',
   },
   modalFooterRow: {
     flexDirection: 'row',

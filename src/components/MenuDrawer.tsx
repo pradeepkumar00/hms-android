@@ -17,7 +17,7 @@ import {
 } from '../store';
 import { navigationService } from '../services/navigationService';
 import { theme } from '../constants/theme';
-import { DRAWER_MENU_ITEMS } from '../constants/menuItems';
+import { DRAWER_MENU_ITEMS, MenuItem } from '../constants/menuItems';
 import { RootStackParamList } from '../types';
 
 interface MenuDrawerProps {
@@ -35,10 +35,18 @@ const MenuDrawer: React.FC<MenuDrawerProps> = ({
   const unreadCount = useAppSelector(selectNotificationCount);
   const currentUser = useAppSelector(selectCurrentUser);
 
-  const handleNavigate = (screen: keyof RootStackParamList) => {
+  const handleNavigate = (item: MenuItem) => {
     onClose();
     // Defer navigation slightly so the modal close animation can start first
-    setTimeout(() => navigationService.navigate(screen), 50);
+    setTimeout(() => {
+      // When opening Add Patient from the drawer, open in booking mode to
+      // match the behavior of the home grid tile.
+      if (item.screen === 'AddPatient') {
+        navigationService.navigate('AddPatient', { bookingMode: 'appointment' });
+      } else {
+        navigationService.navigate(item.screen);
+      }
+    }, 50);
   };
 
   const handleLogout = () => {
@@ -89,7 +97,7 @@ const MenuDrawer: React.FC<MenuDrawerProps> = ({
                 key={item.key}
                 style={styles.menuItem}
                 activeOpacity={0.7}
-                onPress={() => handleNavigate(item.screen)}
+                onPress={() => handleNavigate(item)}
               >
                 <View style={styles.menuIconWrapper}>
                   <Icon

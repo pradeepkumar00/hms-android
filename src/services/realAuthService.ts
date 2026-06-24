@@ -1801,6 +1801,7 @@ class RealAuthService {
       date: string; // YYYY-MM-DD
       appointmentTime?: string; // e.g. "12:00 PM"
       tokenCount?: number;
+      duration?: number; // minutes (for custom bookings)
       details?: Array<{
         treatmentDesc: string;
         manageServiceId: string;
@@ -1843,6 +1844,9 @@ class RealAuthService {
       }
       if (params.appointmentTime) {
         payload.appointmentTime = params.appointmentTime;
+      }
+      if (params.duration != null) {
+        payload.duration = params.duration;
       }
 
       const response = await apiClient.post('/book-token', payload, {
