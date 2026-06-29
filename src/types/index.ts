@@ -256,7 +256,7 @@ export type RootStackParamList = {
   History: undefined; // Tasks assigned to others BY current user
   CreateTask: { parentTaskId?: string }; // Optional parentTaskId for creating child tasks (Phase 10)
   NotificationSettings: undefined;
-  Calendar: undefined; // Calendar view of tasks by due date
+  Calendar: { selectedAppointment?: Appointment } | undefined; // Calendar view of tasks by due date
   TaskList: {
     status?: 'today' | 'new' | 'assigned' | 'progress' | 'completed' | 'withdraw';
     type?: 'created' | 'assigned';

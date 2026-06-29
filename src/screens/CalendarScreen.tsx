@@ -62,6 +62,7 @@ import {
 
 interface CalendarScreenProps {
   navigation: any;
+  route?: any;
 }
 
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -402,7 +403,7 @@ const isWhatsappSource = (appt: Appointment) =>
 const normalizeMobile = (value?: string) =>
   (value || '').replace(/\D/g, '').replace(/^91/, '').slice(-10);
 
-const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation }) => {
+const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation, route }) => {
   const token = useAppSelector(selectAuthToken);
   const appConfig = useAppSelector(selectAppConfig);
   const currentUser = useAppSelector(selectCurrentUser);
@@ -562,7 +563,7 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation }) => {
         const realAuthService = (await import('../services/realAuthService'))
           .default;
         const fetched = await realAuthService
-          .fetchAppointmentsRange(token, range.from, range.to)
+          .fetchAppointmentsRange(token, range.from, range.to, true)
           .catch(() => []);
         setAppointments(fetched || []);
         setSelectedAppt(prev => {
@@ -612,6 +613,13 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation }) => {
   useEffect(() => {
     fetchAppointments();
   }, [fetchAppointments]);
+
+  useEffect(() => {
+    if (route?.params?.selectedAppointment) {
+      setSelectedAppt(route.params.selectedAppointment);
+      navigation.setParams({ selectedAppointment: undefined });
+    }
+  }, [route?.params?.selectedAppointment, navigation]);
 
   // Load doctor colors and the full doctor list for the calendar filter.
   useEffect(() => {
@@ -781,6 +789,19 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation }) => {
         .default;
       const fullPatient = await realAuthService.moveToOpd(patientId, token);
       const resolvedPatient = fullPatient || patient;
+
+      // Fetch patient's appointments to get the latest one
+      const apptData = await realAuthService.fetchPatientAppointments(patientId, token);
+      const appointmentsList = apptData?.appointments || [];
+
+      // Find latest appointment
+      const latestAppt = appointmentsList.reduce((latest: any, current: any) => {
+        if (!latest) return current;
+        const latestTime = new Date(latest.date).getTime();
+        const currentTime = new Date(current.date).getTime();
+        return currentTime > latestTime ? current : latest;
+      }, null);
+
       const appointment: Appointment = {
         _id: `calendar-search-${patientId}`,
         patientId,
@@ -791,10 +812,7 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation }) => {
       };
 
       closePatientSearch();
-      navigation.navigate('OPD', {
-        appointment,
-        patient: resolvedPatient,
-      });
+      setSelectedAppt(latestAppt || appointment);
     } catch (err) {
       console.error('Move to OPD failed:', err);
       Alert.alert(
@@ -1453,7 +1471,7 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation }) => {
     setSelectedAppt(appt);
   };
 
-  const moveToOpdForAppointment = async (appt: Appointment) => {
+  const moveToOpdForAppointment = async (appt: Appointment, navigateToOpdScreen: boolean = false) => {
     if (!token || movingToOpd) return;
     if (!canMoveToOpdFor(appt)) {
       openAppointmentDetails(appt);
@@ -1470,8 +1488,18 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation }) => {
       const realAuthService = (await import('../services/realAuthService'))
         .default;
       const patient = await realAuthService.moveToOpd(patientId, token);
-      setSelectedAppt(null);
-      navigation.navigate('OPD', { appointment: appt, patient });
+      if (navigateToOpdScreen) {
+        setSelectedAppt(null);
+        navigation.navigate('OPD', { appointment: appt, patient });
+      } else {
+        const updatedAppt: Appointment = {
+          ...appt,
+          isArrived: true,
+          confirmationStatus: 'confirmed',
+        };
+        void fetchAppointments();
+        setSelectedAppt(updatedAppt);
+      }
     } catch (err) {
       console.error('Move to OPD failed:', err);
       Alert.alert('Error', 'Failed to move the patient to OPD. Please try again.');
@@ -1496,7 +1524,7 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation }) => {
 
   const handleMoveToOpd = () => {
     if (!selectedAppt) return;
-    void moveToOpdForAppointment(selectedAppt);
+    void moveToOpdForAppointment(selectedAppt, true);
   };
 
   type OpdNavigationOptions = {
@@ -1785,6 +1813,33 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation }) => {
     } finally {
       setIsCancelling(false);
     }
+  };
+
+  const handleDeleteAppointment = async () => {
+    if (!selectedAppt || !token) return;
+    Alert.alert(
+      'Delete Appointment',
+      'Are you sure you want to permanently delete this appointment?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              const realAuthService = (await import('../services/realAuthService')).default;
+              await realAuthService.deleteAppointment(selectedAppt._id, token);
+              setSelectedAppt(null);
+              await fetchAppointments();
+              Alert.alert('Deleted', 'Appointment deleted permanently.');
+            } catch (err: any) {
+              console.error('Delete failed:', err);
+              Alert.alert('Error', err?.message || 'Failed to delete appointment');
+            }
+          },
+        },
+      ]
+    );
   };
 
   const closeRescheduleModal = () => {
@@ -2168,10 +2223,8 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation }) => {
           rescheduleDate || null,
         )
       : [];
-    if (followUpReschedule && hasAssignedRescheduleTreatments && rescheduleDetails.length === 0) {
-      Alert.alert('Reschedule', 'Select at least one treatment for this follow-up.');
-      return;
-    }
+    // Reschedule treatment selection is optional
+
 
     setIsRescheduling(true);
     try {
@@ -2244,10 +2297,11 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation }) => {
     label: string,
     onPress: () => void,
     options?: {
-      variant?: 'primary' | 'outline' | 'danger' | 'success' | 'warning' | 'reschedule' | 'absent';
+      variant?: 'primary' | 'outline' | 'danger' | 'success' | 'warning' | 'reschedule' | 'absent' | 'delete';
       disabled?: boolean;
       loading?: boolean;
       fullWidth?: boolean;
+      icon?: string;
     },
   ) => {
     const variant = options?.variant ?? 'outline';
@@ -2260,6 +2314,7 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation }) => {
       variant === 'warning' && styles.ctaGridBtnWarning,
       variant === 'reschedule' && styles.ctaGridBtnReschedule,
       variant === 'absent' && styles.ctaGridBtnAbsent,
+      variant === 'delete' && styles.ctaGridBtnDelete,
       options?.disabled && styles.ctaGridBtnDisabled,
     ];
     const textStyle = [
@@ -2270,11 +2325,24 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation }) => {
       variant === 'warning' && styles.ctaGridBtnTextWarning,
       variant === 'reschedule' && styles.ctaGridBtnTextReschedule,
       variant === 'absent' && styles.ctaGridBtnTextAbsent,
+      variant === 'delete' && styles.ctaGridBtnTextDelete,
     ];
+
+    const getIconColor = () => {
+      if (variant === 'primary') return theme.colors.surface;
+      if (variant === 'danger') return '#B71C1C';
+      if (variant === 'success') return '#2E7D32';
+      if (variant === 'warning') return '#6D28D9';
+      if (variant === 'reschedule') return '#8A6D00';
+      if (variant === 'absent') return '#1565C0';
+      if (variant === 'delete') return '#4B5563';
+      return theme.colors.primary;
+    };
+
     return (
       <TouchableOpacity
         key={label}
-        style={btnStyle}
+        style={[btnStyle, options?.icon ? styles.ctaGridBtnWithIcon : null]}
         activeOpacity={0.85}
         disabled={options?.disabled || options?.loading}
         onPress={onPress}
@@ -2285,7 +2353,12 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation }) => {
             color={variant === 'primary' ? theme.colors.surface : theme.colors.primary}
           />
         ) : (
-          <Text style={textStyle}>{label}</Text>
+          <>
+            {options?.icon ? (
+              <Icon name={options.icon} size={16} color={getIconColor()} />
+            ) : null}
+            <Text style={textStyle}>{label}</Text>
+          </>
         )}
       </TouchableOpacity>
     );
@@ -2314,24 +2387,29 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation }) => {
       ) : null}
 
       {!isAppointmentCancelled(appt) ? (
-        isAppointmentActive(appt) ? (
-          <View style={styles.ctaGridRow}>
-            {renderCtaButton('Cancel Appointment', openCancelModal, {
-              variant: 'danger',
-            })}
-            {renderCtaButton('Reschedule/Edit', openRescheduleModal, {
-              variant: 'reschedule',
-            })}
-          </View>
-        ) : (
-          renderCtaButton('Cancel Appointment', openCancelModal, {
+        <View style={styles.ctaGridRow}>
+          {renderCtaButton('Cancel', openCancelModal, {
             variant: 'danger',
-            fullWidth: true,
-          })
-        )
-      ) : null}
+            icon: 'close',
+          })}
+          {renderCtaButton('Reschedule', openRescheduleModal, {
+            variant: 'reschedule',
+            icon: 'edit',
+          })}
+          {renderCtaButton('Delete', handleDeleteAppointment, {
+            variant: 'delete',
+            icon: 'delete',
+          })}
+        </View>
+      ) : (
+        renderCtaButton('Delete', handleDeleteAppointment, {
+          variant: 'delete',
+          fullWidth: true,
+          icon: 'delete',
+        })
+      )}
 
-      {isAppointmentActive(appt) ? (
+      {!isAppointmentCancelled(appt) ? (
         appt.patientId
           ? renderCtaButton('Follow up', handleFollowup, {
               variant: 'warning',
@@ -3632,9 +3710,7 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation }) => {
               <>
                 <Text style={styles.confirmFieldLabel}>
                   Treatment
-                  {!hasAssignedRescheduleTreatments ? (
-                    <Text style={styles.rescheduleTreatmentOptional}> (optional)</Text>
-                  ) : null}
+                  <Text style={styles.rescheduleTreatmentOptional}> (optional)</Text>
                 </Text>
                 <TouchableOpacity
                   style={styles.rescheduleTreatmentField}
@@ -4234,6 +4310,7 @@ const styles = StyleSheet.create({
   tokenChipName: {
     flex: 1,
     fontSize: theme.typography.fontSizes.sm,
+    lineHeight: theme.typography.fontSizes.sm + 6,
     fontWeight: theme.typography.fontWeights.semiBold,
     color: theme.colors.text,
     marginRight: theme.spacing.sm,
@@ -4302,6 +4379,7 @@ const styles = StyleSheet.create({
   },
   apptRowName: {
     fontSize: theme.typography.fontSizes.lg,
+    lineHeight: theme.typography.fontSizes.lg + 6,
     fontWeight: theme.typography.fontWeights.semiBold,
     color: theme.colors.text,
     marginBottom: 4,
@@ -4922,8 +5000,17 @@ const styles = StyleSheet.create({
     borderColor: '#90CAF9',
     backgroundColor: '#E3F2FD',
   },
+  ctaGridBtnDelete: {
+    borderColor: '#D1D5DB',
+    backgroundColor: '#E5E7EB',
+  },
   ctaGridBtnDisabled: {
     opacity: 0.6,
+  },
+  ctaGridBtnWithIcon: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
   },
   ctaGridBtnText: {
     fontSize: theme.typography.fontSizes.sm,
@@ -4959,6 +5046,11 @@ const styles = StyleSheet.create({
     fontSize: theme.typography.fontSizes.sm,
     fontWeight: theme.typography.fontWeights.bold,
     color: '#1565C0',
+  },
+  ctaGridBtnTextDelete: {
+    fontSize: theme.typography.fontSizes.sm,
+    fontWeight: theme.typography.fontWeights.bold,
+    color: '#4B5563',
   },
   modalFooterRow: {
     flexDirection: 'row',

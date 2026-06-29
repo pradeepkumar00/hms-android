@@ -13,11 +13,10 @@ import {
   InteractionManager,
   RefreshControl,
 } from 'react-native';
-import DatePicker from 'react-native-date-picker';
 import Icon from 'react-native-vector-icons/MaterialIcons';
 import { useAppDispatch, useAppSelector, selectAuthToken, selectAppConfig, selectAppDataLoading, loadAppData } from '../store';
 import { theme } from '../constants/theme';
-import { Header, ModalBackdrop, SlotPickerGrid, CustomBookingTimeFields } from '../components';
+import { Header, ModalBackdrop, SlotPickerGrid, CustomBookingTimeFields, MonthCalendarPickerModal } from '../components';
 import realAuthService from '../services/realAuthService';
 import { RegisField } from '../types';
 import { BookableSlot, isSlotSelectable } from '../utils/slot.util';
@@ -117,6 +116,7 @@ const AddPatientScreen: React.FC<AddPatientScreenProps> = ({ navigation, route }
   } | null>(null);
   const [bookingPatientsLoading, setBookingPatientsLoading] = useState(false);
   const [debouncedBookingMobile, setDebouncedBookingMobile] = useState('');
+  const [mobileFocused, setMobileFocused] = useState(false);
 
   const screenTitle = isEditMode ? 'Edit Patient' : 'Add Patient';
 
@@ -875,6 +875,16 @@ const AddPatientScreen: React.FC<AddPatientScreenProps> = ({ navigation, route }
             maxLength={isMobileField ? 13 : undefined}
             multiline={field.type === 'textarea'}
             numberOfLines={field.type === 'textarea' ? 3 : 1}
+            onFocus={() => {
+              if (isMobileField) {
+                setMobileFocused(true);
+              }
+            }}
+            onBlur={() => {
+              if (isMobileField) {
+                setTimeout(() => setMobileFocused(false), 250);
+              }
+            }}
           />
         )}
 
@@ -882,10 +892,10 @@ const AddPatientScreen: React.FC<AddPatientScreenProps> = ({ navigation, route }
 
         {isAppointmentBooking && isMobileField ? (
           <>
-            {bookingPatientsLoading ? (
+            {bookingPatientsLoading && mobileFocused ? (
               <Text style={styles.bookingHint}>Searching patients…</Text>
             ) : null}
-            {bookingPatientMatches.length > 0 && !bookingSelectedPatientId ? (
+            {bookingPatientMatches.length > 0 && !bookingSelectedPatientId && mobileFocused ? (
               <View style={styles.bookingMatches}>
                 {bookingPatientMatches.map(patient => (
                   <TouchableOpacity
@@ -1105,18 +1115,20 @@ const AddPatientScreen: React.FC<AddPatientScreenProps> = ({ navigation, route }
         </ScrollView>
       </KeyboardAvoidingView>
 
-      <DatePicker
-        modal
-        open={datePickerKey != null}
-        date={datePickerValue}
-        mode="date"
-        onConfirm={date => {
+      <MonthCalendarPickerModal
+        visible={datePickerKey != null}
+        value={datePickerValue}
+        onSelectDate={date => {
           if (datePickerKey) {
-            setFieldValue(datePickerKey, date.toISOString().slice(0, 10));
+            const yyyy = date.getFullYear();
+            const mm = String(date.getMonth() + 1).padStart(2, '0');
+            const dd = String(date.getDate()).padStart(2, '0');
+            const localDateStr = `${yyyy}-${mm}-${dd}`;
+            setFieldValue(datePickerKey, localDateStr);
           }
-          setDatePickerKey(null);
         }}
-        onCancel={() => setDatePickerKey(null)}
+        onClose={() => setDatePickerKey(null)}
+        minDate={datePickerKey === 'date' ? new Date() : undefined}
       />
 
       <ModalBackdrop

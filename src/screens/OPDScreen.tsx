@@ -19,7 +19,6 @@ import {
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
 import Pdf from 'react-native-pdf';
-import DatePicker from 'react-native-date-picker';
 import { launchCamera, CameraOptions } from 'react-native-image-picker';
 import {
   pick,
@@ -31,7 +30,7 @@ import { useAppSelector, selectAuthToken, selectManageServices, selectAppDataLoa
 import type { TreatmentPlanRecord } from '../components';
 import { extractAppointmentTreatments } from '../utils/appointmentTreatments';
 import { theme } from '../constants/theme';
-import { ModalBackdrop, OPDActionsFab, PinchZoomView, SlotPickerGrid, TreatmentPlanCard, TreatmentPlanDrawer, CustomBookingTimeFields } from '../components';
+import { ModalBackdrop, OPDActionsFab, PinchZoomView, SlotPickerGrid, TreatmentPlanCard, TreatmentPlanDrawer, CustomBookingTimeFields, MonthCalendarPickerModal } from '../components';
 import Icon from 'react-native-vector-icons/MaterialIcons';
 import { Appointment } from '../types';
 import {
@@ -420,6 +419,9 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
     [],
   );
   const [, setConfig] = useState<any>(null);
+  const [deleteGroupModalOpen, setDeleteGroupModalOpen] = useState(false);
+  const [deleteGroupParent, setDeleteGroupParent] = useState<any>(null);
+  const [deleteGroupParts, setDeleteGroupParts] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [selectedFiles, setSelectedFiles] = useState<
@@ -980,13 +982,8 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
       followupCatalogTreatments,
       followupDate ? toApiDate(followupDate) : null,
     );
-    if (hasAssignedFollowupTreatments && followupDetails.length === 0) {
-      Alert.alert(
-        'Treatment required',
-        'Select at least one treatment for this follow-up.',
-      );
-      return;
-    }
+    // Treatment selection is optional for followup booking
+
     if (!patientId) {
       Alert.alert('Booking Failed', 'No patient is associated with this visit.');
       return;
@@ -1211,20 +1208,6 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
             </View>
           )}
         </TouchableOpacity>
-        {canDeleteUploadAccess ? (
-          <TouchableOpacity
-            style={styles.uploadGridCellRemove}
-            activeOpacity={0.85}
-            disabled={removing}
-            onPress={() => handleDeletePrescription(item, part)}
-          >
-            {removing ? (
-              <ActivityIndicator size="small" color="#fff" />
-            ) : (
-              <Icon name="close" size={12} color="#fff" />
-            )}
-          </TouchableOpacity>
-        ) : null}
       </View>
     );
   };
@@ -1382,7 +1365,7 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
                 style={[styles.styledUploadActionBtn, styles.styledUploadActionDelete]}
                 activeOpacity={0.85}
                 disabled={deletingFileId === (item.batchParentId || item.id)}
-                onPress={() => handleDeletePrescription(item)}
+                onPress={() => onDeletePress(item)}
               >
                 {deletingFileId === (item.batchParentId || item.id) ? (
                   <ActivityIndicator size="small" color="#EF4444" />
@@ -1875,6 +1858,17 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
     }
   };
 
+  const onDeletePress = (item: HistoryItem) => {
+    const parts = collectUploadFileParts(item);
+    if (parts.length > 1) {
+      setDeleteGroupParent(item);
+      setDeleteGroupParts(parts);
+      setDeleteGroupModalOpen(true);
+    } else {
+      handleDeletePrescription(item, parts[0]);
+    }
+  };
+
   const handleDeletePrescription = (
     item: HistoryItem,
     part?: NonNullable<HistoryItem['fileParts']>[number],
@@ -1957,6 +1951,18 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
               });
 
               await refreshPrescriptionHistory();
+              if (deleteGroupModalOpen && deleteGroupParent) {
+                const updatedParts = deleteGroupParts.filter(
+                  p => p.filePath !== part?.filePath,
+                );
+                if (updatedParts.length <= 1 || !partialDelete) {
+                  setDeleteGroupModalOpen(false);
+                  setDeleteGroupParent(null);
+                  setDeleteGroupParts([]);
+                } else {
+                  setDeleteGroupParts(updatedParts);
+                }
+              }
               Alert.alert('Deleted', successLabel);
             } catch (error) {
               console.error('Prescription delete error:', error);
@@ -2534,9 +2540,7 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
             {/* Treatment (from Manage Service + treatment plans) */}
             <Text style={styles.followupLabel}>
               Treatment
-              {!hasAssignedFollowupTreatments && (
-                <Text style={styles.followupLabelOptional}> (optional)</Text>
-              )}
+              <Text style={styles.followupLabelOptional}> (optional)</Text>
             </Text>
             <TouchableOpacity
               style={styles.followupField}
@@ -2767,19 +2771,96 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
         </View>
       </ModalBackdrop>
 
-      <DatePicker
-        modal
-        open={showFollowupDatePicker}
-        date={followupDate || new Date()}
-        mode="date"
-        minimumDate={new Date()}
-        onConfirm={date => {
-          setShowFollowupDatePicker(false);
+      <MonthCalendarPickerModal
+        visible={showFollowupDatePicker}
+        value={followupDate || new Date()}
+        onSelectDate={date => {
           setFollowupDate(date);
         }}
-        onCancel={() => setShowFollowupDatePicker(false)}
-        title="Follow-up date"
+        onClose={() => setShowFollowupDatePicker(false)}
+        minDate={new Date()}
       />
+
+      {/* Premium UI Delete File Group Modal */}
+      <ModalBackdrop
+        visible={deleteGroupModalOpen}
+        onClose={() => {
+          setDeleteGroupModalOpen(false);
+          setDeleteGroupParent(null);
+          setDeleteGroupParts([]);
+        }}
+        animationType="fade"
+        align="center"
+      >
+        <View style={styles.deleteGroupCard}>
+          <View style={styles.deleteGroupHeader}>
+            <Text style={styles.deleteGroupTitle}>Delete Files</Text>
+            <TouchableOpacity
+              onPress={() => {
+                setDeleteGroupModalOpen(false);
+                setDeleteGroupParent(null);
+                setDeleteGroupParts([]);
+              }}
+              style={styles.deleteGroupCloseBtn}
+            >
+              <Icon name="close" size={20} color="#64748b" />
+            </TouchableOpacity>
+          </View>
+
+          <Text style={styles.deleteGroupSubtitle}>
+            Which file do you want to delete?
+          </Text>
+
+          <ScrollView style={styles.deleteGroupList}>
+            {deleteGroupParts.map((part, idx) => {
+              const name = part.originalName || part.fileName || `File ${idx + 1}`;
+              return (
+                <View key={part.filePath || idx} style={styles.deleteGroupItem}>
+                  <Icon
+                    name={isImageUploadPart(part) ? 'image' : 'picture-as-pdf'}
+                    size={18}
+                    color={isImageUploadPart(part) ? '#8B5CF6' : '#E53935'}
+                    style={styles.deleteGroupItemIcon}
+                  />
+                  <Text style={styles.deleteGroupItemName} numberOfLines={1}>
+                    {name}
+                  </Text>
+                  <TouchableOpacity
+                    style={styles.deleteGroupItemDeleteBtn}
+                    onPress={() => {
+                      if (deleteGroupParent) {
+                        handleDeletePrescription(deleteGroupParent, part);
+                      }
+                    }}
+                  >
+                    <Icon name="delete-outline" size={18} color="#EF4444" />
+                  </TouchableOpacity>
+                </View>
+              );
+            })}
+          </ScrollView>
+
+          <View style={styles.deleteGroupDivider} />
+
+          <TouchableOpacity
+            style={styles.deleteAllBtn}
+            activeOpacity={0.8}
+            onPress={() => {
+              if (deleteGroupParent) {
+                handleDeletePrescription(deleteGroupParent);
+              }
+            }}
+          >
+            <Icon
+              name="delete"
+              size={16}
+              color="#ffffff"
+              style={styles.deleteAllIcon}
+            />
+            <Text style={styles.deleteAllText}>Delete Entire Upload</Text>
+          </TouchableOpacity>
+        </View>
+      </ModalBackdrop>
 
       {/* Slot picker popup (cards grid, like the web app) */}
       <ModalBackdrop
@@ -4157,6 +4238,85 @@ const styles = StyleSheet.create({
     fontSize: theme.typography.fontSizes.md,
     fontWeight: theme.typography.fontWeights.semiBold,
     color: theme.colors.surface,
+  },
+  deleteGroupCard: {
+    width: '100%',
+    maxWidth: 320,
+    backgroundColor: '#ffffff',
+    borderRadius: 16,
+    padding: 16,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.1,
+    shadowRadius: 12,
+    elevation: 5,
+  },
+  deleteGroupHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  deleteGroupTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#0f172a',
+  },
+  deleteGroupCloseBtn: {
+    padding: 4,
+    borderRadius: 4,
+    backgroundColor: '#f1f5f9',
+  },
+  deleteGroupSubtitle: {
+    fontSize: 13,
+    color: '#64748b',
+    marginBottom: 16,
+  },
+  deleteGroupList: {
+    maxHeight: 200,
+  },
+  deleteGroupItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 10,
+    paddingHorizontal: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f1f5f9',
+  },
+  deleteGroupItemIcon: {
+    marginRight: 10,
+  },
+  deleteGroupItemName: {
+    flex: 1,
+    fontSize: 13,
+    fontWeight: '500',
+    color: '#334155',
+  },
+  deleteGroupItemDeleteBtn: {
+    padding: 6,
+    borderRadius: 6,
+    backgroundColor: '#fef2f2',
+  },
+  deleteGroupDivider: {
+    height: 1,
+    backgroundColor: '#f1f5f9',
+    marginVertical: 12,
+  },
+  deleteAllBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#EF4444',
+    borderRadius: 8,
+    paddingVertical: 10,
+  },
+  deleteAllIcon: {
+    marginRight: 6,
+  },
+  deleteAllText: {
+    color: '#ffffff',
+    fontSize: 14,
+    fontWeight: '600',
   },
 });
 

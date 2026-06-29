@@ -9,5 +9,6 @@ export { default as TreatmentPlanCard } from './TreatmentPlanCard';
 export { default as PinchZoomView } from './PinchZoomView';
 export { default as FileViewerModal } from './FileViewerModal';
 export { default as CustomBookingTimeFields } from './CustomBookingTimeFields';
+export { MonthCalendarPickerModal } from './MonthCalendarPickerModal';
 export type { FileViewerItem } from './FileViewerModal';
 export type { TreatmentPlanRecord } from './TreatmentPlanCard';

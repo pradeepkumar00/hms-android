@@ -717,12 +717,13 @@ class RealAuthService {
     token: string,
     from: string,
     to: string,
+    includeCancelled: boolean = true,
   ): Promise<any[]> {
     try {
       console.log(`📅 Fetching appointments from ${from} to ${to}`);
 
       const response = await apiClient.get('/appointments/range', {
-        params: { from, to },
+        params: { from, to, includeCancelled },
         headers: {
           Authorization: `Bearer ${token}`,
           'Content-Type': 'application/json',
@@ -914,6 +915,31 @@ class RealAuthService {
       return body.data ?? body;
     } catch (error) {
       console.error('❌ Failed to cancel appointment:', error);
+      throw new Error(handleNetworkError(error));
+    }
+  }
+
+  /**
+   * Delete a cancelled appointment.
+   * DELETE /appointments/:id
+   */
+  async deleteAppointment(
+    appointmentId: string,
+    token: string,
+  ): Promise<any> {
+    try {
+      const response = await apiClient.delete(`/appointments/${appointmentId}`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+      const body = response.data ?? {};
+      if (body.status >= 400) {
+        throw new Error(body.message || 'Failed to delete appointment');
+      }
+      return body.data ?? body;
+    } catch (error) {
+      console.error('❌ Failed to delete appointment:', error);
       throw new Error(handleNetworkError(error));
     }
   }

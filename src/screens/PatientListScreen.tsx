@@ -410,6 +410,19 @@ const PatientListScreen: React.FC<PatientListScreenProps> = ({ navigation }) => 
       try {
         const fullPatient = await realAuthService.moveToOpd(patientId, token);
         const resolvedPatient = fullPatient || patient;
+
+        // Fetch patient's appointments to get the latest one
+        const apptData = await realAuthService.fetchPatientAppointments(patientId, token);
+        const appointmentsList = apptData?.appointments || [];
+
+        // Find latest appointment
+        const latestAppt = appointmentsList.reduce((latest: any, current: any) => {
+          if (!latest) return current;
+          const latestTime = new Date(latest.date).getTime();
+          const currentTime = new Date(current.date).getTime();
+          return currentTime > latestTime ? current : latest;
+        }, null);
+
         const appointment: Appointment = {
           _id: `patient-list-${patientId}`,
           patientId,
@@ -419,9 +432,8 @@ const PatientListScreen: React.FC<PatientListScreenProps> = ({ navigation }) => 
           date: new Date().toISOString().slice(0, 10),
         };
 
-        navigation.navigate('OPD', {
-          appointment,
-          patient: resolvedPatient,
+        navigation.navigate('Calendar', {
+          selectedAppointment: latestAppt || appointment,
         });
       } catch (err) {
         console.error('Open OPD failed:', err);
