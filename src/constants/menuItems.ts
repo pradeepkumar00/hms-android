@@ -34,6 +34,12 @@ export const HOME_MENU_ITEMS: MenuItem[] = [
     icon: 'person-add',
     screen: 'AddPatient',
   },
+  {
+    key: 'reports',
+    label: 'Reports',
+    icon: 'folder-shared',
+    screen: 'Reports',
+  },
 ];
 
 // Extra items shown only in the side menu drawer.

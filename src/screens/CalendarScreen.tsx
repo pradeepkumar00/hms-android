@@ -27,7 +27,8 @@ import Icon from 'react-native-vector-icons/MaterialIcons';
 import { Appointment, Patient } from '../types';
 import calendarRtdbService from '../services/calendarRtdbService';
 import { BookableSlot, isSlotSelectable } from '../utils/slot.util';
-import { isSlotBookingMode } from '../utils/doctorBookingMode.util';
+import { isSlotBookingMode, isCustomBookingMode } from '../utils/doctorBookingMode.util';
+import BlockTimeModal from '../components/BlockTimeModal';
 import {
   formatAppointmentListTime,
   getAppointmentVisitDisplay,
@@ -430,8 +431,9 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation, route }) =>
   // Doctor filter (null = all doctors)
   const [selectedDoctorId, setSelectedDoctorId] = useState<string | null>(null);
   const [calendarDoctors, setCalendarDoctors] = useState<
-    { id: string; name: string; color?: string | null }[]
+    { id: string; name: string; color?: string | null; bookingMode?: string }[]
   >([]);
+  const [blockTimeOpen, setBlockTimeOpen] = useState(false);
   const [anchoredDropdown, setAnchoredDropdown] = useState<{
     kind: AnchoredDropdownKind;
     anchor: DropdownAnchor;
@@ -638,6 +640,7 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation, route }) =>
         (Array.isArray(doctors) ? doctors : []).map((d: any) => ({
           id: String(d._id),
           name: d.name || d.doctorCode || 'Doctor',
+          bookingMode: d.bookingMode,
         })),
       );
     })();
@@ -1842,6 +1845,33 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation, route }) =>
     );
   };
 
+  const handleMarkAbsent = () => {
+    if (!selectedAppt || !token) return;
+    Alert.alert(
+      'Mark Absent',
+      `Mark ${selectedAppt.patientName || 'this patient'} as absent?`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Mark Absent',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              const realAuthService = (await import('../services/realAuthService')).default;
+              await realAuthService.updateAppointmentStatus(selectedAppt._id, 'absent', token);
+              setSelectedAppt(null);
+              await fetchAppointments();
+              Alert.alert('Updated', 'Marked absent.');
+            } catch (err: any) {
+              console.error('Mark absent failed:', err);
+              Alert.alert('Error', err?.message || 'Failed to mark absent');
+            }
+          },
+        },
+      ],
+    );
+  };
+
   const closeRescheduleModal = () => {
     setRescheduleOpen(false);
     setRescheduleDoctorId('');
@@ -2409,6 +2439,15 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation, route }) =>
         })
       )}
 
+      {/* Mark Absent — available before confirming arrival (no-show). */}
+      {!isAppointmentCancelled(appt) && appt.status !== 'absent' && appt.status !== 'completed' ? (
+        renderCtaButton('Absent', handleMarkAbsent, {
+          variant: 'danger',
+          fullWidth: true,
+          icon: 'event-busy',
+        })
+      ) : null}
+
       {!isAppointmentCancelled(appt) ? (
         appt.patientId
           ? renderCtaButton('Follow up', handleFollowup, {
@@ -2575,6 +2614,17 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation, route }) =>
         }}
         onCancel={() => setShowDatePicker(false)}
         title="Select date"
+      />
+
+      {/* Block time ranges for the selected (custom-booking) doctor */}
+      <BlockTimeModal
+        visible={blockTimeOpen}
+        onClose={() => setBlockTimeOpen(false)}
+        doctorId={selectedDoctorId}
+        doctorName={selectedDoctor?.name}
+        isCustomDoctor={isCustomBookingMode(selectedDoctor)}
+        initialDate={selectedKey}
+        token={token}
       />
 
       {/* Week strip (day chips) */}
@@ -3372,6 +3422,21 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation, route }) =>
                     <Text style={styles.confirmFieldLabel}>
                       Matching patients ({matchingPatients.length})
                     </Text>
+                    <TouchableOpacity
+                      style={[
+                        styles.confirmMatchItem,
+                        selectedPatientId === '__new__' &&
+                          styles.confirmMatchItemActive,
+                      ]}
+                      onPress={selectCreateNewPatient}
+                    >
+                      <Text style={styles.confirmMatchName}>
+                        Create new patient
+                      </Text>
+                      <Text style={styles.confirmMatchMeta}>
+                        Register and link this appointment
+                      </Text>
+                    </TouchableOpacity>
                     {matchingPatients.map(patient => {
                       const active = selectedPatientId === patient._id;
                       return (
@@ -3393,21 +3458,6 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation, route }) =>
                         </TouchableOpacity>
                       );
                     })}
-                    <TouchableOpacity
-                      style={[
-                        styles.confirmMatchItem,
-                        selectedPatientId === '__new__' &&
-                          styles.confirmMatchItemActive,
-                      ]}
-                      onPress={selectCreateNewPatient}
-                    >
-                      <Text style={styles.confirmMatchName}>
-                        Create new patient
-                      </Text>
-                      <Text style={styles.confirmMatchMeta}>
-                        Register and link this appointment
-                      </Text>
-                    </TouchableOpacity>
                   </View>
                 ) : null}
 
@@ -4108,6 +4158,15 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation, route }) =>
         onSelectStrip={file => openAppointmentFile(file)}
         onClose={closeFileViewer}
       />
+
+      {/* Floating Action Button for Block Time */}
+      <TouchableOpacity
+        style={styles.fixedBlockTimeFab}
+        activeOpacity={0.8}
+        onPress={() => setBlockTimeOpen(true)}
+      >
+        <Icon name="block" size={24} color="#FFFFFF" />
+      </TouchableOpacity>
     </View>
   );
 };
@@ -4153,6 +4212,23 @@ const styles = StyleSheet.create({
   },
   topToggleTextActive: {
     color: theme.colors.primary,
+  },
+  fixedBlockTimeFab: {
+    position: 'absolute',
+    bottom: 24,
+    right: 24,
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: theme.colors.primary,
+    alignItems: 'center',
+    justifyContent: 'center',
+    elevation: 6,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.3,
+    shadowRadius: 4.5,
+    zIndex: 99,
   },
   navRow: {
     flexDirection: 'row',

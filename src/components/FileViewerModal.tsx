@@ -9,6 +9,8 @@ import {
   Image,
   Dimensions,
   ScrollView,
+  Linking,
+  Alert,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Pdf from 'react-native-pdf';
@@ -187,6 +189,10 @@ const FileViewerModal: React.FC<FileViewerModalProps> = ({
                 );
                 setZoom(next);
               }}
+              onError={err => {
+                console.error('PDF loading error:', err);
+                Alert.alert('Error', 'Failed to load PDF file.');
+              }}
             />
           ) : isImage ? (
             <PinchZoomView
@@ -234,14 +240,22 @@ const FileViewerModal: React.FC<FileViewerModalProps> = ({
               </View>
             </PinchZoomView>
           ) : (
-            <Pdf
-              source={{ uri: url, cache: true }}
-              trustAllCerts={false}
-              style={styles.pdf}
-              scale={zoom}
-              minScale={MIN_ZOOM}
-              maxScale={MAX_ZOOM}
-            />
+            <View style={styles.unsupportedContainer}>
+              <Icon name="insert-drive-file" size={64} color="#94A3B8" />
+              <Text style={styles.unsupportedText}>
+                Preview not available for this file type.
+              </Text>
+              <TouchableOpacity
+                style={styles.openBtn}
+                onPress={() => {
+                  Linking.openURL(url).catch(() => {
+                    Alert.alert('Error', 'Unable to open file link.');
+                  });
+                }}
+              >
+                <Text style={styles.openBtnText}>Open in Browser</Text>
+              </TouchableOpacity>
+            </View>
           )}
         </View>
 
@@ -399,6 +413,31 @@ const styles = StyleSheet.create({
   gliderThumbImage: {
     width: '100%',
     height: '100%',
+  },
+  unsupportedContainer: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: theme.spacing.lg,
+    backgroundColor: '#000',
+  },
+  unsupportedText: {
+    fontSize: theme.typography.fontSizes.md,
+    color: '#94A3B8',
+    textAlign: 'center',
+    marginTop: theme.spacing.md,
+    marginBottom: theme.spacing.lg,
+  },
+  openBtn: {
+    paddingVertical: 12,
+    paddingHorizontal: 24,
+    borderRadius: 8,
+    backgroundColor: theme.colors.primary,
+  },
+  openBtnText: {
+    fontSize: theme.typography.fontSizes.md,
+    fontWeight: 'bold',
+    color: '#FFFFFF',
   },
 });
 

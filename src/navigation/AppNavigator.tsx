@@ -24,6 +24,7 @@ import CalendarScreen from '../screens/CalendarScreen';
 import OPDScreen from '../screens/OPDScreen';
 import PatientListScreen from '../screens/PatientListScreen';
 import AddPatientScreen from '../screens/AddPatientScreen';
+import ReportsScreen from '../screens/ReportsScreen';
 
 const Stack = createStackNavigator<RootStackParamList>();
 
@@ -260,6 +261,13 @@ const AppNavigator: React.FC = () => {
         <Stack.Screen
           name="OPD"
           component={OPDScreen}
+          options={{
+            gestureEnabled: true,
+          }}
+        />
+        <Stack.Screen
+          name="Reports"
+          component={ReportsScreen}
           options={{
             gestureEnabled: true,
           }}

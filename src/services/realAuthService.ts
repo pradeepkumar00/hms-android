@@ -1817,6 +1817,208 @@ class RealAuthService {
   }
 
   /**
+   * Load per-date availability config (leave / disabled slots / blocked times).
+   * GET /whatsapp/booking-config/:doctorId/:date
+   */
+  async getBookingConfig(
+    doctorId: string,
+    date: string,
+    token: string,
+  ): Promise<any> {
+    try {
+      const response = await apiClient.get(
+        `/whatsapp/booking-config/${doctorId}/${date}`,
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+        },
+      );
+      return response.data ?? {};
+    } catch (error) {
+      console.error('❌ Failed to load booking config:', error);
+      throw new Error(handleNetworkError(error));
+    }
+  }
+
+  /**
+   * Save per-date availability config. Returns any existing appointments that
+   * fall inside a newly-blocked range (as `conflicts`) so the UI can warn.
+   * POST /whatsapp/booking-config
+   */
+  async saveBookingConfig(
+    payload: {
+      doctorId: string;
+      date: string;
+      isLeave?: boolean;
+      disabledSlots?: string[];
+      maxQueueCount?: number | null;
+      blockedTimes?: Array<{ startTime: string; endTime: string }>;
+    },
+    token: string,
+  ): Promise<any> {
+    try {
+      const response = await apiClient.post('/whatsapp/booking-config', payload, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+      });
+      const body = response.data ?? {};
+      if (body.status >= 400) {
+        throw new Error(body.message || 'Failed to save availability');
+      }
+      return body;
+    } catch (error) {
+      console.error('❌ Failed to save booking config:', error);
+      throw new Error(handleNetworkError(error));
+    }
+  }
+
+  /**
+   * Update an appointment's status (e.g. mark Absent / Completed).
+   * POST /appointments/:id/status — allowed before confirming arrival.
+   */
+  async updateAppointmentStatus(
+    appointmentId: string,
+    status: 'waiting' | 'progress' | 'completed' | 'absent' | 'scheduled' | 'held',
+    token: string,
+  ): Promise<any> {
+    try {
+      const response = await apiClient.post(
+        `/appointments/${appointmentId}/status`,
+        { status },
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+        },
+      );
+      const body = response.data ?? {};
+      if (body.status >= 400) {
+        throw new Error(body.message || 'Failed to update status');
+      }
+      return body;
+    } catch (error) {
+      console.error('❌ Failed to update appointment status:', error);
+      throw new Error(handleNetworkError(error));
+    }
+  }
+
+  /**
+   * Private report files (Reports tab). GET /report/files
+   * Returns { files, permissions } — permissions is the caller's effective
+   * report.* set so the UI can gate actions off the server's source of truth.
+   */
+  async getReportFiles(token: string): Promise<{ files: any[]; permissions: string[] }> {
+    try {
+      const response = await apiClient.get('/report/files', {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+      });
+      const body = response.data ?? {};
+      return { files: body.files || [], permissions: body.permissions || [] };
+    } catch (error) {
+      console.error('❌ Failed to load report files:', error);
+      throw new Error(handleNetworkError(error));
+    }
+  }
+
+  /** Upload a private report file (multipart). POST /report/files */
+  async uploadReportFile(
+    params: {
+      name: string;
+      description?: string;
+      file: { uri: string; name: string; type: string };
+    },
+    token: string,
+  ): Promise<any> {
+    try {
+      const form = new FormData();
+      form.append('name', params.name);
+      form.append('description', params.description || '');
+      form.append('file', {
+        uri: params.file.uri,
+        name: params.file.name,
+        type: params.file.type,
+      } as any);
+
+      const response = await apiClient.post('/report/files', form, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'multipart/form-data',
+        },
+      });
+      const body = response.data ?? {};
+      if (body.status >= 400) {
+        throw new Error(body.message || 'Failed to upload file');
+      }
+      return body.file ?? body;
+    } catch (error) {
+      console.error('❌ Failed to upload report file:', error);
+      throw new Error(handleNetworkError(error));
+    }
+  }
+
+  /** Update a private report file's details (and optionally replace it). PUT /report/files/:id */
+  async updateReportFile(
+    id: string,
+    params: {
+      name: string;
+      description?: string;
+      file?: { uri: string; name: string; type: string } | null;
+    },
+    token: string,
+  ): Promise<any> {
+    try {
+      const form = new FormData();
+      form.append('name', params.name);
+      form.append('description', params.description || '');
+      if (params.file) {
+        form.append('file', {
+          uri: params.file.uri,
+          name: params.file.name,
+          type: params.file.type,
+        } as any);
+      }
+
+      const response = await apiClient.put(`/report/files/${id}`, form, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'multipart/form-data',
+        },
+      });
+      const body = response.data ?? {};
+      if (body.status >= 400) {
+        throw new Error(body.message || 'Failed to update file');
+      }
+      return body.file ?? body;
+    } catch (error) {
+      console.error('❌ Failed to update report file:', error);
+      throw new Error(handleNetworkError(error));
+    }
+  }
+
+  /** Delete a private report file. DELETE /report/files/:id */
+  async deleteReportFile(id: string, token: string): Promise<void> {
+    try {
+      await apiClient.delete(`/report/files/${id}`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+      });
+    } catch (error) {
+      console.error('❌ Failed to delete report file:', error);
+      throw new Error(handleNetworkError(error));
+    }
+  }
+
+  /**
    * Book a follow-up (token-only) appointment. Hits POST /book-token.
    */
   async bookFollowupToken(

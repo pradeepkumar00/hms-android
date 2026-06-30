@@ -277,6 +277,7 @@ export type RootStackParamList = {
     presetDoctorId?: string;
     presetDate?: string;
   } | undefined;
+  Reports: undefined; // Private report files
 };
 
 // UI Types
