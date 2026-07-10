@@ -732,16 +732,7 @@ const TaskDetailsScreen: React.FC<TaskDetailsScreenProps> = ({
   // Handle file download
   const handleFileDownload = useCallback(async (fileUrl: string) => {
     try {
-      const supported = await Linking.canOpenURL(fileUrl);
-      if (supported) {
-        await Linking.openURL(fileUrl);
-      } else {
-        Alert.alert(
-          'Cannot Open File',
-          'Unable to open this file type on your device.',
-          [{ text: 'OK' }],
-        );
-      }
+      await Linking.openURL(fileUrl);
     } catch (error) {
       console.error('Failed to open file:', error);
       Alert.alert('Error', 'Failed to open the file. Please try again.', [

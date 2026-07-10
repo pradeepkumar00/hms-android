@@ -434,6 +434,7 @@ const PatientListScreen: React.FC<PatientListScreenProps> = ({ navigation }) => 
 
         navigation.navigate('Calendar', {
           selectedAppointment: latestAppt || appointment,
+          from: 'PatientList',
         });
       } catch (err) {
         console.error('Open OPD failed:', err);

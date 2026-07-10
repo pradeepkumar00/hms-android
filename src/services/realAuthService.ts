@@ -732,12 +732,12 @@ class RealAuthService {
 
       // API returns { data: [...] }
       const appointments = response.data?.data ?? response.data ?? [];
+      const resArr = Array.isArray(appointments) ? [...appointments] : [];
+      (resArr as any).bookingConfigs = response.data?.bookingConfigs || [];
       console.log(
-        `✅ Appointments fetched successfully: ${
-          Array.isArray(appointments) ? appointments.length : 0
-        } appointments`,
+        `✅ Appointments fetched successfully: ${resArr.length} appointments`,
       );
-      return Array.isArray(appointments) ? appointments : [];
+      return resArr;
     } catch (error) {
       console.error('❌ Failed to fetch appointments:', error);
       throw error;

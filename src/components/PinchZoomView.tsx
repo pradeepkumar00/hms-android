@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useCallback } from 'react';
 import {
   Animated,
   StyleProp,
@@ -54,64 +54,100 @@ const PinchZoomView: React.FC<PinchZoomViewProps> = ({
   const translateY = useRef(new Animated.Value(0)).current;
   const lastOffset = useRef({ x: 0, y: 0 });
 
-  const resetPan = () => {
-    lastOffset.current = { x: 0, y: 0 };
-    translateX.setOffset(0);
-    translateY.setOffset(0);
-    translateX.setValue(0);
-    translateY.setValue(0);
-  };
-
-  const clampPan = () => {
+  const getMaxTranslation = useCallback((currentScale: number) => {
     if (!viewportWidth || !viewportHeight || !contentWidth || !contentHeight) {
-      return;
+      return { maxX: 0, maxY: 0 };
     }
-
-    const scaledW = contentWidth * lastScale.current;
-    const scaledH = contentHeight * lastScale.current;
-
-    if (scaledW <= viewportWidth && scaledH <= viewportHeight) {
-      resetPan();
-      return;
-    }
+    const scaledW = contentWidth * currentScale;
+    const scaledH = contentHeight * currentScale;
 
     const maxX = Math.max(0, (scaledW - viewportWidth) / 2);
     const maxY = Math.max(0, (scaledH - viewportHeight) / 2);
-    lastOffset.current = {
-      x: Math.min(maxX, Math.max(-maxX, lastOffset.current.x)),
-      y: Math.min(maxY, Math.max(-maxY, lastOffset.current.y)),
-    };
-    translateX.setOffset(lastOffset.current.x);
-    translateY.setOffset(lastOffset.current.y);
-    translateX.setValue(0);
-    translateY.setValue(0);
-  };
+    return { maxX, maxY };
+  }, [viewportWidth, viewportHeight, contentWidth, contentHeight]);
 
-  const applyZoom = (next: number, notify = true) => {
+  const resetPan = useCallback((animated = true) => {
+    lastOffset.current = { x: 0, y: 0 };
+    if (animated) {
+      Animated.parallel([
+        Animated.spring(translateX, {
+          toValue: 0,
+          useNativeDriver: true,
+          bounciness: 0,
+        }),
+        Animated.spring(translateY, {
+          toValue: 0,
+          useNativeDriver: true,
+          bounciness: 0,
+        }),
+      ]).start();
+    } else {
+      translateX.setValue(0);
+      translateY.setValue(0);
+    }
+  }, [translateX, translateY]);
+
+  const clampPan = useCallback((animated = true) => {
+    const { maxX, maxY } = getMaxTranslation(lastScale.current);
+    const targetX = Math.min(maxX, Math.max(-maxX, lastOffset.current.x));
+    const targetY = Math.min(maxY, Math.max(-maxY, lastOffset.current.y));
+
+    lastOffset.current = { x: targetX, y: targetY };
+
+    if (animated) {
+      Animated.parallel([
+        Animated.spring(translateX, {
+          toValue: targetX,
+          useNativeDriver: true,
+          bounciness: 0,
+        }),
+        Animated.spring(translateY, {
+          toValue: targetY,
+          useNativeDriver: true,
+          bounciness: 0,
+        }),
+      ]).start();
+    } else {
+      translateX.setValue(targetX);
+      translateY.setValue(targetY);
+    }
+  }, [translateX, translateY, getMaxTranslation]);
+
+  const applyZoom = useCallback((next: number, notify = true, animated = true) => {
     const clamped = clampZoom(next, minZoom, maxZoom);
     lastScale.current = clamped;
-    baseScale.setValue(clamped);
+
+    if (animated) {
+      Animated.spring(baseScale, {
+        toValue: clamped,
+        useNativeDriver: true,
+        bounciness: 0,
+      }).start();
+    } else {
+      baseScale.setValue(clamped);
+    }
+
     pinchScale.setValue(1);
     if (clamped <= 1) {
-      resetPan();
+      resetPan(animated);
     } else {
-      clampPan();
+      clampPan(animated);
     }
     if (notify) {
       onZoomChange?.(clamped);
     }
-  };
+  }, [baseScale, pinchScale, minZoom, maxZoom, resetPan, clampPan, onZoomChange]);
 
   useEffect(() => {
     const clamped = clampZoom(zoom, minZoom, maxZoom);
     if (Math.abs(clamped - lastScale.current) > 0.001) {
-      applyZoom(clamped, false);
+      applyZoom(clamped, false, true);
     }
-  }, [zoom, minZoom, maxZoom]);
+  }, [zoom, minZoom, maxZoom, applyZoom]);
 
   useEffect(() => {
-    resetPan();
-  }, [contentWidth, contentHeight, viewportWidth, viewportHeight]);
+    resetPan(false);
+  }, [contentWidth, contentHeight, viewportWidth, viewportHeight, resetPan]);
 
   const onPinchEvent = Animated.event(
     [{ nativeEvent: { scale: pinchScale } }],
@@ -120,25 +156,45 @@ const PinchZoomView: React.FC<PinchZoomViewProps> = ({
 
   const onPinchStateChange = (event: any) => {
     if (event.nativeEvent.oldState !== State.ACTIVE) return;
-    applyZoom(lastScale.current * event.nativeEvent.scale);
+    applyZoom(lastScale.current * event.nativeEvent.scale, true, false);
   };
 
-  const onPanEvent = Animated.event(
-    [{ nativeEvent: { translationX: translateX, translationY: translateY } }],
-    { useNativeDriver: true },
-  );
+  const onPanGestureEvent = (event: any) => {
+    if (event.nativeEvent.state !== State.ACTIVE) return;
+    if (lastScale.current <= 1) return;
+
+    const { maxX, maxY } = getMaxTranslation(lastScale.current);
+    const targetX = lastOffset.current.x + event.nativeEvent.translationX;
+    const targetY = lastOffset.current.y + event.nativeEvent.translationY;
+
+    const clampedX = Math.min(maxX, Math.max(-maxX, targetX));
+    const clampedY = Math.min(maxY, Math.max(-maxY, targetY));
+
+    translateX.setValue(clampedX);
+    translateY.setValue(clampedY);
+  };
 
   const onPanStateChange = (event: any) => {
-    if (event.nativeEvent.oldState !== State.ACTIVE) return;
-    if (lastScale.current <= 1) {
-      resetPan();
-      return;
+    if (
+      event.nativeEvent.state === State.END ||
+      event.nativeEvent.state === State.CANCELLED ||
+      event.nativeEvent.state === State.FAILED
+    ) {
+      if (lastScale.current <= 1) {
+        resetPan(true);
+        return;
+      }
+      const { maxX, maxY } = getMaxTranslation(lastScale.current);
+      const targetX = lastOffset.current.x + event.nativeEvent.translationX;
+      const targetY = lastOffset.current.y + event.nativeEvent.translationY;
+
+      lastOffset.current = {
+        x: Math.min(maxX, Math.max(-maxX, targetX)),
+        y: Math.min(maxY, Math.max(-maxY, targetY)),
+      };
+
+      clampPan(true);
     }
-    lastOffset.current = {
-      x: lastOffset.current.x + event.nativeEvent.translationX,
-      y: lastOffset.current.y + event.nativeEvent.translationY,
-    };
-    clampPan();
   };
 
   return (
@@ -146,7 +202,7 @@ const PinchZoomView: React.FC<PinchZoomViewProps> = ({
       <PanGestureHandler
         ref={panRef}
         simultaneousHandlers={pinchRef}
-        onGestureEvent={onPanEvent}
+        onGestureEvent={onPanGestureEvent}
         onHandlerStateChange={onPanStateChange}
         minPointers={1}
         maxPointers={1}
@@ -187,6 +243,8 @@ const styles = StyleSheet.create({
   },
   flex: {
     flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   content: {
     alignItems: 'center',

@@ -208,6 +208,9 @@ dependencies {
     
     // Explicitly declare work manager for background tasks (Android 9+)
     implementation 'androidx.work:work-runtime-ktx:2.9.0'
+    
+    // Google ML Kit Document Scanner API
+    implementation 'com.google.android.gms:play-services-mlkit-document-scanner:16.0.0'
 }
 
 // Vector icons configuration

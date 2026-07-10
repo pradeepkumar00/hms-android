@@ -18,6 +18,7 @@ import Icon from 'react-native-vector-icons/MaterialIcons';
 import { theme } from '../constants/theme';
 import PinchZoomView from './PinchZoomView';
 import { isImageUploadPart } from '../utils/uploadFileParts.util';
+import { getFileTypeIcon } from '../utils/fileTypeIcon.util';
 import { layoutUploadViewerImage } from '../utils/uploadViewerImageLayout.util';
 
 const SCREEN_WIDTH = Dimensions.get('window').width;
@@ -89,9 +90,9 @@ const FileViewerModal: React.FC<FileViewerModalProps> = ({
       Math.max(1, bodySize.w - 16),
       Math.max(1, bodySize.h - 16),
       rotation,
-      zoom,
+      1,
     );
-  }, [imageNatural, bodySize, rotation, zoom]);
+  }, [imageNatural, bodySize, rotation]);
 
   const handleClose = () => {
     setRotation(0);
@@ -174,26 +175,29 @@ const FileViewerModal: React.FC<FileViewerModalProps> = ({
           {loading || !url ? (
             <ActivityIndicator size="large" color={theme.colors.surface} />
           ) : isPdf ? (
-            <Pdf
-              source={{ uri: url, cache: true }}
-              trustAllCerts={false}
-              style={styles.pdf}
-              scale={zoom}
-              minScale={MIN_ZOOM}
-              maxScale={MAX_ZOOM}
-              enableDoubleTapZoom
-              onScaleChanged={(scale: number) => {
-                const next = Math.max(
-                  MIN_ZOOM,
-                  Math.min(MAX_ZOOM, Math.round(scale * 100) / 100),
-                );
-                setZoom(next);
-              }}
-              onError={err => {
-                console.error('PDF loading error:', err);
-                Alert.alert('Error', 'Failed to load PDF file.');
-              }}
-            />
+            <PinchZoomView
+              style={styles.imageScroll}
+              zoom={zoom}
+              minZoom={MIN_ZOOM}
+              maxZoom={MAX_ZOOM}
+              onZoomChange={setZoom}
+              viewportWidth={bodySize.w}
+              viewportHeight={bodySize.h}
+              contentWidth={bodySize.w}
+              contentHeight={bodySize.h}
+            >
+              <Pdf
+                source={{ uri: url, cache: true }}
+                trustAllCerts={false}
+                style={{ width: bodySize.w, height: bodySize.h }}
+                enablePinchZoom={false}
+                enableDoubleTapZoom={false}
+                onError={err => {
+                  console.error('PDF loading error:', err);
+                  Alert.alert('Error', 'Failed to load PDF file.');
+                }}
+              />
+            </PinchZoomView>
           ) : isImage ? (
             <PinchZoomView
               style={styles.imageScroll}
@@ -268,6 +272,7 @@ const FileViewerModal: React.FC<FileViewerModalProps> = ({
             >
               {stripItems.map(it => {
                 const itIsImage = isImageUploadPart(it);
+                const itIcon = getFileTypeIcon(it.mimeType, it.title || it.filePath);
                 const itUri =
                   it.thumbUrl ||
                   (it.filePath ? signedUrls[it.filePath] : undefined) ||
@@ -288,11 +293,7 @@ const FileViewerModal: React.FC<FileViewerModalProps> = ({
                         resizeMode="cover"
                       />
                     ) : (
-                      <Icon
-                        name={itIsImage ? 'image' : 'picture-as-pdf'}
-                        size={14}
-                        color={itIsImage ? theme.colors.primary : '#E53935'}
-                      />
+                      <Icon name={itIcon.icon} size={14} color={itIcon.color} />
                     )}
                   </TouchableOpacity>
                 );

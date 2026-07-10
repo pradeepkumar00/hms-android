@@ -116,7 +116,7 @@ const HomeScreen: React.FC<HomeScreenProps> = ({ navigation }) => {
               onPress={() => handleTilePress(item.screen)}
             >
               <View style={styles.tileIconWrapper}>
-                <Icon name={item.icon} size={32} color={theme.colors.primary} />
+                <Icon name={item.icon} size={24} color={theme.colors.primary} />
               </View>
               <Text style={styles.tileLabel} numberOfLines={2}>
                 {item.label}
@@ -182,26 +182,26 @@ const styles = StyleSheet.create({
   tile: {
     width: '48%',
     backgroundColor: theme.colors.surface,
-    borderRadius: scale(12),
-    paddingVertical: scale(24),
-    paddingHorizontal: scale(12),
-    marginBottom: scale(12),
+    borderRadius: scale(8),
+    paddingVertical: scale(14),
+    paddingHorizontal: scale(10),
+    marginBottom: scale(8),
     alignItems: 'center',
     justifyContent: 'center',
-    minHeight: scale(120),
+    minHeight: scale(96),
     ...theme.shadows.md,
   },
   tileIconWrapper: {
-    width: scale(56),
-    height: scale(56),
-    borderRadius: scale(28),
+    width: scale(44),
+    height: scale(44),
+    borderRadius: scale(22),
     backgroundColor: '#EEF1FE',
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: theme.spacing.sm,
+    marginBottom: 6,
   },
   tileLabel: {
-    fontSize: theme.typography.fontSizes.md,
+    fontSize: theme.typography.fontSizes.sm,
     fontWeight: theme.typography.fontWeights.semiBold,
     color: theme.colors.text,
     textAlign: 'center',

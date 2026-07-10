@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   View,
   Text,
@@ -10,6 +10,9 @@ import {
   ActivityIndicator,
   Alert,
   RefreshControl,
+  Image,
+  Platform,
+  Pressable,
 } from 'react-native';
 import {
   pick,
@@ -18,12 +21,14 @@ import {
   errorCodes,
 } from '@react-native-documents/picker';
 import Icon from 'react-native-vector-icons/MaterialIcons';
+import { launchCamera } from 'react-native-image-picker';
 import { useNavigation } from '@react-navigation/native';
 import Header from '../components/Header';
 import { theme } from '../constants/theme';
 import FileViewerModal from '../components/FileViewerModal';
 import { useAppSelector, selectAuthToken } from '../store';
 import realAuthService from '../services/realAuthService';
+import { startDocumentScan } from '../services/documentScannerService';
 
 interface ReportFile {
   id: string;
@@ -57,6 +62,7 @@ const ReportsScreen: React.FC = () => {
   const [pickedFile, setPickedFile] = useState<PickedFile | null>(null);
   const [pickedFileName, setPickedFileName] = useState('');
   const [saving, setSaving] = useState(false);
+  const [uploadModalOpen, setUploadModalOpen] = useState(false);
 
   const [viewerVisible, setViewerVisible] = useState(false);
   const [viewerItem, setViewerItem] = useState<any | null>(null);
@@ -118,18 +124,24 @@ const ReportsScreen: React.FC = () => {
     setModalOpen(true);
   };
 
-  const handlePick = async () => {
+  const handleLaunchFilePicker = async () => {
     try {
       const result = await pick({
-        type: [types.allFiles],
+        type: [types.images],
         copyTo: 'cachesDirectory',
       });
       const f: any = result?.[0];
       if (f) {
+        const isImg = (f.type || '').toLowerCase().startsWith('image/') ||
+          /\.(jpg|jpeg|png|webp|heic|heif)$/i.test(f.name || '');
+        if (!isImg) {
+          Alert.alert('Validation Error', 'Only image uploads (JPG, JPEG, PNG, WEBP, HEIC/HEIF) are allowed.');
+          return;
+        }
         setPickedFile({
           uri: f.fileCopyUri || f.uri || '',
           name: f.name || 'file',
-          type: f.type || 'application/octet-stream',
+          type: f.type || 'image/jpeg',
         });
         setPickedFileName(f.name || 'file');
       }
@@ -139,6 +151,62 @@ const ReportsScreen: React.FC = () => {
       }
       Alert.alert('Error', 'Failed to select file. Please try again.');
     }
+  };
+
+  const handleLaunchCamera = async () => {
+    if (Platform.OS === 'android') {
+      try {
+        const result = await startDocumentScan({ galleryImportAllowed: false });
+        if (result.success && result.uri) {
+          setPickedFile({
+            uri: result.uri,
+            name: `scan_${Date.now()}.jpg`,
+            type: result.type || 'image/jpeg',
+          });
+          setPickedFileName(`scan_${Date.now()}.jpg`);
+        }
+      } catch (err) {
+        if (err instanceof Error && err.message.toLowerCase().includes('cancel')) {
+          return;
+        }
+        console.error('Document scanner error:', err);
+        Alert.alert('Scanner Error', 'Failed to scan document.');
+      }
+      return;
+    }
+
+    const options = {
+      mediaType: 'photo' as const,
+      quality: 0.8,
+      maxWidth: 2048,
+      maxHeight: 2048,
+      saveToPhotos: false,
+    };
+
+    launchCamera(options, response => {
+      if (response.didCancel) {
+        return;
+      }
+
+      if (response.errorMessage) {
+        Alert.alert('Error', response.errorMessage);
+        return;
+      }
+
+      if (response.assets && response.assets.length > 0) {
+        const f = response.assets[0];
+        setPickedFile({
+          uri: f.uri || '',
+          name: f.fileName || `photo_${Date.now()}.jpg`,
+          type: f.type || 'image/jpeg',
+        });
+        setPickedFileName(f.fileName || `photo_${Date.now()}.jpg`);
+      }
+    });
+  };
+
+  const handlePick = () => {
+    setUploadModalOpen(true);
   };
 
   const isImageFile = (type: string): boolean => {
@@ -295,7 +363,11 @@ const ReportsScreen: React.FC = () => {
   const renderItem = ({ item }: { item: ReportFile }) => (
     <TouchableOpacity style={styles.card} activeOpacity={0.7} onPress={() => handleOpen(item)}>
       <View style={styles.cardIcon}>
-        <Icon name={iconFor(item.fileType)} size={20} color={theme.colors.primary} />
+        {isImageFile(item.fileType) && item.url ? (
+          <Image source={{ uri: item.url }} style={styles.cardImage} resizeMode="cover" />
+        ) : (
+          <Icon name={iconFor(item.fileType)} size={20} color={theme.colors.primary} />
+        )}
       </View>
       <View style={styles.cardBody}>
         <Text style={styles.cardName} numberOfLines={1}>{item.name}</Text>
@@ -448,6 +520,62 @@ const ReportsScreen: React.FC = () => {
         </View>
       </Modal>
 
+      <Modal
+        visible={uploadModalOpen}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setUploadModalOpen(false)}
+      >
+        <Pressable
+          style={styles.modalBackdrop}
+          onPress={() => setUploadModalOpen(false)}
+        />
+        <View style={styles.bottomSheetContainer}>
+          <View style={styles.bottomSheetHeader}>
+            <Text style={styles.bottomSheetTitle}>Upload Document</Text>
+            <TouchableOpacity onPress={() => setUploadModalOpen(false)}>
+              <Icon name="close" size={24} color={theme.colors.text} />
+            </TouchableOpacity>
+          </View>
+
+          <TouchableOpacity
+            style={styles.bottomSheetOption}
+            activeOpacity={0.7}
+            onPress={() => {
+              setUploadModalOpen(false);
+              handleLaunchCamera();
+            }}
+          >
+            <View style={[styles.bottomSheetOptionIcon, { backgroundColor: '#EEF2FF' }]}>
+              <Icon name="photo-camera" size={22} color={theme.colors.primary} />
+            </View>
+            <View style={styles.bottomSheetOptionTextWrap}>
+              <Text style={styles.bottomSheetOptionTitle}>Take Photo</Text>
+              <Text style={styles.bottomSheetOptionSubtitle}>Use camera to capture document</Text>
+            </View>
+            <Icon name="chevron-right" size={24} color={theme.colors.textSecondary} />
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={styles.bottomSheetOption}
+            activeOpacity={0.7}
+            onPress={() => {
+              setUploadModalOpen(false);
+              handleLaunchFilePicker();
+            }}
+          >
+            <View style={[styles.bottomSheetOptionIcon, { backgroundColor: '#ECFDF5' }]}>
+              <Icon name="insert-drive-file" size={22} color="#0D9488" />
+            </View>
+            <View style={styles.bottomSheetOptionTextWrap}>
+              <Text style={styles.bottomSheetOptionTitle}>Choose from Files</Text>
+              <Text style={styles.bottomSheetOptionSubtitle}>Upload PDF or image from device</Text>
+            </View>
+            <Icon name="chevron-right" size={24} color={theme.colors.textSecondary} />
+          </TouchableOpacity>
+        </View>
+      </Modal>
+
       <FileViewerModal
         visible={viewerVisible}
         item={viewerItem}
@@ -464,34 +592,39 @@ const ReportsScreen: React.FC = () => {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: theme.colors.background },
-  listContent: { padding: theme.spacing.md },
+  listContent: { paddingHorizontal: 10, paddingVertical: 6 },
   listEmpty: { flexGrow: 1, justifyContent: 'center' },
   card: {
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: theme.colors.surface,
-    borderRadius: 12,
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-    marginBottom: 8,
+    borderRadius: 8,
+    paddingVertical: 6,
+    paddingHorizontal: 8,
+    marginBottom: 6,
     borderWidth: 1,
     borderColor: theme.colors.border,
   },
   cardIcon: {
-    width: 34,
-    height: 34,
-    borderRadius: 8,
+    width: 30,
+    height: 30,
+    borderRadius: 6,
     backgroundColor: '#EEF1FF',
     justifyContent: 'center',
     alignItems: 'center',
-    marginRight: 12,
+    marginRight: 8,
+  },
+  cardImage: {
+    width: 30,
+    height: 30,
+    borderRadius: 6,
   },
   cardBody: { flex: 1 },
-  cardName: { fontSize: 15, fontWeight: '600', color: theme.colors.text },
-  cardDesc: { fontSize: 12, color: theme.colors.textSecondary, marginTop: 2 },
-  cardMeta: { fontSize: 11, color: theme.colors.textSecondary, marginTop: 2 },
+  cardName: { fontSize: 14, fontWeight: '600', color: theme.colors.text },
+  cardDesc: { fontSize: 11, color: theme.colors.textSecondary, marginTop: 1 },
+  cardMeta: { fontSize: 10, color: theme.colors.textSecondary, marginTop: 1 },
   cardActions: { flexDirection: 'row', alignItems: 'center' },
-  actionBtn: { padding: 6, marginLeft: 2 },
+  actionBtn: { padding: 4, marginLeft: 2 },
   emptyWrap: { alignItems: 'center', padding: 32 },
   emptyTitle: { fontSize: 16, fontWeight: '600', color: theme.colors.text, marginTop: 12 },
   emptyText: { fontSize: 13, color: theme.colors.textSecondary, marginTop: 6, textAlign: 'center' },
@@ -573,27 +706,83 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-around',
     backgroundColor: theme.colors.surface,
-    paddingVertical: 10,
+    paddingVertical: 6,
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: theme.colors.border,
-    marginBottom: 10,
+    marginBottom: 6,
   },
   filterChip: {
-    paddingVertical: 6,
-    paddingHorizontal: 12,
-    borderRadius: 16,
+    paddingVertical: 4,
+    paddingHorizontal: 10,
+    borderRadius: 12,
     backgroundColor: '#F1F5F9',
   },
   filterChipActive: {
     backgroundColor: theme.colors.primary,
   },
   filterChipText: {
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: '600',
     color: '#475569',
   },
   filterChipTextActive: {
     color: '#FFFFFF',
+  },
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.4)',
+  },
+  bottomSheetContainer: {
+    backgroundColor: '#FFFFFF',
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
+    paddingHorizontal: 20,
+    paddingTop: 16,
+    paddingBottom: 32,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: -2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 8,
+    elevation: 5,
+  },
+  bottomSheetHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 16,
+  },
+  bottomSheetTitle: {
+    fontSize: 16,
+    fontWeight: 'bold',
+    color: '#0F172A',
+  },
+  bottomSheetOption: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F1F5F9',
+  },
+  bottomSheetOptionIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 14,
+  },
+  bottomSheetOptionTextWrap: {
+    flex: 1,
+  },
+  bottomSheetOptionTitle: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#0F172A',
+  },
+  bottomSheetOptionSubtitle: {
+    fontSize: 12,
+    color: '#64748B',
+    marginTop: 2,
   },
 });
 

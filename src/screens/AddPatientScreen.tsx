@@ -126,36 +126,66 @@ const AddPatientScreen: React.FC<AddPatientScreenProps> = ({ navigation, route }
         ? fields.filter(field => !isBookingRegistrationField(field))
         : fields;
       if (!isAppointmentBooking) return base;
-      const allowed = new Set(['mobileNo', 'name', 'doctorId', 'date']);
-      return base.filter(
+
+      const filtered = base.filter(
         field =>
-          allowed.has(field.key) ||
+          ['mobileNo', 'name', 'doctorId', 'date', 'email'].includes(field.key) ||
           (field.type === 'doctor' && isDoctorField(field.key) && !isCoDoctorField(field.key)) ||
           field.type === 'date' ||
           field.key === 'date',
       );
+
+      const hasDate = filtered.some(f => f.key === 'date' || f.type === 'date');
+      const hasDoctor = filtered.some(f => f.key === 'doctorId' || f.type === 'doctor');
+      const result = [...filtered];
+
+      if (!hasDate) {
+        result.push({
+          key: 'date',
+          label: 'Appointment Date',
+          type: 'date',
+          required: true,
+          placeholder: 'Select Date',
+        });
+      }
+      if (!hasDoctor) {
+        const dateIndex = result.findIndex(f => f.key === 'date');
+        const doctorField = {
+          key: 'doctorId',
+          label: 'Select Doctor',
+          type: 'doctor',
+          required: true,
+          placeholder: 'Select Doctor',
+        };
+        if (dateIndex >= 0) {
+          result.splice(dateIndex, 0, doctorField);
+        } else {
+          result.push(doctorField);
+        }
+      }
+      return result;
     },
     [fields, isEditMode, isAppointmentBooking],
   );
 
   const hasDateField = useMemo(
-    () => fields.some(field => field.type === 'date' || field.key === 'date'),
-    [fields],
+    () => visibleFields.some(field => field.type === 'date' || field.key === 'date'),
+    [visibleFields],
   );
 
   const dateFieldKey = useMemo(
-    () => fields.find(field => field.type === 'date' || field.key === 'date')?.key ?? 'date',
-    [fields],
+    () => visibleFields.find(field => field.type === 'date' || field.key === 'date')?.key ?? 'date',
+    [visibleFields],
   );
 
   const primaryDoctorFieldKey = useMemo(
     () =>
-      fields.find(
+      visibleFields.find(
         field =>
           (field.type === 'doctor' || isDoctorField(field.key)) &&
           !isCoDoctorField(field.key),
       )?.key ?? 'doctorId',
-    [fields],
+    [visibleFields],
   );
 
   const primaryDoctorId = useMemo(
@@ -179,12 +209,12 @@ const AddPatientScreen: React.FC<AddPatientScreenProps> = ({ navigation, route }
 
   const primaryDoctorField = useMemo(
     () =>
-      fields.find(
+      visibleFields.find(
         field =>
           (field.type === 'doctor' || isDoctorField(field.key)) &&
           !isCoDoctorField(field.key),
       ) ?? null,
-    [fields],
+    [visibleFields],
   );
 
   const slotSelectionRequired = useMemo(
@@ -233,12 +263,19 @@ const AddPatientScreen: React.FC<AddPatientScreenProps> = ({ navigation, route }
       console.log(`📋 Registration fields loaded: ${regisFields.length}`);
       setFields(regisFields);
       const initial = buildInitialFormValues(regisFields);
+      const isFollowup = Boolean(route.params?.openFollowup);
+      const date = new Date();
+      const yyyy = date.getFullYear();
+      const mm = String(date.getMonth() + 1).padStart(2, '0');
+      const dd = String(date.getDate()).padStart(2, '0');
+      const todayDateStr = `${yyyy}-${mm}-${dd}`;
+
       const nextValues = isEditMode
         ? { ...initial, ...prefillPatientFormValues(editPatientData) }
         : {
             ...initial,
             ...(presetDoctorId ? { doctorId: presetDoctorId } : {}),
-            ...(presetDate ? { date: presetDate } : {}),
+            ...(presetDate ? { date: presetDate } : (isAppointmentBooking && !isFollowup ? { date: todayDateStr } : {})),
           };
       setFormValues(nextValues);
       setDoctors(
@@ -259,7 +296,7 @@ const AddPatientScreen: React.FC<AddPatientScreenProps> = ({ navigation, route }
     } finally {
       setLoadingConfig(false);
     }
-  }, [token, appConfig, appDataLoading, dispatch, isEditMode, editPatientData, presetDoctorId, presetDate]);
+  }, [token, appConfig, appDataLoading, dispatch, isEditMode, editPatientData, presetDoctorId, presetDate, isAppointmentBooking, route.params?.openFollowup]);
 
   useEffect(() => {
     if (!isAppointmentBooking) return;
@@ -588,6 +625,14 @@ const AddPatientScreen: React.FC<AddPatientScreenProps> = ({ navigation, route }
       }
     }
 
+    const emailField = visibleFields.find(field => field.key === 'email');
+    if (emailField) {
+      const email = (formValues.email ?? '').trim();
+      if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+        nextErrors.email = 'Enter a valid email address';
+      }
+    }
+
     if (!isEditMode && slotSelectionRequired && !selectedSlot) {
       nextErrors.slot = 'Please select a slot';
     } else if (
@@ -630,6 +675,7 @@ const AddPatientScreen: React.FC<AddPatientScreenProps> = ({ navigation, route }
       slotTokenCount?: number;
       appointmentTime?: string;
       duration?: number;
+      email?: string;
     } = {
       doctorId: getValue(primaryDoctorFieldKey) || getValue('doctorId'),
       phone,
@@ -637,6 +683,11 @@ const AddPatientScreen: React.FC<AddPatientScreenProps> = ({ navigation, route }
       date: appointmentDateValue,
       paymentMode: 'cash',
     };
+
+    const emailValue = getValue('email');
+    if (emailValue) {
+      payload.email = emailValue;
+    }
 
     if (bookingSelectedPatientId) {
       payload.patientId = bookingSelectedPatientId;

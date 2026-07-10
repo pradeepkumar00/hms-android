@@ -12,9 +12,9 @@ import {
   Modal,
   Image,
   Dimensions,
-  PermissionsAndroid,
   Platform,
   TextInput,
+  Pressable,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useFocusEffect } from '@react-navigation/native';
@@ -27,6 +27,9 @@ import {
   isErrorWithCode,
 } from '@react-native-documents/picker';
 import { useAppSelector, selectAuthToken, selectManageServices, selectAppDataLoading, selectCurrentUser } from '../store';
+import ReactNativeBlobUtil from 'react-native-blob-util';
+import { startDocumentScan } from '../services/documentScannerService';
+import { getFileTypeIcon } from '../utils/fileTypeIcon.util';
 import type { TreatmentPlanRecord } from '../components';
 import { extractAppointmentTreatments } from '../utils/appointmentTreatments';
 import { theme } from '../constants/theme';
@@ -133,6 +136,59 @@ const dateGroupLabel = (value?: string) => {
 const shortName = (n?: string) => {
   if (!n) return '';
   return n.length > 14 ? `…${n.slice(-14)}` : n;
+};
+
+// Fallback MIME lookup for when the document picker doesn't report a type.
+const MIME_BY_EXT: Record<string, string> = {
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  png: 'image/png',
+  gif: 'image/gif',
+  bmp: 'image/bmp',
+  webp: 'image/webp',
+  heic: 'image/heic',
+  heif: 'image/heif',
+  pdf: 'application/pdf',
+  doc: 'application/msword',
+  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  xls: 'application/vnd.ms-excel',
+  xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  ppt: 'application/vnd.ms-powerpoint',
+  pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  txt: 'text/plain',
+  csv: 'text/csv',
+  rtf: 'application/rtf',
+  zip: 'application/zip',
+  mp3: 'audio/mpeg',
+  mp4: 'video/mp4',
+  wav: 'audio/wav',
+  m4a: 'audio/x-m4a',
+};
+
+const guessMimeType = (name?: string | null): string | undefined => {
+  if (!name) return undefined;
+  const match = name.toLowerCase().match(/\.([a-z0-9]+)$/);
+  return match ? MIME_BY_EXT[match[1]] : undefined;
+};
+
+// Clean a display file name: drop a stray "null"/"undefined" prefix that some
+// uploads carry (e.g. "null-20260701-WA0003.jpg") and fall back gracefully.
+const displayFileName = (name?: string | null, fallback = 'File'): string => {
+  const trimmed = (name || '').trim();
+  if (!trimmed || /^(null|undefined)$/i.test(trimmed)) return fallback;
+  const cleaned = trimmed.replace(/^(null|undefined)[-_\s]+/i, '').trim();
+  return cleaned || fallback;
+};
+
+// Resolve the file parts for a history item. HistoryItems carry the full list
+// in `fileParts`; only the first file lives on the top-level `filePath`, so we
+// must NOT rely on collectUploadFileParts(item) here (it would report 1 file
+// for a multi-file batch). Falls back to the flattener for raw upload rows.
+const getItemParts = (item: any): any[] => {
+  if (Array.isArray(item?.fileParts) && item.fileParts.length) {
+    return item.fileParts;
+  }
+  return collectUploadFileParts(item);
 };
 
 interface HistoryItem {
@@ -397,6 +453,7 @@ const mapTeethForPlan = (selectedTeeth: number[]) => {
 
 const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
   const insets = useSafeAreaInsets();
+  const followupScrollRef = React.useRef<ScrollView>(null);
   const token = useAppSelector(selectAuthToken);
   const currentUser = useAppSelector(selectCurrentUser);
   const canManageTreatmentPlanAccess = useMemo(
@@ -475,6 +532,8 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
   // Shared cache of upload _id -> signed URL (used by thumbnails and viewer).
   const [signedUrls, setSignedUrls] = useState<Record<string, string>>({});
   const [deletingFileId, setDeletingFileId] = useState<string | null>(null);
+  const [downloadingFileId, setDownloadingFileId] = useState<string | null>(null);
+  const [selectedBatchItem, setSelectedBatchItem] = useState<HistoryItem | null>(null);
 
   // ── Book Follow-up modal ──────────────────────────────────────────────────
   // The doctor is chosen from a dropdown, defaulting to the OPD visit's doctor
@@ -549,19 +608,10 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
     return items.sort((a, b) => (b.sortAt || 0) - (a.sortAt || 0));
   }, [history]);
 
-  // Bottom strip: prefer files from the same batch; fall back to all when needed.
+  // Bottom strip: always show every patient file, not just the selected card's
+  // batch, so the user can jump to any file from the viewer.
   const viewerStripItems = useMemo(() => {
     if (viewerIndex == null) return [];
-    const current = openableItems[viewerIndex];
-    if (!current) return [];
-
-    if (current.batchParentId) {
-      const siblings = openableItems.filter(
-        item => item.batchParentId === current.batchParentId,
-      );
-      if (siblings.length > 1) return siblings;
-    }
-
     return openableItems.length > 1 ? openableItems : [];
   }, [viewerIndex, openableItems]);
 
@@ -625,6 +675,143 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
     },
     [signedUrls, token, patientId],
   );
+
+  const handleDirectDownload = async (item: HistoryItem) => {
+    const parts = getItemParts(item);
+    if (parts.length === 0) return;
+    
+    setDownloadingFileId(item.id || item.filePath || 'downloading');
+    try {
+      for (const part of parts) {
+        if (!part.filePath) continue;
+        
+        const tempItem: HistoryItem = { ...item, filePath: part.filePath };
+        const url = await resolveSignedUrl(tempItem);
+        if (!url) {
+          Alert.alert('Error', `Unable to resolve download URL for ${part.originalName || 'file'}.`);
+          continue;
+        }
+
+        const { dirs } = ReactNativeBlobUtil.fs;
+        const cleanFileName = (part.originalName || part.fileName || item.fileName || 'file').replace(/[^a-zA-Z0-9.-]/g, '_');
+        const destPath = Platform.OS === 'android'
+          ? `${dirs.DownloadDir}/${cleanFileName}`
+          : `${dirs.DocumentDir}/${cleanFileName}`;
+
+        let mimeType = part.mimeType || item.mimeType || '';
+        if (!mimeType || mimeType === 'application/octet-stream') {
+          const guessed = guessMimeType(cleanFileName);
+          if (guessed) {
+            mimeType = guessed;
+          }
+        }
+        if (!mimeType) {
+          mimeType = 'application/octet-stream';
+        }
+
+        if (Platform.OS === 'android') {
+          const res = await ReactNativeBlobUtil.config({
+            fileCache: true,
+          }).fetch('GET', url);
+          try {
+            await ReactNativeBlobUtil.MediaCollection.copyToMediaStore(
+              {
+                name: cleanFileName,
+                parentFolder: '',
+                mimeType: mimeType,
+              },
+              'Download',
+              res.path()
+            );
+          } catch (copyErr) {
+            console.warn('copyToMediaStore failed, trying fallback:', copyErr);
+            await ReactNativeBlobUtil.fs.cp(res.path(), destPath);
+          } finally {
+            try {
+              await ReactNativeBlobUtil.fs.unlink(res.path());
+            } catch {}
+          }
+        } else {
+          const res = await ReactNativeBlobUtil.config({
+            fileCache: true,
+            path: destPath,
+          }).fetch('GET', url);
+          ReactNativeBlobUtil.ios.openDocument(res.data);
+        }
+      }
+      Alert.alert('Success', 'File downloaded successfully.');
+    } catch (err) {
+      console.error('Download error:', err);
+      Alert.alert('Error', 'Failed to download file.');
+    } finally {
+      setDownloadingFileId(null);
+    }
+  };
+
+  const handlePartDownload = async (item: HistoryItem, part: any) => {
+    if (!part.filePath) return;
+    setDownloadingFileId(item.id || item.filePath || 'downloading');
+    try {
+      const tempItem: HistoryItem = { ...item, filePath: part.filePath };
+      const url = await resolveSignedUrl(tempItem);
+      if (!url) {
+        Alert.alert('Error', 'Unable to resolve download URL.');
+        return;
+      }
+      const { dirs } = ReactNativeBlobUtil.fs;
+      const cleanFileName = (part.originalName || part.fileName || 'file').replace(/[^a-zA-Z0-9.-]/g, '_');
+      const destPath = Platform.OS === 'android'
+        ? `${dirs.DownloadDir}/${cleanFileName}`
+        : `${dirs.DocumentDir}/${cleanFileName}`;
+
+      let mimeType = part.mimeType || item.mimeType || '';
+      if (!mimeType || mimeType === 'application/octet-stream') {
+        const guessed = guessMimeType(cleanFileName);
+        if (guessed) {
+          mimeType = guessed;
+        }
+      }
+      if (!mimeType) {
+        mimeType = 'application/octet-stream';
+      }
+
+      if (Platform.OS === 'android') {
+        const res = await ReactNativeBlobUtil.config({
+          fileCache: true,
+        }).fetch('GET', url);
+        try {
+          await ReactNativeBlobUtil.MediaCollection.copyToMediaStore(
+            {
+              name: cleanFileName,
+              parentFolder: '',
+              mimeType: mimeType,
+            },
+            'Download',
+            res.path()
+          );
+        } catch (copyErr) {
+          console.warn('copyToMediaStore failed, trying fallback:', copyErr);
+          await ReactNativeBlobUtil.fs.cp(res.path(), destPath);
+        } finally {
+          try {
+            await ReactNativeBlobUtil.fs.unlink(res.path());
+          } catch {}
+        }
+      } else {
+        const res = await ReactNativeBlobUtil.config({
+          fileCache: true,
+          path: destPath,
+        }).fetch('GET', url);
+        ReactNativeBlobUtil.ios.openDocument(res.data);
+      }
+      Alert.alert('Success', 'File downloaded successfully.');
+    } catch (err) {
+      console.error('Download error:', err);
+      Alert.alert('Error', 'Failed to download file.');
+    } finally {
+      setDownloadingFileId(null);
+    }
+  };
 
   // When the viewer opens or pages to a new item, load URL and image dimensions.
   useEffect(() => {
@@ -1175,8 +1362,7 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
     const partIsImage = isImageUploadPart(part);
     const uri = part.filePath ? signedUrls[part.filePath] : undefined;
     const name = part.originalName || part.fileName || '';
-    const extMatch = name.match(/\.([a-z0-9]+)$/i);
-    const ext = extMatch ? extMatch[1].toUpperCase() : partIsImage ? 'IMG' : 'PDF';
+    const fileIcon = getFileTypeIcon(part.mimeType, name);
     const removing =
       !!part.filePath &&
       deletingFileId === `${item.batchParentId || item.id}:${part.filePath}`;
@@ -1199,23 +1385,43 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
             />
           ) : (
             <View style={styles.uploadGridCellFallback}>
-              <Icon
-                name={partIsImage ? 'image' : 'picture-as-pdf'}
-                size={14}
-                color={partIsImage ? '#8B5CF6' : '#E53935'}
-              />
-              <Text style={styles.uploadGridCellExt}>{ext}</Text>
+              <Icon name={fileIcon.icon} size={14} color={fileIcon.color} />
+              <Text style={styles.uploadGridCellExt}>{fileIcon.label}</Text>
             </View>
           )}
         </TouchableOpacity>
       </View>
     );
   };
+  const handlePrintPress = (item: HistoryItem) => {
+    if (getItemParts(item).length > 1) {
+      setSelectedBatchItem(item);
+    } else {
+      openFile(item);
+    }
+  };
+
+  const handleDownloadPress = (item: HistoryItem) => {
+    if (getItemParts(item).length > 1) {
+      setSelectedBatchItem(item);
+    } else {
+      handleDirectDownload(item);
+    }
+  };
+
+  const handleDeletePress = (item: HistoryItem) => {
+    if (getItemParts(item).length > 1) {
+      setSelectedBatchItem(item);
+    } else {
+      onDeletePress(item);
+    }
+  };
 
   const renderUploadCard = (item: HistoryItem) => {
     const isLab = item.uploadType === 'lab';
     const isProcedure = item.uploadType === 'note';
-    const isImage = (item.mimeType || '').startsWith('image/');
+    const fileIcon = getFileTypeIcon(item.mimeType, item.fileName);
+    const isImage = fileIcon.isImage;
     const thumbUri = item.filePath ? signedUrls[item.filePath] : undefined;
     const displayDate = formatDate(item.createdAt).replace(/-/g, '/');
     const categoryLabel = item.category?.trim();
@@ -1306,13 +1512,9 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
                   />
                 ) : (
                   <>
-                    <Icon
-                      name={isImage ? 'image' : 'picture-as-pdf'}
-                      size={28}
-                      color={isImage ? '#8B5CF6' : '#E53935'}
-                    />
+                    <Icon name={fileIcon.icon} size={28} color={fileIcon.color} />
                     <Text style={styles.styledUploadThumbnailLabel}>
-                      {isImage ? 'IMAGE' : 'PDF'}
+                      {fileIcon.label}
                     </Text>
                   </>
                 )}
@@ -1321,7 +1523,7 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
               <View style={styles.styledUploadInfo}>
                 <TouchableOpacity activeOpacity={0.7} onPress={() => openFile(item)}>
                   <Text style={styles.styledUploadFileName} numberOfLines={2}>
-                    {item.fileName || defaultFileName}
+                    {displayFileName(item.fileName, defaultFileName)}
                   </Text>
                 </TouchableOpacity>
                 <View style={styles.styledUploadMetaRow}>
@@ -1344,7 +1546,7 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
             <TouchableOpacity
               style={[styles.styledUploadActionBtn, styles.styledUploadActionPrint]}
               activeOpacity={0.85}
-              onPress={() => openFile(item)}
+              onPress={() => handlePrintPress(item)}
             >
               <Icon name="print" size={16} color="#6366F1" />
               <Text style={styles.styledUploadActionText}>Print</Text>
@@ -1355,17 +1557,24 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
                 styles.styledUploadActionDownload,
               ]}
               activeOpacity={0.85}
-              onPress={() => openFile(item)}
+              disabled={downloadingFileId === (item.id || item.filePath)}
+              onPress={() => handleDownloadPress(item)}
             >
-              <Icon name="file-download" size={16} color="#6366F1" />
-              <Text style={styles.styledUploadActionText}>Download</Text>
+              {downloadingFileId === (item.id || item.filePath) ? (
+                <ActivityIndicator size="small" color="#6366F1" />
+              ) : (
+                <>
+                  <Icon name="file-download" size={16} color="#6366F1" />
+                  <Text style={styles.styledUploadActionText}>Download</Text>
+                </>
+              )}
             </TouchableOpacity>
             {canDeleteUploadAccess ? (
               <TouchableOpacity
                 style={[styles.styledUploadActionBtn, styles.styledUploadActionDelete]}
                 activeOpacity={0.85}
                 disabled={deletingFileId === (item.batchParentId || item.id)}
-                onPress={() => onDeletePress(item)}
+                onPress={() => handleDeletePress(item)}
               >
                 {deletingFileId === (item.batchParentId || item.id) ? (
                   <ActivityIndicator size="small" color="#EF4444" />
@@ -1587,30 +1796,29 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
   };
 
   const handleCameraCapture = async () => {
-    // CAMERA is declared in AndroidManifest, so Android requires a runtime grant
-    // before react-native-image-picker can open the camera.
     if (Platform.OS === 'android') {
       try {
-        const granted = await PermissionsAndroid.request(
-          PermissionsAndroid.PERMISSIONS.CAMERA,
-          {
-            title: 'Camera Permission',
-            message: `Camera access is needed to capture the ${uploadKindLabel(uploadFileType).toLowerCase()}.`,
-            buttonPositive: 'OK',
-            buttonNegative: 'Cancel',
-          },
-        );
-        if (granted !== PermissionsAndroid.RESULTS.GRANTED) {
-          Alert.alert(
-            'Permission Required',
-            `Camera permission is needed to take a photo of the ${uploadKindLabel(uploadFileType).toLowerCase()}.`,
-          );
-          return;
+        // Gallery import lets the user pick an existing photo and still get the
+        // same automatic edge-detection + manual crop before it is uploaded.
+        const result = await startDocumentScan({ galleryImportAllowed: true });
+        if (result.success && result.uri) {
+          setSelectedFiles(prev => [
+            ...prev,
+            {
+              name: `scan_${Date.now()}.jpg`,
+              uri: result.uri,
+              type: result.type || 'image/jpeg',
+            },
+          ]);
         }
       } catch (err) {
-        console.error('Camera permission error:', err);
-        return;
+        if (err instanceof Error && err.message.toLowerCase().includes('cancel')) {
+          return;
+        }
+        console.error('Document scanner error:', err);
+        Alert.alert('Scanner Error', 'Failed to scan document.');
       }
+      return;
     }
 
     const options: CameraOptions = {
@@ -1618,6 +1826,8 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
       includeBase64: false,
       saveToPhotos: false,
       quality: 0.8 as any,
+      maxWidth: 2048,
+      maxHeight: 2048,
     };
     launchCamera(options, response => {
       if (response.didCancel) return;
@@ -1642,8 +1852,10 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
 
   const handleFilePick = async () => {
     try {
+      // Allow any file type: images, PDFs, and documents (DOC/DOCX/XLS/etc.)
+      // are uploaded directly without cropping.
       const result = await pick({
-        type: [types.images, types.pdf],
+        type: [types.allFiles],
         allowMultiSelection: true,
         copyTo: 'cachesDirectory',
       });
@@ -1651,7 +1863,7 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
         const picked = result.map(file => ({
           name: file.name || 'Upload file',
           uri: file.fileCopyUri || file.uri || '',
-          type: file.type || 'application/octet-stream',
+          type: file.type || guessMimeType(file.name) || 'application/octet-stream',
         }));
         setSelectedFiles(prev => [...prev, ...picked]);
       }
@@ -1859,7 +2071,7 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
   };
 
   const onDeletePress = (item: HistoryItem) => {
-    const parts = collectUploadFileParts(item);
+    const parts = getItemParts(item);
     if (parts.length > 1) {
       setDeleteGroupParent(item);
       setDeleteGroupParts(parts);
@@ -2031,10 +2243,10 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
   const uploadModalTitle = `Upload ${uploadKindLabel(uploadFileType)}`;
   const uploadCameraHint =
     uploadFileType === 'lab'
-      ? 'Take a photo of the lab report'
+      ? 'Scan or import the lab report — auto-crop'
       : uploadFileType === 'procedure'
-        ? 'Take a photo of the procedure document'
-        : 'Take a photo of the prescription';
+        ? 'Scan or import the procedure document — auto-crop'
+        : 'Scan or import the prescription — auto-crop';
   const showUploadCategory = uploadFileType !== 'lab';
 
   return (
@@ -2050,7 +2262,13 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
           <TouchableOpacity
             style={styles.appBarSide}
             activeOpacity={0.7}
-            onPress={() => navigation.goBack()}
+            onPress={() => {
+              if (route?.params?.from === 'PatientList') {
+                navigation.navigate('PatientList');
+              } else {
+                navigation.goBack();
+              }
+            }}
             hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
           >
             <Icon name="arrow-back" size={24} color={theme.colors.surface} />
@@ -2154,7 +2372,7 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
                 />
               </View>
               <View style={styles.uploadOptionTextWrap}>
-                <Text style={styles.uploadOptionTitle}>Camera</Text>
+                <Text style={styles.uploadOptionTitle}>Scan Document</Text>
                 <Text style={styles.uploadOptionSubtitle}>
                   {uploadCameraHint}
                 </Text>
@@ -2181,7 +2399,7 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
               <View style={styles.uploadOptionTextWrap}>
                 <Text style={styles.uploadOptionTitle}>File Manager</Text>
                 <Text style={styles.uploadOptionSubtitle}>
-                  Choose one or more images or PDFs
+                  Upload PDFs, documents or images directly
                 </Text>
               </View>
               <Icon
@@ -2354,29 +2572,32 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
       <ModalBackdrop
         visible={showFollowupModal}
         onClose={() => setShowFollowupModal(false)}
-        animationType="fade"
-        align="center"
+        animationType="slide"
+        align="bottom"
       >
         <View style={styles.followupCard}>
+          <View style={styles.followupCardHandle} />
+          {/* Header */}
+          <View style={styles.followupHeader}>
+            <Text style={styles.followupTitle}>Book Follow-up</Text>
+            <View style={styles.tokenBadge}>
+              <Text style={styles.tokenBadgeText}>TOKEN ONLY</Text>
+            </View>
+            <TouchableOpacity
+              style={styles.followupClose}
+              onPress={() => setShowFollowupModal(false)}
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            >
+              <Icon name="close" size={22} color={theme.colors.text} />
+            </TouchableOpacity>
+          </View>
+
           <ScrollView
+            ref={followupScrollRef}
             showsVerticalScrollIndicator={false}
             keyboardShouldPersistTaps="handled"
+            contentContainerStyle={{ paddingHorizontal: theme.spacing.lg, paddingTop: theme.spacing.md }}
           >
-            {/* Header */}
-            <View style={styles.followupHeader}>
-              <Text style={styles.followupTitle}>Book Follow-up</Text>
-              <View style={styles.tokenBadge}>
-                <Text style={styles.tokenBadgeText}>TOKEN ONLY</Text>
-              </View>
-              <TouchableOpacity
-                style={styles.followupClose}
-                onPress={() => setShowFollowupModal(false)}
-                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-              >
-                <Icon name="close" size={22} color={theme.colors.text} />
-              </TouchableOpacity>
-            </View>
-
             <Text style={styles.followupSubtitle}>
               Books a queue appointment only — no prescription is created.
             </Text>
@@ -2542,191 +2763,199 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
               Treatment
               <Text style={styles.followupLabelOptional}> (optional)</Text>
             </Text>
-            <TouchableOpacity
-              style={styles.followupField}
-              activeOpacity={0.7}
-              disabled={
-                followupTreatmentsLoading ||
-                (!followupCatalogTreatments.length &&
-                  !followupPlanGroups.length)
-              }
-              onPress={() => setFollowupTreatmentDropdownOpen(open => !open)}
-            >
-              <Text
-                style={[
-                  styles.followupFieldText,
-                  selectedFollowupTreatmentKeys.size === 0 &&
-                    styles.followupPlaceholder,
-                ]}
-                numberOfLines={1}
-              >
-                {followupTreatmentTriggerLabel}
-              </Text>
-              {followupTreatmentsLoading ? (
-                <ActivityIndicator size="small" color={theme.colors.primary} />
-              ) : (
-                <Icon
-                  name={
-                    followupTreatmentDropdownOpen ? 'expand-less' : 'expand-more'
+            <View style={{ zIndex: 999, position: 'relative' }}>
+              <TouchableOpacity
+                style={styles.followupField}
+                activeOpacity={0.7}
+                disabled={
+                  followupTreatmentsLoading ||
+                  (!followupCatalogTreatments.length &&
+                    !followupPlanGroups.length)
+                }
+                onPress={() => {
+                  const nextState = !followupTreatmentDropdownOpen;
+                  setFollowupTreatmentDropdownOpen(nextState);
+                  if (nextState) {
+                    setTimeout(() => {
+                      followupScrollRef.current?.scrollTo({ y: 350, animated: true });
+                    }, 100);
                   }
-                  size={22}
-                  color={theme.colors.textSecondary}
-                />
-              )}
-            </TouchableOpacity>
-
-            {selectedFollowupTreatmentSummaries.length > 0 && (
-              <View style={styles.followupSelectedTreatments}>
-                {selectedFollowupTreatmentSummaries.map(treatment => (
-                  <View
-                    key={treatment.key}
-                    style={styles.followupSelectedTreatmentRow}
-                  >
-                    <Text
-                      style={styles.followupSelectedTreatmentText}
-                      numberOfLines={1}
-                    >
-                      {treatment.treatmentDesc}
-                    </Text>
-                    <TouchableOpacity
-                      onPress={() => toggleFollowupTreatment(treatment.key)}
-                      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                    >
-                      <Icon
-                        name="close"
-                        size={18}
-                        color={theme.colors.textSecondary}
-                      />
-                    </TouchableOpacity>
-                  </View>
-                ))}
-              </View>
-            )}
-
-            {followupTreatmentDropdownOpen && (
-              <View style={styles.followupTreatmentDropdown}>
-                <TextInput
-                  style={styles.followupTreatmentSearch}
-                  value={followupTreatmentSearch}
-                  onChangeText={setFollowupTreatmentSearch}
-                  placeholder="Search treatments"
-                  placeholderTextColor={theme.colors.placeholder}
-                />
-
+                }}
+              >
+                <Text
+                  style={[
+                    styles.followupFieldText,
+                    selectedFollowupTreatmentKeys.size === 0 &&
+                      styles.followupPlaceholder,
+                  ]}
+                  numberOfLines={1}
+                >
+                  {followupTreatmentTriggerLabel}
+                </Text>
                 {followupTreatmentsLoading ? (
-                  <ActivityIndicator
-                    size="small"
-                    color={theme.colors.primary}
-                    style={styles.followupTreatmentLoader}
-                  />
-                ) : filteredFollowupPlanGroups.length === 0 &&
-                  filteredFollowupCatalogTreatments.length === 0 ? (
-                  <Text style={styles.followupTreatmentEmpty}>
-                    {followupTreatmentSearch.trim()
-                      ? 'No treatments match your search'
-                      : 'No treatments available'}
-                  </Text>
+                  <ActivityIndicator size="small" color={theme.colors.primary} />
                 ) : (
-                  <ScrollView
-                    nestedScrollEnabled
-                    keyboardShouldPersistTaps="handled"
-                    style={styles.followupTreatmentList}
-                  >
-                    {filteredFollowupPlanGroups.map(group => (
-                      <View key={group.planId}>
-                        <Text style={styles.followupTreatmentGroupTitle}>
-                          {group.planTitle}
-                        </Text>
-                        {group.treatments.map(treatment => {
-                          const active = selectedFollowupTreatmentKeys.has(
-                            treatment.key,
-                          );
-                          return (
-                            <TouchableOpacity
-                              key={treatment.key}
-                              style={styles.followupTreatmentOption}
-                              activeOpacity={0.7}
-                              onPress={() =>
-                                toggleFollowupTreatment(treatment.key)
-                              }
-                            >
-                              <Icon
-                                name={
-                                  active
-                                    ? 'check-box'
-                                    : 'check-box-outline-blank'
-                                }
-                                size={20}
-                                color={
-                                  active
-                                    ? theme.colors.primary
-                                    : theme.colors.textSecondary
-                                }
-                              />
-                              <View style={styles.followupTreatmentOptionBody}>
-                                <Text style={styles.followupTreatmentOptionName}>
-                                  {treatment.treatmentDesc}
-                                </Text>
-                                {!!treatment.date && (
-                                  <Text style={styles.followupTreatmentOptionMeta}>
-                                    {formatDate(treatment.date)}
-                                  </Text>
-                                )}
-                              </View>
-                            </TouchableOpacity>
-                          );
-                        })}
-                      </View>
-                    ))}
-
-                    {filteredFollowupCatalogTreatments.length > 0 && (
-                      <View>
-                        <Text style={styles.followupTreatmentGroupTitle}>
-                          Manage Service
-                        </Text>
-                        {filteredFollowupCatalogTreatments.map(treatment => {
-                          const active = selectedFollowupTreatmentKeys.has(
-                            treatment.key,
-                          );
-                          return (
-                            <TouchableOpacity
-                              key={treatment.key}
-                              style={styles.followupTreatmentOption}
-                              activeOpacity={0.7}
-                              onPress={() =>
-                                toggleFollowupTreatment(treatment.key)
-                              }
-                            >
-                              <Icon
-                                name={
-                                  active
-                                    ? 'check-box'
-                                    : 'check-box-outline-blank'
-                                }
-                                size={20}
-                                color={
-                                  active
-                                    ? theme.colors.primary
-                                    : theme.colors.textSecondary
-                                }
-                              />
-                              <View style={styles.followupTreatmentOptionBody}>
-                                <Text style={styles.followupTreatmentOptionName}>
-                                  {treatment.treatmentDesc}
-                                </Text>
-                                <Text style={styles.followupTreatmentOptionMeta}>
-                                  ₹ {treatment.expenseAmount}
-                                </Text>
-                              </View>
-                            </TouchableOpacity>
-                          );
-                        })}
-                      </View>
-                    )}
-                  </ScrollView>
+                  <Icon
+                    name={followupTreatmentDropdownOpen ? "expand-less" : "expand-more"}
+                    size={22}
+                    color={theme.colors.textSecondary}
+                  />
                 )}
-              </View>
-            )}
+              </TouchableOpacity>
+
+              {followupTreatmentDropdownOpen && (
+                <View style={styles.followupTreatmentDropdown}>
+                  {/* Search input container inside the dropdown */}
+                  <View style={{
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    borderWidth: 1,
+                    borderColor: theme.colors.border,
+                    borderRadius: theme.borderRadius.sm,
+                    marginHorizontal: theme.spacing.sm,
+                    marginTop: theme.spacing.sm,
+                    paddingHorizontal: theme.spacing.sm,
+                    height: 38,
+                    backgroundColor: theme.colors.background,
+                  }}>
+                    <Icon name="search" size={18} color={theme.colors.textSecondary} style={{ marginRight: 6 }} />
+                    <TextInput
+                      style={{
+                        flex: 1,
+                        fontSize: theme.typography.fontSizes.sm,
+                        color: theme.colors.text,
+                        padding: 0,
+                      }}
+                      value={followupTreatmentSearch}
+                      onChangeText={setFollowupTreatmentSearch}
+                      placeholder="Search treatments..."
+                      placeholderTextColor={theme.colors.placeholder}
+                      autoFocus
+                    />
+                    {followupTreatmentSearch.trim() ? (
+                      <TouchableOpacity onPress={() => setFollowupTreatmentSearch('')}>
+                        <Icon name="close" size={18} color={theme.colors.textSecondary} />
+                      </TouchableOpacity>
+                    ) : null}
+                  </View>
+
+                  {followupTreatmentsLoading ? (
+                    <ActivityIndicator
+                      size="small"
+                      color={theme.colors.primary}
+                      style={styles.followupTreatmentLoader}
+                    />
+                  ) : filteredFollowupPlanGroups.length === 0 &&
+                    filteredFollowupCatalogTreatments.length === 0 ? (
+                    <Text style={styles.followupTreatmentEmpty}>
+                      {followupTreatmentSearch.trim()
+                        ? 'No treatments match your search'
+                        : 'No treatments available'}
+                    </Text>
+                  ) : (
+                    <ScrollView
+                      nestedScrollEnabled
+                      keyboardShouldPersistTaps="handled"
+                      style={[styles.followupTreatmentList, { marginTop: 4 }]}
+                    >
+                      {filteredFollowupPlanGroups.map(group => (
+                        <View key={group.planId}>
+                          <Text style={styles.followupTreatmentGroupTitle}>
+                            {group.planTitle}
+                          </Text>
+                          {group.treatments.map(treatment => {
+                            const active = selectedFollowupTreatmentKeys.has(
+                              treatment.key,
+                            );
+                            return (
+                              <TouchableOpacity
+                                key={treatment.key}
+                                style={styles.followupTreatmentOption}
+                                activeOpacity={0.7}
+                                onPress={() =>
+                                  toggleFollowupTreatment(treatment.key)
+                                }
+                              >
+                                <Icon
+                                  name={
+                                    active
+                                      ? 'check-box'
+                                      : 'check-box-outline-blank'
+                                  }
+                                  size={20}
+                                  color={
+                                    active
+                                      ? theme.colors.primary
+                                      : theme.colors.textSecondary
+                                  }
+                                />
+                                <View style={styles.followupTreatmentOptionBody}>
+                                  <Text style={styles.followupTreatmentOptionName}>
+                                    {treatment.treatmentDesc}
+                                  </Text>
+                                  {!!treatment.date && (
+                                    <Text style={styles.followupTreatmentOptionMeta}>
+                                      {formatDate(treatment.date)}
+                                    </Text>
+                                  )}
+                                </View>
+                              </TouchableOpacity>
+                            );
+                          })}
+                        </View>
+                      ))}
+
+                      {filteredFollowupCatalogTreatments.length > 0 && (
+                        <View>
+                          <Text style={styles.followupTreatmentGroupTitle}>
+                            Manage Service
+                          </Text>
+                          {filteredFollowupCatalogTreatments.map(treatment => {
+                            const active = selectedFollowupTreatmentKeys.has(
+                              treatment.key,
+                            );
+                            return (
+                              <TouchableOpacity
+                                key={treatment.key}
+                                style={styles.followupTreatmentOption}
+                                activeOpacity={0.7}
+                                onPress={() =>
+                                  toggleFollowupTreatment(treatment.key)
+                                }
+                              >
+                                <Icon
+                                  name={
+                                    active
+                                      ? 'check-box'
+                                      : 'check-box-outline-blank'
+                                  }
+                                  size={20}
+                                  color={
+                                    active
+                                      ? theme.colors.primary
+                                      : theme.colors.textSecondary
+                                  }
+                                />
+                                <View style={styles.followupTreatmentOptionBody}>
+                                  <Text style={styles.followupTreatmentOptionName}>
+                                    {treatment.treatmentDesc}
+                                  </Text>
+                                  <Text style={styles.followupTreatmentOptionMeta}>
+                                    ₹ {treatment.expenseAmount}
+                                  </Text>
+                                </View>
+                              </TouchableOpacity>
+                            );
+                          })}
+                        </View>
+                      )}
+                    </ScrollView>
+                  )}
+                </View>
+              )}
+            </View>
+
+
 
             <Text style={styles.followupLabel}>
               Remark<Text style={styles.followupLabelOptional}> (optional)</Text>
@@ -2740,34 +2969,34 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
               multiline
               textAlignVertical="top"
             />
-
-            {/* Footer actions */}
-            <View style={styles.followupFooter}>
-              <TouchableOpacity
-                style={[styles.followupFooterBtn, styles.followupCancelBtn]}
-                activeOpacity={0.8}
-                onPress={() => setShowFollowupModal(false)}
-              >
-                <Text style={styles.followupCancelText}>Cancel</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[
-                  styles.followupFooterBtn,
-                  styles.followupBookBtn,
-                  booking && styles.confirmBtnDisabled,
-                ]}
-                activeOpacity={0.8}
-                onPress={handleBookFollowup}
-                disabled={booking}
-              >
-                {booking ? (
-                  <ActivityIndicator size="small" color={theme.colors.surface} />
-                ) : (
-                  <Text style={styles.followupBookText}>Book follow-up</Text>
-                )}
-              </TouchableOpacity>
-            </View>
           </ScrollView>
+
+          {/* Footer actions */}
+          <View style={[styles.followupFooter, { paddingBottom: Math.max(12, insets.bottom) }]}>
+            <TouchableOpacity
+              style={[styles.followupFooterBtn, styles.followupCancelBtn]}
+              activeOpacity={0.8}
+              onPress={() => setShowFollowupModal(false)}
+            >
+              <Text style={styles.followupCancelText}>Cancel</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[
+                styles.followupFooterBtn,
+                styles.followupBookBtn,
+                booking && styles.confirmBtnDisabled,
+              ]}
+              activeOpacity={0.8}
+              onPress={handleBookFollowup}
+              disabled={booking}
+            >
+              {booking ? (
+                <ActivityIndicator size="small" color={theme.colors.surface} />
+              ) : (
+                <Text style={styles.followupBookText}>Book follow-up</Text>
+              )}
+            </TouchableOpacity>
+          </View>
         </View>
       </ModalBackdrop>
 
@@ -2813,13 +3042,15 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
 
           <ScrollView style={styles.deleteGroupList}>
             {deleteGroupParts.map((part, idx) => {
-              const name = part.originalName || part.fileName || `File ${idx + 1}`;
+              const rawName = part.originalName || part.fileName;
+              const name = displayFileName(rawName, `File ${idx + 1}`);
+              const partIcon = getFileTypeIcon(part.mimeType, rawName);
               return (
                 <View key={part.filePath || idx} style={styles.deleteGroupItem}>
                   <Icon
-                    name={isImageUploadPart(part) ? 'image' : 'picture-as-pdf'}
+                    name={partIcon.icon}
                     size={18}
-                    color={isImageUploadPart(part) ? '#8B5CF6' : '#E53935'}
+                    color={partIcon.color}
                     style={styles.deleteGroupItemIcon}
                   />
                   <Text style={styles.deleteGroupItemName} numberOfLines={1}>
@@ -2991,26 +3222,29 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
                     color={theme.colors.surface}
                   />
                 ) : isPdf ? (
-                  <Pdf
-                    key={current?.id}
-                    source={{ uri: currentUrl, cache: true }}
-                    trustAllCerts={false}
-                    style={styles.viewerPdf}
-                    scale={viewerZoom}
-                    minScale={VIEWER_MIN_ZOOM}
-                    maxScale={VIEWER_MAX_ZOOM}
-                    enableDoubleTapZoom
-                    onScaleChanged={(scale: number) => {
-                      const next = Math.max(
-                        VIEWER_MIN_ZOOM,
-                        Math.min(VIEWER_MAX_ZOOM, Math.round(scale * 100) / 100),
-                      );
-                      setViewerZoom(next);
-                    }}
-                    onError={err => {
-                      console.error('PDF render error:', err);
-                    }}
-                  />
+                  <PinchZoomView
+                    key={current?.id || currentUrl}
+                    style={styles.viewerImageScroll}
+                    zoom={viewerZoom}
+                    minZoom={VIEWER_MIN_ZOOM}
+                    maxZoom={VIEWER_MAX_ZOOM}
+                    onZoomChange={setViewerZoom}
+                    viewportWidth={viewerBodySize.w}
+                    viewportHeight={viewerBodySize.h}
+                    contentWidth={viewerBodySize.w}
+                    contentHeight={viewerBodySize.h}
+                  >
+                    <Pdf
+                      source={{ uri: currentUrl, cache: true }}
+                      trustAllCerts={false}
+                      style={{ width: viewerBodySize.w, height: viewerBodySize.h }}
+                      enablePinchZoom={false}
+                      enableDoubleTapZoom={false}
+                      onError={err => {
+                        console.error('PDF render error:', err);
+                      }}
+                    />
+                  </PinchZoomView>
                 ) : (
                   <PinchZoomView
                     key={current?.id || currentUrl}
@@ -3069,7 +3303,8 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
                     contentContainerStyle={styles.gliderContent}
                   >
                     {viewerStripItems.map(it => {
-                      const itIsImage = (it.mimeType || '').startsWith('image/');
+                      const itIcon = getFileTypeIcon(it.mimeType, it.fileName);
+                      const itIsImage = itIcon.isImage;
                       const itUri = it.filePath ? signedUrls[it.filePath] : undefined;
                       const active = it.filePath === current?.filePath;
                       return (
@@ -3097,11 +3332,7 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
                               resizeMode="cover"
                             />
                           ) : (
-                            <Icon
-                              name={itIsImage ? 'image' : 'picture-as-pdf'}
-                              size={14}
-                              color={itIsImage ? theme.colors.primary : '#E53935'}
-                            />
+                            <Icon name={itIcon.icon} size={14} color={itIcon.color} />
                           )}
                         </TouchableOpacity>
                       );
@@ -3112,6 +3343,104 @@ const OPDScreen: React.FC<OPDScreenProps> = ({ navigation, route }) => {
             </SafeAreaView>
           );
         })()}
+      </Modal>
+
+      <Modal
+        visible={selectedBatchItem != null}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setSelectedBatchItem(null)}
+      >
+        <Pressable
+          style={styles.modalBackdrop}
+          onPress={() => setSelectedBatchItem(null)}
+        />
+        <View style={styles.fileSelectorContainer} pointerEvents="box-none">
+          <View style={styles.fileSelectorContent}>
+            <View style={styles.fileSelectorHeader}>
+              <View style={styles.fileSelectorHeaderText}>
+                <Text style={styles.fileSelectorTitle}>Files</Text>
+                <Text style={styles.fileSelectorSubtitle}>
+                  Print, download or delete individual files
+                </Text>
+              </View>
+              <TouchableOpacity
+                style={styles.fileSelectorCloseBtn}
+                onPress={() => setSelectedBatchItem(null)}
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              >
+                <Icon name="close" size={18} color={theme.colors.text} />
+              </TouchableOpacity>
+            </View>
+            <ScrollView style={styles.fileSelectorList}>
+              {selectedBatchItem &&
+                getItemParts(selectedBatchItem).map((part, index) => {
+                  const partIsImage = isImageUploadPart(part);
+                  const partThumb = part.filePath
+                    ? signedUrls[part.filePath]
+                    : undefined;
+                  const rawName = part.originalName || part.fileName;
+                  const partIcon = getFileTypeIcon(part.mimeType, rawName);
+                  const partName = displayFileName(rawName, `File ${index + 1}`);
+                  return (
+                    <View key={part.filePath || index} style={styles.fileSelectorRow}>
+                      <View style={styles.fileSelectorIconWrap}>
+                        {partIsImage && partThumb ? (
+                          <Image
+                            source={{ uri: partThumb }}
+                            style={styles.fileSelectorThumb}
+                            resizeMode="cover"
+                          />
+                        ) : (
+                          <Icon name={partIcon.icon} size={18} color={partIcon.color} />
+                        )}
+                      </View>
+                      <Text style={styles.fileSelectorName} numberOfLines={1}>
+                        {partName}
+                      </Text>
+
+                      <View style={styles.fileSelectorActions}>
+                        <TouchableOpacity
+                          style={[styles.fileRowActionBtn, styles.fileRowActionPrint]}
+                          activeOpacity={0.7}
+                          onPress={() => {
+                            setSelectedBatchItem(null);
+                            openFile(selectedBatchItem, part.filePath);
+                          }}
+                        >
+                          <Icon name="print" size={16} color="#6366F1" />
+                        </TouchableOpacity>
+
+                        <TouchableOpacity
+                          style={[styles.fileRowActionBtn, styles.fileRowActionDownload]}
+                          activeOpacity={0.7}
+                          onPress={async () => {
+                            setSelectedBatchItem(null);
+                            await handlePartDownload(selectedBatchItem, part);
+                          }}
+                        >
+                          <Icon name="file-download" size={16} color="#2563EB" />
+                        </TouchableOpacity>
+
+                        {canDeleteUploadAccess && (
+                          <TouchableOpacity
+                            style={[styles.fileRowActionBtn, styles.fileRowActionDelete]}
+                            activeOpacity={0.7}
+                            onPress={() => {
+                              setSelectedBatchItem(null);
+                              handleDeletePrescription(selectedBatchItem, part);
+                            }}
+                          >
+                            <Icon name="delete-outline" size={16} color="#EF4444" />
+                          </TouchableOpacity>
+                        )}
+                      </View>
+                    </View>
+                  );
+                })}
+            </ScrollView>
+          </View>
+        </View>
       </Modal>
 
       <TreatmentPlanDrawer
@@ -3950,17 +4279,35 @@ const styles = StyleSheet.create({
   // Book follow-up modal
   followupCard: {
     width: '100%',
-    maxWidth: 520,
-    maxHeight: '85%',
+    height: SCREEN_HEIGHT * 0.9,
+    maxHeight: SCREEN_HEIGHT * 0.9,
     backgroundColor: theme.colors.surface,
-    borderRadius: theme.borderRadius.xl,
-    padding: theme.spacing.lg,
-    ...theme.shadows.sm,
+    borderTopLeftRadius: theme.borderRadius.xl,
+    borderTopRightRadius: theme.borderRadius.xl,
+    borderBottomLeftRadius: 0,
+    borderBottomRightRadius: 0,
+    paddingHorizontal: 0,
+    paddingBottom: 0,
+    overflow: 'hidden',
+    ...theme.shadows.lg,
+  },
+  followupCardHandle: {
+    alignSelf: 'center',
+    width: 40,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: theme.colors.border,
+    marginTop: theme.spacing.sm,
+    marginBottom: theme.spacing.xs,
   },
   followupHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: theme.spacing.sm,
+    justifyContent: 'space-between',
+    paddingHorizontal: theme.spacing.lg,
+    paddingVertical: theme.spacing.md,
+    borderBottomWidth: 1,
+    borderBottomColor: theme.colors.border,
   },
   uploadPopupTitle: {
     flex: 1,
@@ -4023,8 +4370,8 @@ const styles = StyleSheet.create({
     fontSize: theme.typography.fontSizes.md,
     fontWeight: theme.typography.fontWeights.bold,
     color: theme.colors.text,
-    marginBottom: theme.spacing.sm,
-    marginTop: theme.spacing.md,
+    marginBottom: theme.spacing.xs,
+    marginTop: theme.spacing.sm,
   },
   followupLabelOptional: {
     fontWeight: theme.typography.fontWeights.normal,
@@ -4037,7 +4384,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: theme.colors.border,
     borderRadius: theme.borderRadius.md,
-    paddingVertical: theme.spacing.md,
+    paddingVertical: theme.spacing.sm,
     paddingHorizontal: theme.spacing.md,
     backgroundColor: theme.colors.surface,
   },
@@ -4050,7 +4397,7 @@ const styles = StyleSheet.create({
     color: theme.colors.textSecondary,
   },
   followupRemarkInput: {
-    minHeight: 72,
+    minHeight: 60,
     borderWidth: 1,
     borderColor: theme.colors.border,
     borderRadius: theme.borderRadius.md,
@@ -4108,11 +4455,20 @@ const styles = StyleSheet.create({
     marginRight: theme.spacing.sm,
   },
   followupTreatmentDropdown: {
+    position: 'absolute',
+    top: 42,
+    left: 0,
+    right: 0,
     borderWidth: 1,
     borderColor: theme.colors.border,
     borderRadius: theme.borderRadius.md,
-    marginTop: theme.spacing.xs,
     backgroundColor: theme.colors.surface,
+    zIndex: 9999,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.15,
+    shadowRadius: 6,
+    elevation: 6,
     overflow: 'hidden',
   },
   followupTreatmentSearch: {
@@ -4210,20 +4566,25 @@ const styles = StyleSheet.create({
   followupFooter: {
     flexDirection: 'row',
     justifyContent: 'flex-end',
-    marginTop: theme.spacing.xl,
     paddingTop: theme.spacing.md,
+    paddingBottom: 12,
+    paddingHorizontal: theme.spacing.lg,
     borderTopWidth: 1,
     borderTopColor: theme.colors.border,
+    backgroundColor: theme.colors.surface,
   },
   followupFooterBtn: {
     borderRadius: theme.borderRadius.md,
-    paddingVertical: theme.spacing.md,
+    paddingVertical: 10,
     paddingHorizontal: theme.spacing.lg,
     alignItems: 'center',
     justifyContent: 'center',
+    minWidth: 100,
   },
   followupCancelBtn: {
-    backgroundColor: theme.colors.background,
+    backgroundColor: theme.colors.surface,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
     marginRight: theme.spacing.md,
   },
   followupCancelText: {
@@ -4317,6 +4678,115 @@ const styles = StyleSheet.create({
     color: '#ffffff',
     fontSize: 14,
     fontWeight: '600',
+  },
+  fileSelectorContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+  },
+  fileSelectorContent: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 16,
+    width: '100%',
+    maxWidth: 380,
+    padding: 14,
+    maxHeight: '78%',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.12,
+    shadowRadius: 10,
+    elevation: 6,
+  },
+  fileSelectorHeader: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    marginBottom: 10,
+    paddingBottom: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: '#F1F5F9',
+  },
+  fileSelectorHeaderText: {
+    flex: 1,
+    paddingRight: 8,
+  },
+  fileSelectorTitle: {
+    fontSize: 17,
+    fontWeight: '700',
+    color: '#0F172A',
+  },
+  fileSelectorSubtitle: {
+    fontSize: 12,
+    color: '#94A3B8',
+    marginTop: 2,
+  },
+  fileSelectorCloseBtn: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: '#F1F5F9',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  fileSelectorList: {
+    marginBottom: 2,
+  },
+  fileSelectorRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 8,
+    marginBottom: 6,
+    borderRadius: 10,
+    backgroundColor: '#F8FAFC',
+    borderWidth: 1,
+    borderColor: '#F1F5F9',
+  },
+  fileSelectorIconWrap: {
+    width: 38,
+    height: 38,
+    borderRadius: 8,
+    backgroundColor: '#EEF2FF',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 10,
+    overflow: 'hidden',
+  },
+  fileSelectorThumb: {
+    width: '100%',
+    height: '100%',
+  },
+  fileSelectorName: {
+    flex: 1,
+    fontSize: 13,
+    color: '#1E293B',
+    fontWeight: '600',
+  },
+  fileSelectorActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  fileRowActionBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 8,
+    backgroundColor: '#F1F5F9',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginLeft: 6,
+  },
+  fileRowActionPrint: {
+    backgroundColor: '#EEF2FF',
+  },
+  fileRowActionDownload: {
+    backgroundColor: '#EFF6FF',
+  },
+  fileRowActionDelete: {
+    backgroundColor: '#FEF2F2',
+  },
+  modalBackdrop: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: 'rgba(0, 0, 0, 0.4)',
   },
 });
 

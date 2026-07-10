@@ -18,11 +18,10 @@ import {
   Pressable,
 } from 'react-native';
 import { useFocusEffect } from '@react-navigation/native';
-import { SafeAreaView } from 'react-native-safe-area-context';
-import DatePicker from 'react-native-date-picker';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAppSelector, selectAuthToken, selectAppConfig, selectCurrentUser, selectManageServices, selectAppDataLoading } from '../store';
 import { theme } from '../constants/theme';
-import { Header, ModalBackdrop, SlotPickerGrid, FileViewerModal, OPDActionsFab, CustomBookingTimeFields } from '../components';
+import { Header, ModalBackdrop, SlotPickerGrid, FileViewerModal, OPDActionsFab, CustomBookingTimeFields, MonthCalendarPickerModal } from '../components';
 import Icon from 'react-native-vector-icons/MaterialIcons';
 import { Appointment, Patient } from '../types';
 import calendarRtdbService from '../services/calendarRtdbService';
@@ -126,6 +125,26 @@ const appointmentKey = (date?: string): string | null => {
 // Parse a "4:00 PM" / "16:00" style string into minutes from midnight (null if none)
 const parseTime = parseAppointmentTime;
 
+const getDurationLabel = (startTimeStr: string, endTimeStr: string) => {
+  if (!startTimeStr || !endTimeStr) return '';
+  const start = parseTime(startTimeStr);
+  const end = parseTime(endTimeStr);
+  if (start == null || end == null || end <= start) return '';
+  
+  const diff = end - start;
+  const hrs = Math.floor(diff / 60);
+  const mins = diff % 60;
+  
+  const parts: string[] = [];
+  if (hrs > 0) {
+    parts.push(`${hrs} ${hrs === 1 ? 'hr' : 'hrs'}`);
+  }
+  if (mins > 0) {
+    parts.push(`${mins} ${mins === 1 ? 'min' : 'mins'}`);
+  }
+  return parts.join(' ');
+};
+
 // "11:00 am" style for the appointment list
 const formatListTime = formatAppointmentListTime;
 
@@ -170,6 +189,39 @@ interface PatientFileItem {
   mimeType?: string | null;
   signedUrl?: string | null;
   thumbUrl?: string | null;
+}
+
+interface TimelineItem {
+  id: string;
+  kind: 'appointment' | 'prescription' | 'lab';
+  date: string;
+  sortAt: number;
+  appt?: Appointment;
+  prescription?: {
+    id: string;
+    type: string;
+    category?: string;
+    uploadedBy?: string;
+    createdAt: string;
+    files: Array<{
+      filePath: string;
+      fileName?: string;
+      originalName?: string;
+      mimeType?: string;
+      signedUrl?: string | null;
+      thumbUrl?: string | null;
+    }>;
+  };
+  lab?: {
+    id: string;
+    name: string;
+    createdAt: string;
+    createdByName?: string;
+    filePath: string;
+    mimeType?: string;
+    signedUrl?: string | null;
+    thumbUrl?: string | null;
+  };
 }
 
 const buildPatientFileItems = (history: any): PatientFileItem[] => {
@@ -264,6 +316,29 @@ const patientFileIcon = (item: PatientFileItem) => {
   if (item.uploadType === 'note') return 'description';
   if (item.uploadType === 'lab') return 'biotech';
   return 'upload-file';
+};
+
+const getPatientFileItem = (prescription: any, part: any): PatientFileItem => {
+  const typeLabel = uploadTypeLabel(prescription.type);
+  return {
+    id: `${prescription.id}:${part.filePath}`,
+    batchParentId: String(prescription.id),
+    kind: 'upload',
+    title: part.originalName || part.fileName || typeLabel,
+    filePath: part.filePath,
+    mimeType: part.mimeType,
+    signedUrl: part.signedUrl || null,
+    thumbUrl: part.thumbUrl || part.signedUrl || null,
+    typeLabel,
+    meta: [prescription.uploadedBy, prescription.createdAt ? formatApptCardDate(prescription.createdAt) : '']
+      .filter(Boolean)
+      .join(' · '),
+    sortAt: prescription.createdAt ? new Date(prescription.createdAt).getTime() : 0,
+    dateKey: historyDateKey(prescription.createdAt),
+    uploadType: prescription.type,
+    sessionId: prescription.sessionId || null,
+    queueId: prescription.queueId || null,
+  };
 };
 
 const getAppointmentReason = (appt: Appointment): string => {
@@ -406,6 +481,8 @@ const normalizeMobile = (value?: string) =>
 
 const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation, route }) => {
   const token = useAppSelector(selectAuthToken);
+  const rescheduleScrollRef = React.useRef<ScrollView>(null);
+  const insets = useSafeAreaInsets();
   const appConfig = useAppSelector(selectAppConfig);
   const currentUser = useAppSelector(selectCurrentUser);
   const canManageTreatmentPlanAccess = useMemo(
@@ -440,7 +517,6 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation, route }) =>
   } | null>(null);
   const doctorSelectRef = useRef<View>(null);
   const rescheduleDoctorBtnRef = useRef<View>(null);
-  const rescheduleDateBtnRef = useRef<View>(null);
   // Whether the date picker is open
   const [showDatePicker, setShowDatePicker] = useState(false);
   // Appointment shown in the details modal (null = closed)
@@ -457,6 +533,7 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation, route }) =>
   const [patientSummary, setPatientSummary] = useState<Patient | null>(null);
   const [patientHistory, setPatientHistory] = useState<any>(null);
   const [patientHistoryLoading, setPatientHistoryLoading] = useState(false);
+  const [visibleHistoryLimit, setVisibleHistoryLimit] = useState(5);
   const [fileSignedUrls, setFileSignedUrls] = useState<Record<string, string>>({});
   const [openingFileId, setOpeningFileId] = useState<string | null>(null);
   const [fileViewerFile, setFileViewerFile] = useState<PatientFileItem | null>(null);
@@ -510,7 +587,6 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation, route }) =>
   const [rescheduleDate, setRescheduleDate] = useState('');
   const [rescheduleSlots, setRescheduleSlots] = useState<BookableSlot[]>([]);
   const [rescheduleSlotsLoading, setRescheduleSlotsLoading] = useState(false);
-  const [rescheduleDatesLoading, setRescheduleDatesLoading] = useState(false);
   const [selectedRescheduleSlot, setSelectedRescheduleSlot] =
     useState<BookableSlot | null>(null);
   const [rescheduleSlotPickerOpen, setRescheduleSlotPickerOpen] = useState(false);
@@ -534,6 +610,32 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation, route }) =>
   const [rescheduleTreatmentSearch, setRescheduleTreatmentSearch] = useState('');
   const [rescheduleSelectedTreatmentKeys, setRescheduleSelectedTreatmentKeys] =
     useState<Set<string>>(new Set());
+
+  const closeAppointmentDetails = () => {
+    setSelectedAppt(null);
+    if (route?.params?.from === 'PatientList') {
+      navigation.setParams({ selectedAppointment: undefined, from: undefined });
+      navigation.navigate('PatientList');
+    }
+  };
+
+  const goToDate = (date: Date) => {
+    const day = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+    const sunday = new Date(day);
+    sunday.setDate(day.getDate() - day.getDay());
+    setWeekStart(sunday);
+    setSelectedKey(toKey(day));
+  };
+
+  const dateBookingConfig = useMemo(() => {
+    if (!selectedDoctorId || !selectedKey) return null;
+    const configs = (appointments as any).bookingConfigs || [];
+    return configs.find(
+      (c: any) =>
+        c.date === selectedKey &&
+        String(c.doctorId) === selectedDoctorId,
+    ) || null;
+  }, [appointments, selectedKey, selectedDoctorId]);
   const rtdbRefreshTimer = React.useRef<ReturnType<typeof setTimeout> | null>(
     null,
   );
@@ -618,7 +720,14 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation, route }) =>
 
   useEffect(() => {
     if (route?.params?.selectedAppointment) {
-      setSelectedAppt(route.params.selectedAppointment);
+      const appt = route.params.selectedAppointment;
+      setSelectedAppt(appt);
+      if (appt.date) {
+        const apptDate = new Date(appt.date);
+        if (!isNaN(apptDate.getTime())) {
+          goToDate(apptDate);
+        }
+      }
       navigation.setParams({ selectedAppointment: undefined });
     }
   }, [route?.params?.selectedAppointment, navigation]);
@@ -829,6 +938,7 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation, route }) =>
 
   // Load patient appointments + uploaded files when the details sheet opens
   useEffect(() => {
+    setVisibleHistoryLimit(5);
     if (!selectedAppt?.patientId || !token) {
       setPatientAppointments([]);
       setPatientSummary(null);
@@ -939,6 +1049,97 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation, route }) =>
     [patientHistory],
   );
 
+  const patientHistoryTimeline = useMemo(() => {
+    const list: TimelineItem[] = [];
+
+    // 1. Add Appointments
+    for (const appt of patientAppointments) {
+      const parsedTime = appt.date ? new Date(appt.date).getTime() : 0;
+      list.push({
+        id: `appt-${appt._id}`,
+        kind: 'appointment',
+        date: appt.date || '',
+        sortAt: isNaN(parsedTime) ? 0 : parsedTime,
+        appt: appt,
+      });
+    }
+
+    // 2. Add Prescriptions / Labs from uploads
+    for (const u of patientHistory?.prescriptionUpload || []) {
+      const parts = collectUploadFileParts(u);
+      if (parts.length === 0) continue;
+      const first = parts[0];
+
+      if (u.type === 'lab') {
+        list.push({
+          id: `lab-${u._id}`,
+          kind: 'lab',
+          date: u.createdAt || '',
+          sortAt: u.createdAt ? new Date(u.createdAt).getTime() : 0,
+          lab: {
+            id: String(u._id),
+            name: u.fileName || first.originalName || first.fileName || 'Lab Report',
+            createdAt: u.createdAt,
+            createdByName: u.uploadedBy,
+            filePath: first.filePath,
+            mimeType: first.mimeType,
+            signedUrl: first.signedUrl || null,
+            thumbUrl: first.thumbUrl || first.signedUrl || null,
+          },
+        });
+      } else {
+        list.push({
+          id: `pres-${u._id}`,
+          kind: 'prescription',
+          date: u.createdAt || '',
+          sortAt: u.createdAt ? new Date(u.createdAt).getTime() : 0,
+          prescription: {
+            id: String(u._id),
+            type: u.type,
+            category: u.category,
+            uploadedBy: u.uploadedBy,
+            createdAt: u.createdAt,
+            files: parts.map((p: any) => ({
+              filePath: p.filePath,
+              fileName: p.fileName,
+              originalName: p.originalName,
+              mimeType: p.mimeType,
+              signedUrl: p.signedUrl || null,
+              thumbUrl: p.thumbUrl || p.signedUrl || null,
+            })),
+          },
+        });
+      }
+    }
+
+    // 3. Add Labs
+    for (const l of patientHistory?.labreport || []) {
+      list.push({
+        id: `lab-${l._id}`,
+        kind: 'lab',
+        date: l.createdAt || '',
+        sortAt: l.createdAt ? new Date(l.createdAt).getTime() : 0,
+        lab: {
+          id: String(l._id),
+          name: l.name || 'Lab Report',
+          createdAt: l.createdAt,
+          createdByName: l.createdByName,
+          filePath: l.reportImg || l.filePath || '',
+          mimeType: l.mimeType,
+          signedUrl: l.signedUrl || null,
+          thumbUrl: l.thumbUrl || l.signedUrl || null,
+        },
+      });
+    }
+
+    // Sort descending by sortAt
+    return list.sort((a, b) => {
+      const aTime = isNaN(a.sortAt) ? 0 : a.sortAt;
+      const bTime = isNaN(b.sortAt) ? 0 : b.sortAt;
+      return bTime - aTime;
+    });
+  }, [patientAppointments, patientHistory]);
+
   const fileViewerStripItems = useMemo(() => {
     if (!fileViewerFile) return [];
     const appt = fileViewerContextAppt;
@@ -1014,6 +1215,8 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation, route }) =>
 
       if (appt) {
         setFileViewerContextAppt(appt);
+      } else {
+        setFileViewerContextAppt(undefined);
       }
 
       setOpeningFileId(file.id);
@@ -1077,11 +1280,6 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation, route }) =>
   const renderAllAppointmentCard = (appt: Appointment) => {
     const statusBadge = getStatusBadgeColors(appt.status);
     const treatments = extractAppointmentTreatments(appt);
-    const apptFiles = filesForAppointment(
-      appt,
-      sortedPatientFiles,
-      sortedPatientAppointments,
-    );
 
     return (
       <View key={appt._id} style={styles.allApptCard}>
@@ -1131,75 +1329,172 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation, route }) =>
             </Text>
           </View>
         ))}
+      </View>
+    );
+  };
 
-        {apptFiles.length > 0 ? (
-          <View style={styles.allApptUploadsBlock}>
-            <Text style={styles.allApptUploadsLabel}>UPLOADED</Text>
-            <View style={styles.allApptUploadList}>
-              {apptFiles.map(file => {
-                const thumb = thumbUrlForFile(file);
-                const opening = openingFileId === file.id;
-                return (
-                  <TouchableOpacity
-                    key={file.id}
-                    style={[
-                      styles.allApptUploadRow,
-                      file.kind === 'lab' && styles.allApptUploadRowLab,
-                      file.uploadType === 'note' && styles.allApptUploadRowNote,
-                    ]}
-                    activeOpacity={0.7}
-                    disabled={!file.filePath || opening}
-                    onPress={() => openAppointmentFile(file, appt)}
-                  >
-                    <View
-                      style={[
-                        styles.allApptUploadIcon,
-                        file.kind === 'lab' && styles.allApptUploadIconLab,
-                        file.uploadType === 'note' && styles.allApptUploadIconNote,
-                      ]}
-                    >
-                      {thumb ? (
-                        <Image
-                          source={{ uri: thumb }}
-                          style={styles.allApptUploadThumb}
-                          resizeMode="cover"
-                        />
-                      ) : (
-                        <Icon
-                          name={patientFileIcon(file)}
-                          size={16}
-                          color={
-                            file.kind === 'lab'
-                              ? '#0D9488'
-                              : file.uploadType === 'note'
-                                ? '#7C3AED'
-                                : '#6366F1'
-                          }
-                        />
-                      )}
-                    </View>
-                    <Text style={styles.allApptUploadName} numberOfLines={1}>
-                      {file.title}
-                    </Text>
-                    <View style={styles.allApptUploadMeta}>
-                      {file.sortAt ? (
-                        <Text style={styles.allApptUploadTime}>
-                          {formatFileUploadTime(file.sortAt)}
-                        </Text>
-                      ) : null}
-                      <Text style={styles.allApptUploadType}>
-                        {file.typeLabel}
-                      </Text>
-                    </View>
-                    {opening ? (
-                      <ActivityIndicator size="small" color="#6366F1" />
-                    ) : null}
-                  </TouchableOpacity>
-                );
-              })}
-            </View>
+  const renderPrescriptionTimelineRow = (item: TimelineItem) => {
+    const p = item.prescription;
+    if (!p) return null;
+    const displayDate = p.createdAt ? formatApptCardDate(p.createdAt) : '';
+    const isProcedure = p.type === 'note';
+
+    return (
+      <View key={item.id} style={styles.allApptCard}>
+        {/* Untouched Original Header */}
+        <View style={[styles.allApptCardHeader, { borderBottomWidth: 1, borderBottomColor: theme.colors.border, paddingBottom: 8, marginBottom: 8 }]}>
+          <View style={styles.allApptCardDateRow}>
+            <Icon name="description" size={18} color={isProcedure ? "#D97706" : "#7C3AED"} />
+            <Text style={[styles.allApptCardDate, { marginLeft: 6 }]}>
+              {isProcedure ? "Procedure Note" : "Prescription Note"}
+            </Text>
           </View>
-        ) : null}
+          <View style={[styles.allApptStatusBadge, { backgroundColor: isProcedure ? '#FEF3C7' : '#F3E8FF' }]}>
+            <Text style={[styles.allApptStatusText, { color: isProcedure ? '#D97706' : '#7C3AED' }]}>
+              {isProcedure ? 'Procedure' : (p.category || 'Prescription')}
+            </Text>
+          </View>
+        </View>
+
+        {/* Content Row: Left is File Image (Thumbnails), Right is Date */}
+        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+            {p.files.map((file, idx) => {
+              const fileItem = getPatientFileItem(p, file);
+              const thumb = thumbUrlForFile(fileItem);
+              const opening = openingFileId === fileItem.id;
+
+              return (
+                <TouchableOpacity
+                  key={`${p.id}-file-${idx}`}
+                  style={{
+                    width: 32,
+                    height: 32,
+                    borderRadius: 6,
+                    borderWidth: 1,
+                    borderColor: theme.colors.border,
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    backgroundColor: theme.colors.background,
+                    overflow: 'hidden',
+                  }}
+                  activeOpacity={0.7}
+                  disabled={opening}
+                  onPress={() => openAppointmentFile(fileItem)}
+                >
+                  {thumb ? (
+                    <Image source={{ uri: thumb }} style={{ width: '100%', height: '100%' }} resizeMode="cover" />
+                  ) : (
+                    <Icon
+                      name={patientFileIcon(fileItem)}
+                      size={16}
+                      color="#7C3AED"
+                    />
+                  )}
+                  {opening && (
+                    <View style={{
+                      ...StyleSheet.absoluteFillObject,
+                      backgroundColor: 'rgba(255, 255, 255, 0.7)',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                    }}>
+                      <ActivityIndicator size="small" color="#7C3AED" />
+                    </View>
+                  )}
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+
+          <Text style={{ fontSize: 12, color: theme.colors.textSecondary }}>
+            {displayDate}
+          </Text>
+        </View>
+      </View>
+    );
+  };
+
+  const renderLabTimelineRow = (item: TimelineItem) => {
+    const l = item.lab;
+    if (!l) return null;
+    const displayDate = l.createdAt ? formatApptCardDate(l.createdAt) : '';
+    const fileItem: PatientFileItem = {
+      id: l.id,
+      batchParentId: l.id,
+      kind: 'lab',
+      title: l.name,
+      filePath: l.filePath,
+      mimeType: l.mimeType || null,
+      signedUrl: l.signedUrl || null,
+      thumbUrl: l.thumbUrl || null,
+      typeLabel: 'Lab',
+      meta: displayDate,
+      sortAt: item.sortAt,
+      dateKey: historyDateKey(l.createdAt),
+    };
+    const thumb = thumbUrlForFile(fileItem);
+    const opening = openingFileId === fileItem.id;
+
+    return (
+      <View key={item.id} style={styles.allApptCard}>
+        {/* Untouched Original Header */}
+        <View style={[styles.allApptCardHeader, { borderBottomWidth: 1, borderBottomColor: theme.colors.border, paddingBottom: 8, marginBottom: 8 }]}>
+          <View style={styles.allApptCardDateRow}>
+            <Icon name="science" size={18} color="#0D9488" />
+            <Text style={[styles.allApptCardDate, { marginLeft: 6 }]}>
+              Lab Report
+            </Text>
+          </View>
+          <View style={[styles.allApptStatusBadge, { backgroundColor: '#CCFBF1' }]}>
+            <Text style={[styles.allApptStatusText, { color: '#0D9488' }]}>
+              Lab
+            </Text>
+          </View>
+        </View>
+
+        {/* Content Row: Left is File Image (Thumb), Right is Date */}
+        <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+          <TouchableOpacity
+            style={{
+              width: 32,
+              height: 32,
+              borderRadius: 6,
+              borderWidth: 1,
+              borderColor: theme.colors.border,
+              alignItems: 'center',
+              justifyContent: 'center',
+              backgroundColor: theme.colors.background,
+              overflow: 'hidden',
+            }}
+            activeOpacity={0.7}
+            disabled={opening}
+            onPress={() => openAppointmentFile(fileItem)}
+          >
+            {thumb ? (
+              <Image source={{ uri: thumb }} style={{ width: '100%', height: '100%' }} resizeMode="cover" />
+            ) : (
+              <Icon
+                name={patientFileIcon(fileItem)}
+                size={16}
+                color="#0D9488"
+              />
+            )}
+            {opening && (
+              <View style={{
+                ...StyleSheet.absoluteFillObject,
+                backgroundColor: 'rgba(255, 255, 255, 0.7)',
+                alignItems: 'center',
+                justifyContent: 'center',
+              }}>
+                <ActivityIndicator size="small" color="#0D9488" />
+              </View>
+            )}
+          </TouchableOpacity>
+
+          <Text style={{ fontSize: 12, color: theme.colors.textSecondary }}>
+            {displayDate}
+          </Text>
+        </View>
       </View>
     );
   };
@@ -1312,14 +1607,12 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation, route }) =>
     setWeekStart(sunday);
     setSelectedKey(toKey(n));
   };
-  // Jump to an arbitrary date chosen from the date picker
-  const goToDate = (date: Date) => {
-    const day = new Date(date.getFullYear(), date.getMonth(), date.getDate());
-    const sunday = new Date(day);
-    sunday.setDate(day.getDate() - day.getDay());
-    setWeekStart(sunday);
-    setSelectedKey(toKey(day));
-  };
+  // The currently selected doctor option (null = all doctors)
+  const selectedDoctor = useMemo(
+    () => doctorFilterOptions.find(d => d.id === selectedDoctorId) || null,
+    [doctorFilterOptions, selectedDoctorId],
+  );
+
   const { timedAppointments, untimedAppointments } = useMemo(() => {
     let dayAppointments = appointmentsByDate[selectedKey] || [];
     if (selectedDoctorId) {
@@ -1328,7 +1621,7 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation, route }) =>
       );
     }
 
-    const timed: Appointment[] = [];
+    const timed: any[] = [];
     const untimed: Appointment[] = [];
 
     dayAppointments.forEach(appt => {
@@ -1339,25 +1632,113 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation, route }) =>
       }
     });
 
+    // Inject blocked times/leave as pseudo-appointments
+    const configs = (appointments as any).bookingConfigs || [];
+
+    if (selectedDoctorId) {
+      const cfg = configs.find(
+        (c: any) =>
+          String(c.doctorId) === selectedDoctorId && c.date === selectedKey,
+      );
+      if (cfg) {
+        if (cfg.isLeave) {
+          timed.push({
+            _id: `leave-${selectedDoctorId}-${selectedKey}`,
+            isLeaveItem: true,
+            time: '00:00',
+            doctorName: selectedDoctor?.name || 'Doctor',
+          });
+        }
+
+        if (Array.isArray(cfg.blockedTimes)) {
+          cfg.blockedTimes.forEach((bt: any, idx: number) => {
+            timed.push({
+              _id: `blocked-${idx}-${selectedDoctorId}-${selectedKey}`,
+              isBlockedItem: true,
+              time: bt.startTime || '00:00',
+              endTime: bt.endTime,
+              doctorName: selectedDoctor?.name || 'Doctor',
+            });
+          });
+        }
+      }
+    } else {
+      configs.forEach((cfg: any) => {
+        if (cfg.date !== selectedKey) return;
+        const doc = doctorFilterOptions.find(d => d.id === String(cfg.doctorId));
+        const docName = doc ? doc.name : 'Doctor';
+
+        if (cfg.isLeave) {
+          timed.push({
+            _id: `leave-${cfg.doctorId}-${selectedKey}`,
+            isLeaveItem: true,
+            time: '00:00',
+            doctorName: docName,
+          });
+        }
+
+        if (Array.isArray(cfg.blockedTimes)) {
+          cfg.blockedTimes.forEach((bt: any, idx: number) => {
+            timed.push({
+              _id: `blocked-${idx}-${cfg.doctorId}-${selectedKey}`,
+              isBlockedItem: true,
+              time: bt.startTime || '00:00',
+              endTime: bt.endTime,
+              doctorName: docName,
+            });
+          });
+        }
+      });
+    }
+
     timed.sort((a, b) => {
       const aTime = parseTime(a.time)!;
       const bTime = parseTime(b.time)!;
       if (aTime !== bTime) return aTime - bTime;
+      if (a.isLeaveItem || a.isBlockedItem) return -1;
+      if (b.isLeaveItem || b.isBlockedItem) return 1;
       return (a.patientName || '').localeCompare(b.patientName || '');
     });
 
     untimed.sort((a, b) => (a.tokenCount ?? 0) - (b.tokenCount ?? 0));
 
     return { timedAppointments: timed, untimedAppointments: untimed };
-  }, [appointmentsByDate, selectedKey, selectedDoctorId]);
+  }, [appointmentsByDate, appointments, selectedKey, selectedDoctorId, selectedDoctor, doctorFilterOptions]);
 
-  // The currently selected doctor option (null = all doctors)
-  const selectedDoctor = useMemo(
-    () => doctorFilterOptions.find(d => d.id === selectedDoctorId) || null,
-    [doctorFilterOptions, selectedDoctorId],
-  );
+  const renderAppointmentRow = (appt: any) => {
+    if (appt.isLeaveItem) {
+      return (
+        <View key={appt._id} style={[styles.blockedRow, styles.leaveRow]}>
+          <Icon name="event-busy" size={20} color="#C62828" />
+          <View style={styles.blockedRowMain}>
+            <Text style={styles.blockedRowTitle}>
+              Doctor on Leave ({appt.doctorName})
+            </Text>
+            <Text style={styles.blockedRowSubtitle}>
+              No bookings available for the entire day.
+            </Text>
+          </View>
+        </View>
+      );
+    }
 
-  const renderAppointmentRow = (appt: Appointment) => {
+    if (appt.isBlockedItem) {
+      const dur = getDurationLabel(appt.time, appt.endTime);
+      const durSuffix = dur ? ` (${dur})` : '';
+      return (
+        <View key={appt._id} style={[styles.blockedRow, styles.blockedTimeRangeRow]}>
+          <Icon name="block" size={20} color="#D84315" />
+          <View style={styles.blockedRowMain}>
+            <Text style={styles.blockedRowTitle}>
+              Blocked Time Slot ({appt.doctorName})
+            </Text>
+            <Text style={styles.blockedRowSubtitle}>
+              {appt.time} - {appt.endTime || 'End'}{durSuffix}
+            </Text>
+          </View>
+        </View>
+      );
+    }
     const dotColor = colorForAppt(appt);
     const subtitle = getAppointmentSubtitle(appt);
     const struck = shouldStrikeAppointment(appt);
@@ -1493,7 +1874,11 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation, route }) =>
       const patient = await realAuthService.moveToOpd(patientId, token);
       if (navigateToOpdScreen) {
         setSelectedAppt(null);
-        navigation.navigate('OPD', { appointment: appt, patient });
+        navigation.navigate('OPD', {
+          appointment: appt,
+          patient,
+          from: route?.params?.from,
+        });
       } else {
         const updatedAppt: Appointment = {
           ...appt,
@@ -1553,6 +1938,7 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation, route }) =>
       navigation.navigate('OPD', {
         appointment: appt,
         patient,
+        from: route?.params?.from,
         ...(options?.openFollowup
           ? { followupLinkedTreatments: extractAppointmentTreatments(appt) }
           : {}),
@@ -2314,6 +2700,7 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation, route }) =>
       navigation.navigate('OPD', {
         appointment: appt,
         patient,
+        from: route?.params?.from,
         openFollowup: true,
         followupLinkedTreatments: extractAppointmentTreatments(appt),
       });
@@ -2439,22 +2826,31 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation, route }) =>
         })
       )}
 
-      {/* Mark Absent — available before confirming arrival (no-show). */}
       {!isAppointmentCancelled(appt) && appt.status !== 'absent' && appt.status !== 'completed' ? (
-        renderCtaButton('Absent', handleMarkAbsent, {
-          variant: 'danger',
-          fullWidth: true,
-          icon: 'event-busy',
-        })
-      ) : null}
-
-      {!isAppointmentCancelled(appt) ? (
-        appt.patientId
-          ? renderCtaButton('Follow up', handleFollowup, {
-              variant: 'warning',
-              fullWidth: true,
+        <View style={styles.ctaGridRow}>
+          {isArrivalConfirmed(appt) ? (
+            renderCtaButton('Complete', () => handleStatusUpdate('completed', 'Completed'), {
+              variant: 'success',
+              icon: 'check-circle',
+              loading: statusUpdating === 'completed',
+              disabled: statusUpdating != null,
             })
-          : renderCtaButton(
+          ) : null}
+
+          {renderCtaButton('Absent', handleMarkAbsent, {
+            variant: 'absent',
+            icon: 'event-busy',
+            loading: movingToOpd,
+            disabled: movingToOpd || statusUpdating != null,
+          })}
+
+          {appt.patientId ? (
+            renderCtaButton('Follow up', handleFollowup, {
+              variant: 'warning',
+              icon: 'add-circle-outline',
+            })
+          ) : (
+            renderCtaButton(
               'Follow up',
               () => {
                 Alert.alert(
@@ -2462,32 +2858,41 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation, route }) =>
                   'Confirm arrival and link a patient before booking follow-up.',
                 );
               },
-              { variant: 'warning', fullWidth: true, disabled: true },
+              {
+                variant: 'warning',
+                icon: 'add-circle-outline',
+                disabled: true,
+              },
             )
-      ) : null}
-
-      {isArrivalConfirmed(appt) && !isAppointmentCancelled(appt) ? (
-        <View style={styles.ctaGridRow}>
-          {renderCtaButton(
-            'Complete',
-            () => handleStatusUpdate('completed', 'Completed'),
-            {
-              variant: 'success',
-              loading: statusUpdating === 'completed',
-              disabled: statusUpdating != null,
-            },
-          )}
-            {renderCtaButton(
-            'Absent',
-            () => handleStatusUpdate('absent', 'Absent'),
-            {
-              variant: 'absent',
-              loading: statusUpdating === 'absent',
-              disabled: statusUpdating != null,
-            },
           )}
         </View>
-      ) : null}
+      ) : (
+        !isAppointmentCancelled(appt) ? (
+          appt.patientId ? (
+            renderCtaButton('Follow up', handleFollowup, {
+              variant: 'warning',
+              fullWidth: true,
+              icon: 'add-circle-outline',
+            })
+          ) : (
+            renderCtaButton(
+              'Follow up',
+              () => {
+                Alert.alert(
+                  'Follow up',
+                  'Confirm arrival and link a patient before booking follow-up.',
+                );
+              },
+              {
+                variant: 'warning',
+                fullWidth: true,
+                disabled: true,
+                icon: 'add-circle-outline',
+              },
+            )
+          )
+        ) : null
+      )}
     </View>
   );
 
@@ -2496,11 +2901,7 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation, route }) =>
     return doc?.name || selectedAppt?.doctorName || 'Select doctor';
   }, [rescheduleDoctors, rescheduleDoctorId, selectedAppt?.doctorName]);
 
-  const selectedRescheduleDateLabel = useMemo(() => {
-    if (!rescheduleDate) return 'Choose date';
-    const match = rescheduleAvailableDates.find(d => d.date === rescheduleDate);
-    return match?.label || formatApptCardDate(rescheduleDate);
-  }, [rescheduleDate, rescheduleAvailableDates]);
+
 
   const formatRescheduleSlotLabel = (slot: BookableSlot | null) => {
     if (!slot) return 'Select a slot';
@@ -2603,23 +3004,23 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation, route }) =>
       </View>
 
       {/* Date picker for jumping to a specific day */}
-      <DatePicker
-        modal
-        open={showDatePicker}
-        date={new Date(`${selectedKey}T00:00:00`)}
-        mode="date"
-        onConfirm={date => {
+      <MonthCalendarPickerModal
+        visible={showDatePicker}
+        value={new Date(`${selectedKey}T12:00:00`)}
+        onSelectDate={date => {
           setShowDatePicker(false);
           goToDate(date);
         }}
-        onCancel={() => setShowDatePicker(false)}
-        title="Select date"
+        onClose={() => setShowDatePicker(false)}
       />
 
       {/* Block time ranges for the selected (custom-booking) doctor */}
       <BlockTimeModal
         visible={blockTimeOpen}
-        onClose={() => setBlockTimeOpen(false)}
+        onClose={() => {
+          setBlockTimeOpen(false);
+          fetchAppointments();
+        }}
         doctorId={selectedDoctorId}
         doctorName={selectedDoctor?.name}
         isCustomDoctor={isCustomBookingMode(selectedDoctor)}
@@ -2682,6 +3083,21 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation, route }) =>
             <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
           }
         >
+          {selectedDoctorId && dateBookingConfig && (dateBookingConfig.isLeave || (dateBookingConfig.blockedTimes && dateBookingConfig.blockedTimes.length > 0)) ? (
+            <View style={[styles.bookingWarningBanner, dateBookingConfig.isLeave ? styles.leaveBanner : styles.blockedBanner]}>
+              <Icon
+                name={dateBookingConfig.isLeave ? 'event-busy' : 'block'}
+                size={18}
+                color={dateBookingConfig.isLeave ? '#B71C1C' : '#8A6D00'}
+              />
+              <Text style={[styles.bookingWarningText, { color: dateBookingConfig.isLeave ? '#B71C1C' : '#8A6D00' }]}>
+                {dateBookingConfig.isLeave
+                  ? 'No Booking (Doctor on Leave)'
+                  : 'Time Blocked for Booking'}
+              </Text>
+            </View>
+          ) : null}
+
           {untimedAppointments.length > 0 ? (
             <View style={styles.gridHeader}>
               <View style={styles.gridHeaderTokens}>
@@ -2699,9 +3115,15 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation, route }) =>
               <Icon
                 name="event-busy"
                 size={48}
-                color={theme.colors.disabled}
+                color={selectedDoctorId && dateBookingConfig?.isLeave ? '#E57373' : theme.colors.disabled}
               />
-              <Text style={styles.emptyText}>No appointments for this day</Text>
+              <Text style={[styles.emptyText, selectedDoctorId && dateBookingConfig?.isLeave && { color: '#B71C1C', fontWeight: 'bold' }]}>
+                {selectedDoctorId && dateBookingConfig?.isLeave
+                  ? 'No Booking (Doctor on Leave)'
+                  : selectedDoctorId && dateBookingConfig?.blockedTimes?.length > 0
+                  ? 'No Booking (Time Blocked)'
+                  : 'No appointments for this day'}
+              </Text>
             </View>
           ) : (
             <View style={styles.timedApptSection}>
@@ -3031,14 +3453,15 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation, route }) =>
         </View>
       </ModalBackdrop>
 
-      {/* Appointment details — full screen */}
+      {/* Appointment details — bottom sheet */}
       <ModalBackdrop
         visible={selectedAppt != null}
-        onClose={() => setSelectedAppt(null)}
+        onClose={closeAppointmentDetails}
         animationType="slide"
-        align="full"
+        align="bottom"
       >
-        <SafeAreaView edges={['top', 'bottom']} style={styles.apptDetailsSheet}>
+        <View style={styles.apptDetailsSheet}>
+          <View style={styles.apptDetailsSheetHandle} />
           <View style={styles.apptDetailsSheetHeader}>
             <Text style={styles.apptDetailsSheetTitle}>Appointment Details</Text>
             <View style={styles.apptDetailsSheetHeaderActions}>
@@ -3052,7 +3475,7 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation, route }) =>
                 </TouchableOpacity>
               ) : null}
               <TouchableOpacity
-                onPress={() => setSelectedAppt(null)}
+                onPress={closeAppointmentDetails}
                 hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
               >
                 <Icon name="close" size={22} color={theme.colors.text} />
@@ -3066,6 +3489,16 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation, route }) =>
               contentContainerStyle={styles.apptDetailsScrollContent}
               showsVerticalScrollIndicator
               keyboardShouldPersistTaps="handled"
+              scrollEventThrottle={400}
+              onScroll={({ nativeEvent }) => {
+                const paddingToBottom = 150;
+                const isCloseToBottom =
+                  nativeEvent.layoutMeasurement.height + nativeEvent.contentOffset.y >=
+                  nativeEvent.contentSize.height - paddingToBottom;
+                if (isCloseToBottom && visibleHistoryLimit < patientHistoryTimeline.length) {
+                  setVisibleHistoryLimit(prev => prev + 5);
+                }
+              }}
             >
               <View style={styles.sheetHeader}>
                 <View style={styles.sheetAvatar}>
@@ -3244,18 +3677,29 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation, route }) =>
               {renderAppointmentCtaGrid(selectedAppt)}
 
               <View style={styles.sheetAllAppts}>
-                <Text style={styles.sheetSectionTitle}>ALL APPOINTMENTS</Text>
-                {patientApptsLoading ? (
+                <Text style={styles.sheetSectionTitle}>PATIENT HISTORY</Text>
+                {patientApptsLoading || patientHistoryLoading ? (
                   <ActivityIndicator
                     style={styles.sheetAllApptsLoader}
                     color={theme.colors.primary}
                   />
-                ) : sortedPatientAppointments.length === 0 ? (
+                ) : patientHistoryTimeline.length === 0 ? (
                   <Text style={styles.sheetAllApptsEmpty}>
-                    No appointments found
+                    No history items found
                   </Text>
                 ) : (
-                  sortedPatientAppointments.map(renderAllAppointmentCard)
+                  patientHistoryTimeline.slice(0, visibleHistoryLimit).map(item => {
+                    if (item.kind === 'appointment' && item.appt) {
+                      return renderAllAppointmentCard(item.appt);
+                    }
+                    if (item.kind === 'prescription') {
+                      return renderPrescriptionTimelineRow(item);
+                    }
+                    if (item.kind === 'lab') {
+                      return renderLabTimelineRow(item);
+                    }
+                    return null;
+                  })
                 )}
               </View>
             </ScrollView>
@@ -3283,7 +3727,7 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation, route }) =>
               showTreatmentPlan={canManageTreatmentPlanAccess}
             />
           ) : null}
-        </SafeAreaView>
+        </View>
       </ModalBackdrop>
 
       <ModalBackdrop
@@ -3293,7 +3737,7 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation, route }) =>
         align="bottom"
         dismissOnBackdropPress
       >
-        <SafeAreaView edges={['bottom']} style={styles.confirmArrivalSheet}>
+        <View style={styles.confirmArrivalSheet}>
           <View style={styles.apptDetailsSheetHandle} />
           <View style={styles.confirmModalCard}>
             <View style={styles.confirmModalHeader}>
@@ -3471,32 +3915,34 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation, route }) =>
             )}
           </ScrollView>
 
-          <TouchableOpacity
-            style={[
-              styles.sheetPrimaryBtn,
-              (isConfirmingArrival ||
+          <View style={[styles.sheetActions, { paddingBottom: Math.max(12, insets.bottom), backgroundColor: theme.colors.surface }]}>
+            <TouchableOpacity
+              style={[
+                styles.sheetPrimaryBtn,
+                (isConfirmingArrival ||
+                  isLoadingConfirmPreview ||
+                  confirmArrivalPendingCalc > 0 ||
+                  requiresPatientSelection) &&
+                  styles.sheetPrimaryBtnDisabled,
+              ]}
+              activeOpacity={0.85}
+              disabled={
+                isConfirmingArrival ||
                 isLoadingConfirmPreview ||
                 confirmArrivalPendingCalc > 0 ||
-                requiresPatientSelection) &&
-                styles.sheetPrimaryBtnDisabled,
-            ]}
-            activeOpacity={0.85}
-            disabled={
-              isConfirmingArrival ||
-              isLoadingConfirmPreview ||
-              confirmArrivalPendingCalc > 0 ||
-              requiresPatientSelection
-            }
-            onPress={submitConfirmArrival}
-          >
-            {isConfirmingArrival ? (
-              <ActivityIndicator size="small" color={theme.colors.surface} />
-            ) : (
-              <Text style={styles.sheetPrimaryText}>Confirm Arrival</Text>
-            )}
-          </TouchableOpacity>
+                requiresPatientSelection
+              }
+              onPress={submitConfirmArrival}
+            >
+              {isConfirmingArrival ? (
+                <ActivityIndicator size="small" color={theme.colors.surface} />
+              ) : (
+                <Text style={styles.sheetPrimaryText}>Confirm Arrival</Text>
+              )}
+            </TouchableOpacity>
           </View>
-        </SafeAreaView>
+          </View>
+        </View>
       </ModalBackdrop>
 
       {/* Cancel appointment */}
@@ -3506,7 +3952,7 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation, route }) =>
         animationType="slide"
         align="bottom"
       >
-        <SafeAreaView edges={['bottom']} style={styles.confirmArrivalSheet}>
+        <View style={styles.confirmArrivalSheet}>
           <View style={styles.apptDetailsSheetHandle} />
           <View style={styles.confirmModalCard}>
           <View style={styles.confirmModalHeader}>
@@ -3588,7 +4034,7 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation, route }) =>
             />
           </ScrollView>
 
-          <View style={styles.modalFooterRow}>
+          <View style={[styles.modalFooterRow, styles.sheetActions, { paddingBottom: Math.max(12, insets.bottom), backgroundColor: theme.colors.surface, marginTop: 0 }]}>
             <TouchableOpacity
               style={[styles.ctaGridBtn, styles.modalFooterBtn]}
               onPress={closeCancelModal}
@@ -3622,7 +4068,7 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation, route }) =>
             </TouchableOpacity>
           </View>
           </View>
-        </SafeAreaView>
+        </View>
       </ModalBackdrop>
 
       {/* Reschedule appointment */}
@@ -3632,7 +4078,7 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation, route }) =>
         animationType="slide"
         align="bottom"
       >
-        <SafeAreaView edges={['bottom']} style={styles.rescheduleSheet}>
+        <View style={styles.rescheduleSheet}>
           <View style={styles.apptDetailsSheetHandle} />
           <View style={styles.confirmModalHeader}>
             <Text style={styles.confirmModalTitle}>Reschedule Appointment</Text>
@@ -3645,6 +4091,7 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation, route }) =>
           </View>
 
           <ScrollView
+            ref={rescheduleScrollRef}
             style={styles.rescheduleScroll}
             contentContainerStyle={styles.rescheduleScrollContent}
             keyboardShouldPersistTaps="handled"
@@ -3673,77 +4120,44 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation, route }) =>
               </TouchableOpacity>
             </View>
 
-            {rescheduleIsSlotDoctor ? (
-              <>
-                <Text style={styles.confirmFieldLabel}>Select new date</Text>
-                {rescheduleDatesLoading ? (
-                  <ActivityIndicator color={theme.colors.primary} />
-                ) : rescheduleAvailableDates.length === 0 ? (
-                  <Text style={styles.confirmHint}>
-                    No available dates for this doctor.
-                  </Text>
-                ) : (
-                  <View ref={rescheduleDateBtnRef} collapsable={false}>
-                    <TouchableOpacity
-                      style={styles.slotSelectBtn}
-                      onPress={() =>
-                        openAnchoredDropdown('rescheduleDate', rescheduleDateBtnRef)
-                      }
-                    >
-                      <Text style={styles.slotSelectBtnText} numberOfLines={2}>
-                        {selectedRescheduleDateLabel}
-                      </Text>
-                      <Icon
-                        name="expand-more"
-                        size={22}
-                        color={theme.colors.textSecondary}
-                      />
-                    </TouchableOpacity>
-                  </View>
-                )}
+            <Text style={styles.confirmFieldLabel}>Select new date</Text>
+            <TouchableOpacity
+              style={styles.slotSelectBtn}
+              onPress={() => setShowTokenRescheduleDatePicker(true)}
+            >
+              <Text style={styles.slotSelectBtnText}>
+                {rescheduleDate
+                  ? formatApptCardDate(rescheduleDate)
+                  : 'Choose date'}
+              </Text>
+              <Icon
+                name="calendar-today"
+                size={20}
+                color={theme.colors.textSecondary}
+              />
+            </TouchableOpacity>
 
-                {rescheduleDate ? (
-                  <>
-                    <Text style={styles.confirmFieldLabel}>Select slot</Text>
-                    <TouchableOpacity
-                      style={styles.slotSelectBtn}
-                      onPress={() => setRescheduleSlotPickerOpen(true)}
-                      disabled={rescheduleSlotsLoading}
-                    >
-                      <Text style={styles.slotSelectBtnText}>
-                        {rescheduleSlotsLoading
-                          ? 'Loading slots...'
-                          : formatRescheduleSlotLabel(selectedRescheduleSlot)}
-                      </Text>
-                      <Icon
-                        name="expand-more"
-                        size={22}
-                        color={theme.colors.textSecondary}
-                      />
-                    </TouchableOpacity>
-                  </>
-                ) : null}
-              </>
-            ) : (
+            {rescheduleIsSlotDoctor && rescheduleDate ? (
               <>
-                <Text style={styles.confirmFieldLabel}>Select new date</Text>
+                <Text style={styles.confirmFieldLabel}>Select slot</Text>
                 <TouchableOpacity
                   style={styles.slotSelectBtn}
-                  onPress={() => setShowTokenRescheduleDatePicker(true)}
+                  onPress={() => setRescheduleSlotPickerOpen(true)}
+                  disabled={rescheduleSlotsLoading}
                 >
                   <Text style={styles.slotSelectBtnText}>
-                    {rescheduleDate
-                      ? formatApptCardDate(rescheduleDate)
-                      : 'Choose date'}
+                    {rescheduleSlotsLoading
+                      ? 'Loading slots...'
+                      : formatRescheduleSlotLabel(selectedRescheduleSlot)}
                   </Text>
                   <Icon
-                    name="calendar-today"
-                    size={20}
+                    name="expand-more"
+                    size={22}
                     color={theme.colors.textSecondary}
                   />
                 </TouchableOpacity>
               </>
-            )}
+            ) : null}
 
             {/* If doctor uses custom booking (not slot), show start time + duration fields */}
             {!rescheduleIsSlotDoctor ? (
@@ -3762,191 +4176,195 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation, route }) =>
                   Treatment
                   <Text style={styles.rescheduleTreatmentOptional}> (optional)</Text>
                 </Text>
-                <TouchableOpacity
-                  style={styles.rescheduleTreatmentField}
-                  activeOpacity={0.7}
-                  disabled={
-                    rescheduleTreatmentsLoading ||
-                    (!rescheduleCatalogTreatments.length && !reschedulePlanGroups.length)
-                  }
-                  onPress={() =>
-                    setRescheduleTreatmentDropdownOpen(open => !open)
-                  }
-                >
-                  <Text
-                    style={[
-                      styles.rescheduleTreatmentFieldText,
-                      rescheduleSelectedTreatmentKeys.size === 0 &&
-                        styles.rescheduleTreatmentPlaceholder,
-                    ]}
-                    numberOfLines={1}
-                  >
-                    {rescheduleTreatmentTriggerLabel}
-                  </Text>
-                  {rescheduleTreatmentsLoading ? (
-                    <ActivityIndicator size="small" color={theme.colors.primary} />
-                  ) : (
-                    <Icon
-                      name={
-                        rescheduleTreatmentDropdownOpen
-                          ? 'expand-less'
-                          : 'expand-more'
+                <View style={{ zIndex: 999, position: 'relative' }}>
+                  <TouchableOpacity
+                    style={styles.rescheduleTreatmentField}
+                    activeOpacity={0.7}
+                    disabled={
+                      rescheduleTreatmentsLoading ||
+                      (!rescheduleCatalogTreatments.length && !reschedulePlanGroups.length)
+                    }
+                    onPress={() => {
+                      const nextState = !rescheduleTreatmentDropdownOpen;
+                      setRescheduleTreatmentDropdownOpen(nextState);
+                      if (nextState) {
+                        setTimeout(() => {
+                          rescheduleScrollRef.current?.scrollTo({ y: 350, animated: true });
+                        }, 100);
                       }
-                      size={22}
-                      color={theme.colors.textSecondary}
-                    />
-                  )}
-                </TouchableOpacity>
-
-                {selectedRescheduleTreatmentSummaries.length > 0 ? (
-                  <View style={styles.rescheduleSelectedTreatments}>
-                    {selectedRescheduleTreatmentSummaries.map(treatment => (
-                      <View
-                        key={treatment.key}
-                        style={styles.rescheduleSelectedTreatmentRow}
-                      >
-                        <Text
-                          style={styles.rescheduleSelectedTreatmentText}
-                          numberOfLines={1}
-                        >
-                          {treatment.treatmentDesc}
-                        </Text>
-                        <TouchableOpacity
-                          onPress={() => toggleRescheduleTreatment(treatment.key)}
-                          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                        >
-                          <Icon
-                            name="close"
-                            size={18}
-                            color={theme.colors.textSecondary}
-                          />
-                        </TouchableOpacity>
-                      </View>
-                    ))}
-                  </View>
-                ) : null}
-
-                {rescheduleTreatmentDropdownOpen ? (
-                  <View style={styles.rescheduleTreatmentDropdown}>
-                    <TextInput
-                      style={styles.rescheduleTreatmentSearch}
-                      value={rescheduleTreatmentSearch}
-                      onChangeText={setRescheduleTreatmentSearch}
-                      placeholder="Search treatments"
-                      placeholderTextColor={theme.colors.placeholder}
-                    />
-
+                    }}
+                  >
+                    <Text
+                      style={[
+                        styles.rescheduleTreatmentFieldText,
+                        rescheduleSelectedTreatmentKeys.size === 0 &&
+                          styles.rescheduleTreatmentPlaceholder,
+                      ]}
+                      numberOfLines={1}
+                    >
+                      {rescheduleTreatmentTriggerLabel}
+                    </Text>
                     {rescheduleTreatmentsLoading ? (
-                      <ActivityIndicator
-                        size="small"
-                        color={theme.colors.primary}
-                        style={styles.rescheduleTreatmentLoader}
-                      />
-                    ) : filteredReschedulePlanGroups.length === 0 &&
-                      filteredRescheduleCatalogTreatments.length === 0 ? (
-                      <Text style={styles.rescheduleTreatmentEmpty}>
-                        {rescheduleTreatmentSearch.trim()
-                          ? 'No treatments match your search'
-                          : 'No treatments available'}
-                      </Text>
+                      <ActivityIndicator size="small" color={theme.colors.primary} />
                     ) : (
-                      <ScrollView
-                        nestedScrollEnabled
-                        keyboardShouldPersistTaps="handled"
-                        style={styles.rescheduleTreatmentList}
-                      >
-                        {filteredReschedulePlanGroups.map(group => (
-                          <View key={group.planId}>
-                            <Text style={styles.rescheduleTreatmentGroupTitle}>
-                              {group.planTitle}
-                            </Text>
-                            {group.treatments.map(treatment => {
-                              const active = rescheduleSelectedTreatmentKeys.has(
-                                treatment.key,
-                              );
-                              return (
-                                <TouchableOpacity
-                                  key={treatment.key}
-                                  style={styles.rescheduleTreatmentOption}
-                                  activeOpacity={0.7}
-                                  onPress={() =>
-                                    toggleRescheduleTreatment(treatment.key)
-                                  }
-                                >
-                                  <Icon
-                                    name={
-                                      active
-                                        ? 'check-box'
-                                        : 'check-box-outline-blank'
-                                    }
-                                    size={20}
-                                    color={
-                                      active
-                                        ? theme.colors.primary
-                                        : theme.colors.textSecondary
-                                    }
-                                  />
-                                  <View style={styles.rescheduleTreatmentOptionBody}>
-                                    <Text style={styles.rescheduleTreatmentOptionName}>
-                                      {treatment.treatmentDesc}
-                                    </Text>
-                                  </View>
-                                </TouchableOpacity>
-                              );
-                            })}
-                          </View>
-                        ))}
-
-                        {filteredRescheduleCatalogTreatments.length > 0 ? (
-                          <>
-                            <Text style={styles.rescheduleTreatmentGroupTitle}>
-                              Catalog
-                            </Text>
-                            {filteredRescheduleCatalogTreatments.map(treatment => {
-                              const active = rescheduleSelectedTreatmentKeys.has(
-                                treatment.key,
-                              );
-                              return (
-                                <TouchableOpacity
-                                  key={treatment.key}
-                                  style={styles.rescheduleTreatmentOption}
-                                  activeOpacity={0.7}
-                                  onPress={() =>
-                                    toggleRescheduleTreatment(treatment.key)
-                                  }
-                                >
-                                  <Icon
-                                    name={
-                                      active
-                                        ? 'check-box'
-                                        : 'check-box-outline-blank'
-                                    }
-                                    size={20}
-                                    color={
-                                      active
-                                        ? theme.colors.primary
-                                        : theme.colors.textSecondary
-                                    }
-                                  />
-                                  <View style={styles.rescheduleTreatmentOptionBody}>
-                                    <Text style={styles.rescheduleTreatmentOptionName}>
-                                      {treatment.treatmentDesc}
-                                    </Text>
-                                  </View>
-                                </TouchableOpacity>
-                              );
-                            })}
-                          </>
-                        ) : null}
-                      </ScrollView>
+                      <Icon
+                        name={rescheduleTreatmentDropdownOpen ? "expand-less" : "expand-more"}
+                        size={22}
+                        color={theme.colors.textSecondary}
+                      />
                     )}
-                  </View>
-                ) : null}
+                  </TouchableOpacity>
+
+                  {rescheduleTreatmentDropdownOpen && (
+                    <View style={styles.rescheduleTreatmentDropdown}>
+                      {/* Search Bar inside the dropdown */}
+                      <View style={{
+                        flexDirection: 'row',
+                        alignItems: 'center',
+                        borderWidth: 1,
+                        borderColor: theme.colors.border,
+                        borderRadius: theme.borderRadius.sm,
+                        marginHorizontal: theme.spacing.sm,
+                        marginTop: theme.spacing.sm,
+                        paddingHorizontal: theme.spacing.sm,
+                        height: 38,
+                        backgroundColor: theme.colors.background,
+                      }}>
+                        <Icon name="search" size={18} color={theme.colors.textSecondary} style={{ marginRight: 6 }} />
+                        <TextInput
+                          style={{
+                            flex: 1,
+                            fontSize: theme.typography.fontSizes.sm,
+                            color: theme.colors.text,
+                            padding: 0,
+                          }}
+                          value={rescheduleTreatmentSearch}
+                          onChangeText={setRescheduleTreatmentSearch}
+                          placeholder="Search treatments..."
+                          placeholderTextColor={theme.colors.placeholder}
+                          autoFocus
+                        />
+                        {rescheduleTreatmentSearch.trim() ? (
+                          <TouchableOpacity onPress={() => setRescheduleTreatmentSearch('')}>
+                            <Icon name="close" size={18} color={theme.colors.textSecondary} />
+                          </TouchableOpacity>
+                        ) : null}
+                      </View>
+
+                      {rescheduleTreatmentsLoading ? (
+                        <ActivityIndicator
+                          size="small"
+                          color={theme.colors.primary}
+                          style={styles.rescheduleTreatmentLoader}
+                        />
+                      ) : filteredReschedulePlanGroups.length === 0 &&
+                        filteredRescheduleCatalogTreatments.length === 0 ? (
+                        <Text style={styles.rescheduleTreatmentEmpty}>
+                          {rescheduleTreatmentSearch.trim()
+                            ? 'No treatments match your search'
+                            : 'No treatments available'}
+                        </Text>
+                      ) : (
+                        <ScrollView
+                          nestedScrollEnabled
+                          keyboardShouldPersistTaps="handled"
+                          style={[styles.rescheduleTreatmentList, { marginTop: 4 }]}
+                        >
+                          {filteredReschedulePlanGroups.map(group => (
+                            <View key={group.planId}>
+                              <Text style={styles.rescheduleTreatmentGroupTitle}>
+                                {group.planTitle}
+                              </Text>
+                              {group.treatments.map(treatment => {
+                                const active = rescheduleSelectedTreatmentKeys.has(
+                                  treatment.key,
+                                );
+                                return (
+                                  <TouchableOpacity
+                                    key={treatment.key}
+                                    style={styles.rescheduleTreatmentOption}
+                                    activeOpacity={0.7}
+                                    onPress={() =>
+                                      toggleRescheduleTreatment(treatment.key)
+                                    }
+                                  >
+                                    <Icon
+                                      name={
+                                        active
+                                          ? 'check-box'
+                                          : 'check-box-outline-blank'
+                                      }
+                                      size={20}
+                                      color={
+                                        active
+                                          ? theme.colors.primary
+                                          : theme.colors.textSecondary
+                                      }
+                                    />
+                                    <View style={styles.rescheduleTreatmentOptionBody}>
+                                      <Text style={styles.rescheduleTreatmentOptionName}>
+                                        {treatment.treatmentDesc}
+                                      </Text>
+                                    </View>
+                                  </TouchableOpacity>
+                                );
+                              })}
+                            </View>
+                          ))}
+
+                          {filteredRescheduleCatalogTreatments.length > 0 ? (
+                            <>
+                              <Text style={styles.rescheduleTreatmentGroupTitle}>
+                                Catalog
+                              </Text>
+                              {filteredRescheduleCatalogTreatments.map(treatment => {
+                                const active = rescheduleSelectedTreatmentKeys.has(
+                                  treatment.key,
+                                );
+                                return (
+                                  <TouchableOpacity
+                                    key={treatment.key}
+                                    style={styles.rescheduleTreatmentOption}
+                                    activeOpacity={0.7}
+                                    onPress={() =>
+                                      toggleRescheduleTreatment(treatment.key)
+                                    }
+                                  >
+                                    <Icon
+                                      name={
+                                        active
+                                          ? 'check-box'
+                                          : 'check-box-outline-blank'
+                                      }
+                                      size={20}
+                                      color={
+                                        active
+                                          ? theme.colors.primary
+                                          : theme.colors.textSecondary
+                                      }
+                                    />
+                                    <View style={styles.rescheduleTreatmentOptionBody}>
+                                      <Text style={styles.rescheduleTreatmentOptionName}>
+                                        {treatment.treatmentDesc}
+                                      </Text>
+                                    </View>
+                                  </TouchableOpacity>
+                                );
+                              })}
+                            </>
+                          ) : null}
+                        </ScrollView>
+                      )}
+                    </View>
+                  )}
+                </View>
+
+
               </>
             ) : null}
           </ScrollView>
 
-          <View style={[styles.modalFooterRow, styles.rescheduleFooter]}>
+          <View style={[styles.modalFooterRow, styles.rescheduleFooter, { paddingBottom: Math.max(12, insets.bottom) }]}>
             <TouchableOpacity
               style={[styles.ctaGridBtn, styles.modalFooterBtn]}
               onPress={closeRescheduleModal}
@@ -3972,7 +4390,7 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation, route }) =>
               )}
             </TouchableOpacity>
           </View>
-        </SafeAreaView>
+        </View>
       </ModalBackdrop>
 
       <ModalBackdrop
@@ -4007,21 +4425,20 @@ const CalendarScreen: React.FC<CalendarScreenProps> = ({ navigation, route }) =>
         </View>
       </ModalBackdrop>
 
-      <DatePicker
-        modal
-        open={showTokenRescheduleDatePicker}
-        date={
+      <MonthCalendarPickerModal
+        visible={showTokenRescheduleDatePicker}
+        value={
           rescheduleDate
             ? new Date(`${rescheduleDate}T12:00:00`)
             : new Date()
         }
-        mode="date"
-        onConfirm={date => {
+        onSelectDate={date => {
           const key = toKey(date);
           setShowTokenRescheduleDatePicker(false);
           onRescheduleDateChange(key);
         }}
-        onCancel={() => setShowTokenRescheduleDatePicker(false)}
+        onClose={() => setShowTokenRescheduleDatePicker(false)}
+        minDate={new Date()}
       />
 
       {/* Long-press appointment tooltip (mobile equivalent of web hover) */}
@@ -4212,6 +4629,28 @@ const styles = StyleSheet.create({
   },
   topToggleTextActive: {
     color: theme.colors.primary,
+  },
+  bookingWarningBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: theme.spacing.sm,
+    borderRadius: theme.borderRadius.sm,
+    marginBottom: theme.spacing.sm,
+    gap: 8,
+  },
+  leaveBanner: {
+    backgroundColor: '#FFCDD2',
+    borderColor: '#EF9A9A',
+    borderWidth: 1,
+  },
+  blockedBanner: {
+    backgroundColor: '#FFF9C4',
+    borderColor: '#FFE082',
+    borderWidth: 1,
+  },
+  bookingWarningText: {
+    fontSize: 14,
+    fontWeight: '600',
   },
   fixedBlockTimeFab: {
     position: 'absolute',
@@ -4982,9 +5421,17 @@ const styles = StyleSheet.create({
     opacity: 0.5,
   },
   apptDetailsSheet: {
-    flex: 1,
     width: '100%',
+    height: SCREEN_HEIGHT * 0.9,
+    maxHeight: SCREEN_HEIGHT * 0.9,
+    alignSelf: 'flex-end',
     backgroundColor: theme.colors.surface,
+    borderTopLeftRadius: theme.borderRadius.xl,
+    borderTopRightRadius: theme.borderRadius.xl,
+    borderBottomLeftRadius: 0,
+    borderBottomRightRadius: 0,
+    overflow: 'hidden',
+    ...theme.shadows.lg,
   },
   apptDetailsSheetHandle: {
     alignSelf: 'center',
@@ -5135,6 +5582,8 @@ const styles = StyleSheet.create({
   },
   modalFooterBtn: {
     marginBottom: 0,
+    paddingVertical: 10,
+    borderRadius: theme.borderRadius.md,
   },
   refundOptionRow: {
     flexDirection: 'row',
@@ -5429,21 +5878,27 @@ const styles = StyleSheet.create({
   },
   confirmArrivalSheet: {
     width: '100%',
-    maxHeight: '92%',
+    height: SCREEN_HEIGHT * 0.9,
+    maxHeight: SCREEN_HEIGHT * 0.9,
     alignSelf: 'flex-end',
     backgroundColor: theme.colors.surface,
     borderTopLeftRadius: theme.borderRadius.xl,
     borderTopRightRadius: theme.borderRadius.xl,
+    borderBottomLeftRadius: 0,
+    borderBottomRightRadius: 0,
     overflow: 'hidden',
     ...theme.shadows.lg,
   },
   rescheduleSheet: {
     width: '100%',
-    maxHeight: '92%',
+    height: SCREEN_HEIGHT * 0.9,
+    maxHeight: SCREEN_HEIGHT * 0.9,
     alignSelf: 'flex-end',
     backgroundColor: theme.colors.surface,
     borderTopLeftRadius: theme.borderRadius.xl,
     borderTopRightRadius: theme.borderRadius.xl,
+    borderBottomLeftRadius: 0,
+    borderBottomRightRadius: 0,
     overflow: 'hidden',
     ...theme.shadows.lg,
   },
@@ -5493,7 +5948,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: theme.colors.border,
     borderRadius: theme.borderRadius.md,
-    paddingVertical: theme.spacing.md,
+    paddingVertical: theme.spacing.sm,
     paddingHorizontal: theme.spacing.md,
     backgroundColor: theme.colors.surface,
   },
@@ -5528,11 +5983,20 @@ const styles = StyleSheet.create({
     marginRight: theme.spacing.sm,
   },
   rescheduleTreatmentDropdown: {
+    position: 'absolute',
+    top: 42,
+    left: 0,
+    right: 0,
     borderWidth: 1,
     borderColor: theme.colors.border,
     borderRadius: theme.borderRadius.md,
-    marginTop: theme.spacing.xs,
     backgroundColor: theme.colors.surface,
+    zIndex: 9999,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.15,
+    shadowRadius: 6,
+    elevation: 6,
     overflow: 'hidden',
   },
   rescheduleTreatmentSearch: {
@@ -5955,6 +6419,38 @@ const styles = StyleSheet.create({
     fontWeight: theme.typography.fontWeights.semiBold,
     color: '#64748B',
     textTransform: 'uppercase',
+  },
+  blockedRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: theme.spacing.md,
+    marginHorizontal: theme.spacing.md,
+    marginVertical: theme.spacing.xs,
+    borderRadius: theme.borderRadius.md,
+    borderWidth: 1,
+    borderStyle: 'dashed',
+  },
+  leaveRow: {
+    backgroundColor: '#FFEBEE',
+    borderColor: '#EF9A9A',
+  },
+  blockedTimeRangeRow: {
+    backgroundColor: '#FFF8E1',
+    borderColor: '#FFE082',
+  },
+  blockedRowMain: {
+    flex: 1,
+    marginLeft: theme.spacing.md,
+  },
+  blockedRowTitle: {
+    fontSize: theme.typography.fontSizes.md,
+    fontWeight: theme.typography.fontWeights.semiBold,
+    color: theme.colors.text,
+  },
+  blockedRowSubtitle: {
+    fontSize: theme.typography.fontSizes.sm,
+    color: theme.colors.textSecondary,
+    marginTop: 2,
   },
 });
 
